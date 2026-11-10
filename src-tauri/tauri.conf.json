@@ -59,29 +59,11 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "fileAssociations": [
-      {
-        "ext": [
-          "md",
-          "markdown",
-          "mdown",
-          "mkd"
-        ],
-        "name": "Markdown document",
-        "description": "Markdown document",
-        "mimeType": "text/markdown",
-        "role": "Editor"
-      },
-      {
-        "ext": [
-          "txt"
-        ],
-        "name": "Text document",
-        "description": "Text document",
-        "mimeType": "text/plain",
-        "role": "Editor"
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/hooks.nsh"
       }
-    ]
+    }
   },
   "plugins": {
     "updater": {

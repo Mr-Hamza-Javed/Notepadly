@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
+import { installEnterAnimation, markAsleep, playEnterAnimation } from "./lib/enterAnimation";
 import { ipc } from "./lib/ipc";
 import { actions } from "./state/actions";
 import { useApp } from "./state/store";
@@ -14,6 +15,9 @@ const html = document.documentElement;
 
 // Critical paint: the bundled stylesheet may not have applied yet.
 html.style.background = useApp.getState().dark ? "#212121" : "#d2dbea";
+// The content fades in once the window is on screen.
+markAsleep();
+installEnterAnimation();
 
 interface UaDataLike {
   getHighEntropyValues?: (hints: string[]) => Promise<{ platformVersion?: string }>;
@@ -60,6 +64,7 @@ async function boot(): Promise<void> {
   } catch {
     // Plain browser preview: there is no native window to show.
   }
+  playEnterAnimation();
 }
 
 void boot();

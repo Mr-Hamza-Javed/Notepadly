@@ -2,6 +2,7 @@
 
 mod autoupdate;
 mod background;
+mod fileicon;
 mod files;
 mod fonts;
 mod store;

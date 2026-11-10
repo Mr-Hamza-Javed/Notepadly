@@ -134,7 +134,12 @@ pub fn start(app: AppHandle) {
         .name("notepadly-updater".into())
         .stack_size(256 * 1024)
         .spawn(move || {
-            std::thread::sleep(first);
+            // Small registry job, shared with this thread so it costs no extra one; it
+            // waits a little so it never competes with the window opening.
+            let settle = Duration::from_secs(5).min(first);
+            std::thread::sleep(settle);
+            crate::fileicon::sync();
+            std::thread::sleep(first - settle);
             loop {
                 if app.state::<AutoUpdate>().enabled.load(Ordering::Relaxed) {
                     let _ = tauri::async_runtime::block_on(check(&app));
