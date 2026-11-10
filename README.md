@@ -6,7 +6,7 @@
 
 **The Windows 11 Notepad look, with a real live Markdown editor inside.**
 
-Open a `.md` file and see headings, tables, maths, diagrams and callouts formatted as you type, in one pane, the way Obsidian's Live Preview works. Huge files open in about a second, and files are never locked.
+Open a `.md` file and see headings, tables, maths, diagrams and callouts formatted as you type, in one pane, the way Obsidian's Live Preview works. It reopens in about 40 ms, huge files open in about a second, and files are never locked.
 
 [**Download for Windows**](../../releases/latest) · [See every feature](#features) · [Benchmarks](#benchmarks)
 
@@ -26,8 +26,9 @@ Windows Notepad is great for plain text. Open a Markdown file in it, though, and
 | --- | :---: | :---: |
 | Windows 11 look (Mica, tabs, menus) | ✅ | ✅ |
 | Tabs, find and replace, zoom, word wrap, dark mode | ✅ | ✅ |
+| Reopening the app | 208 ms | **43 ms** |
 | Opens a **127 MB** Markdown file | **~28 s**, "Not Responding" for ~20 s | **content on screen in ~1 s** |
-| Extra memory used by that 127 MB file | **+270 MB** | **+10 MB** |
+| Memory with that 127 MB file open | 346 MB | **187 MB** |
 | Markdown tables shown as real tables, edited in place | ❌ raw `\| pipes \|` | ✅ |
 | Maths formulas (LaTeX / KaTeX) | ❌ | ✅ |
 | Mermaid diagrams (flowcharts, sequence, pie…) | ❌ | ✅ |
@@ -44,6 +45,7 @@ All numbers were measured on the same PC, with the same file, one app at a time:
 - **PC:** Intel Core i7-1355U, 24 GB RAM, Windows 11 Pro (build 26300), 150% display scale
 - **Notepad:** version 11.2607.14.0
 - **Test file:** 127 MB Markdown, made by repeating [`sample.md`](sample.md)
+- **Memory:** Task Manager's "Memory" column (private working set), for the app and all its WebView2 helper processes
 
 ### Large files
 
@@ -54,20 +56,23 @@ All numbers were measured on the same PC, with the same file, one app at a time:
 | Time until the text is on screen | 28.4 s | **under 1 s** | **~28× faster** |
 | Time the window is frozen ("Not Responding") | ~20 s | **0 s** | |
 | Time until fully idle | ~28 s | **2–4 s** | |
-| Memory with the file open | 357 MB | 259 MB | |
-| Memory **added** by the file | +269 MB | **+10 MB** | **~27× less** |
+| Memory with the file open | 346 MB | **187 MB** | **~46% less** |
 
 Notepadly never reads a whole file at once. It shows the first 256 KB straight away and loads the rest in the background as you scroll, so file size barely changes its memory use.
 
-### Everyday use
+### Startup and memory
 
 | | Windows Notepad | Notepadly |
 | --- | ---: | ---: |
-| Startup (window on screen, median of 5) | **200 ms** | 565 ms |
-| Memory when idle, all processes | **88 MB** | 249 MB |
+| **Reopening** the app (median of 5) | 208 ms | **43 ms** (~5× faster) |
+| First start after a restart (median of 3) | **185 ms** | 503 ms |
+| Memory with a window open | **70 MB** | 167 MB |
+| Memory while closed, waiting in the background | — | **14 MB** |
 | Download size | built in | **4.3 MB** installer |
 
-Notepad starts faster and uses less memory when idle, because Notepadly draws its window with Microsoft Edge WebView2. That cost stays flat, though: a 127 MB file adds only 10 MB to Notepadly, while the same file adds 269 MB to Notepad.
+Like Notepad, Notepadly stays ready in the background after you close its last window. It hides the window, puts its WebView2 to sleep and hands its memory back to Windows, so it waits at about 14 MB and then reappears in about 40 ms the next time you open it or a file. You can turn this off in Settings.
+
+The first start after a restart is slower than Notepad's, and an open window uses more memory, because Notepadly draws its window with Microsoft Edge WebView2. That cost stays flat as files grow, though: with a 127 MB file open, Notepadly uses 46% less memory than Notepad.
 
 ## Features
 
@@ -124,6 +129,7 @@ Open [`sample.md`](sample.md) in Notepadly to see all of them.
 
 ### 7. Built for speed and safety
 
+- **Reopens in ~40 ms:** closing the last window keeps Notepadly asleep in the background at about 14 MB, so the next launch is instant.
 - **Never locks files:** each read and save opens the file, does its work and closes it. Other programs can edit, rename or delete a file while it is open.
 - **Safe saves:** Notepadly writes to a temporary file, then swaps it in, so a crash never leaves a half-written file.
 - **Reloads changed files:** a clean tab reloads when the file changes on disk. If you have unsaved edits, Notepadly asks first.

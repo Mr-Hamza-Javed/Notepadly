@@ -100,7 +100,7 @@ const SECTIONS: Section[] = [
   {
     id: "files",
     title: "Opening and saving files",
-    keywords: "save open lock large big encoding utf line ending crlf lf recent session draft changed disk",
+    keywords: "save open lock large big encoding utf line ending crlf lf recent session draft changed disk background memory fast start",
     body: (
       <>
         <ul>
@@ -126,6 +126,10 @@ const SECTIONS: Section[] = [
           </li>
           <li>
             <em>File &gt; Recent</em> lists the last files you opened.
+          </li>
+          <li>
+            Closing the last window keeps Notepadly asleep in the background, using very little memory, so it opens
+            again instantly. Turn this off in Settings under <em>Keep running in the background</em>.
           </li>
         </ul>
       </>

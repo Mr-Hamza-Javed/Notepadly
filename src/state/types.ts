@@ -15,6 +15,8 @@ export interface Settings {
   formatting: boolean;
   openFilesIn: "tab" | "window";
   startup: "continue" | "new";
+  /** Hide instead of quitting when the last window closes, so the next launch is instant. */
+  background: boolean;
   recentFiles: boolean;
   spellcheck: boolean;
   autocorrect: boolean;

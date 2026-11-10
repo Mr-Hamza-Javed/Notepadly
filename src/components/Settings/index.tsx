@@ -265,6 +265,13 @@ export default function Settings() {
             <Expander icon={<Icon cp={G.startup} />} title="When Notepadly starts">
               <Radios label="When Notepadly starts" value={s.startup} options={STARTUP} onChange={(v) => set("startup", v)} />
             </Expander>
+            <ToggleCard
+              icon={<Icon cp={G.speed} />}
+              title="Keep running in the background"
+              subtitle="Opens instantly next time. Uses little memory while closed."
+              value={s.background}
+              onChange={(v) => set("background", v)}
+            />
             <ToggleCard icon={<Icon cp={G.recent} />} title="Recent Files" value={s.recentFiles} onChange={(v) => set("recentFiles", v)} />
 
             <h2 className="settings-label">Spelling</h2>
