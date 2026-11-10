@@ -755,6 +755,7 @@ export const actions = {
   },
   closeDialog,
   openSettings: () => useApp.setState({ view: "settings" }),
+  openHelp: () => useApp.setState({ view: "help" }),
   closeSettings: () => {
     useApp.setState({ view: "editor" });
     engine.focus();

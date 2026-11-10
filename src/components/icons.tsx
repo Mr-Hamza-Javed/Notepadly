@@ -17,6 +17,7 @@ export const G = {
   arrowDown: 0xe74b,
   check: 0xe73e,
   gear: 0xe713,
+  help: 0xe897,
   bold: 0xe8dd,
   italic: 0xe8db,
   strike: 0xede0,
@@ -47,7 +48,7 @@ export const AppIcon = memo(function AppIcon({ size = 16 }: { size?: number }) {
   // React ids can contain characters that break url(#…) references.
   const id = "nl" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   return (
-    <svg className="svg-glyph" width={size} height={size} viewBox="0 0 1200 1200" aria-hidden>
+    <svg className="svg-glyph" width={size} height={size} viewBox="170 95 1035 1035" aria-hidden>
       <defs>
         <linearGradient id={`${id}c`} x1="225" y1="150" x2="975" y2="925" gradientUnits="userSpaceOnUse">
           <stop offset="0" stopColor="#7dd7f1" />

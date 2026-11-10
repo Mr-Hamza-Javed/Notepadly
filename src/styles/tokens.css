@@ -3,7 +3,9 @@
   --font-ui: "Segoe UI Variable Text", "Segoe UI", sans-serif;
   --font-display: "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --font-icons: "Segoe Fluent Icons", "Segoe MDL2 Assets";
-  --strip-h: 32px;
+  /* Measured against the real Windows 11 Notepad at the same DPI: 41px strip, tabs 31px tall. */
+  --strip-h: 41px;
+  --tab-h: 31px;
   --bar-h: 32px;
   --status-h: 30px;
   --ease-out: cubic-bezier(0.1, 0.9, 0.2, 1);
@@ -137,7 +139,19 @@
   --warn-bar: #fff4ce;
 }
 
-/* With Mica active the title strip lets the system backdrop through. */
+/* With Mica Alt active the title strip shows the system backdrop, and the active tab and
+   menu bar are a translucent layer over it, so both pick up the wallpaper tint like the
+   real Notepad. The editor stays opaque. */
 :root[data-mica="on"] {
   --strip: transparent;
+}
+:root[data-mica="on"][data-theme="light"] {
+  --surface: rgba(255, 255, 255, 0.7);
+  --hairline: rgba(0, 0, 0, 0.06);
+  --tab-border: rgba(0, 0, 0, 0.07);
+}
+:root[data-mica="on"][data-theme="dark"] {
+  --surface: rgba(255, 255, 255, 0.05);
+  --hairline: rgba(0, 0, 0, 0.28);
+  --tab-border: rgba(255, 255, 255, 0.07);
 }

@@ -22,7 +22,7 @@
         "transparent": true,
         "shadow": true,
         "visible": false,
-        "windowEffects": { "effects": ["mica"] },
+        "windowEffects": { "effects": ["tabbed"] },
         "dragDropEnabled": true,
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
       }

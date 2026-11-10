@@ -12,15 +12,15 @@ import { StatusBar } from "./components/StatusBar";
 import { TitleBar } from "./components/TitleBar";
 import { Tooltip } from "./components/Tooltip";
 
+// Settings and Help are separate chunks, loaded only when first opened.
 const Settings = lazy(() => import("./components/Settings"));
+const Help = lazy(() => import("./components/Help"));
 
-const SettingsLayer = memo(function SettingsLayer() {
-  const open = useApp((s) => s.view === "settings");
-  if (!open) return null;
+const PageLayer = memo(function PageLayer() {
+  const view = useApp((s) => s.view);
+  if (view === "editor") return null;
   return (
-    <Suspense fallback={<div className="settings-fallback" />}>
-      <Settings />
-    </Suspense>
+    <Suspense fallback={<div className="settings-fallback" />}>{view === "help" ? <Help /> : <Settings />}</Suspense>
   );
 });
 
@@ -29,6 +29,9 @@ const ChromeRow = memo(function ChromeRow() {
     <div className="chrome-row">
       <MenuBar />
       <FormatToolbar />
+      <button type="button" className="gear help-btn" aria-label="Help" data-tip="Help (F1)" onClick={() => actions.openHelp()}>
+        <Glyph cp={G.help} />
+      </button>
       <button type="button" className="gear" aria-label="Settings" data-tip="Settings" onClick={() => actions.openSettings()}>
         <Glyph cp={G.gear} />
       </button>
@@ -67,7 +70,7 @@ function App() {
         <FindBar />
       </div>
       <StatusBar />
-      <SettingsLayer />
+      <PageLayer />
       <Dialogs />
       <Tooltip />
     </div>
