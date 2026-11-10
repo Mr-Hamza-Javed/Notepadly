@@ -1,4 +1,7 @@
-import { memo, useId } from "react";
+import { memo } from "react";
+import icon16 from "../assets/app-icon-16.png";
+import icon24 from "../assets/app-icon-24.png";
+import icon32 from "../assets/app-icon-32.png";
 
 /** Segoe Fluent Icons codepoints used by the shell. */
 export const G = {
@@ -43,42 +46,21 @@ export const Glyph = memo(function Glyph({ cp, size, className }: { cp: number; 
   );
 });
 
-/** Notepadly mark: spiral notepad with a Markdown badge. Same art as src-tauri/icons/source. */
+/**
+ * Notepadly mark, from the PNG files `npm run icons` renders (the same art as the
+ * exe icon). The browser picks the file that matches the screen scale, so it stays sharp.
+ */
 export const AppIcon = memo(function AppIcon({ size = 16 }: { size?: number }) {
-  // React ids can contain characters that break url(#…) references.
-  const id = "nl" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   return (
-    <svg className="svg-glyph" width={size} height={size} viewBox="170 95 1035 1035" aria-hidden>
-      <defs>
-        <linearGradient id={`${id}c`} x1="225" y1="150" x2="975" y2="925" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#7dd7f1" />
-          <stop offset="1" stopColor="#45b0d1" />
-        </linearGradient>
-        <linearGradient id={`${id}b`} x1="610" y1="740" x2="1150" y2="1130" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#8b5cf6" />
-          <stop offset="1" stopColor="#5b21b6" />
-        </linearGradient>
-      </defs>
-      <rect x="225" y="850" width="750" height="225" rx="50" fill="#ad602a" />
-      <rect x="225" y="820" width="750" height="180" rx="50" fill="#f3f3f3" />
-      <rect x="225" y="150" width="750" height="775" rx="50" fill={`url(#${id}c)`} />
-      <g fill="#066f94">
-        <rect x="300" y="100" width="75" height="125" rx="37.5" />
-        <rect x="475" y="100" width="75" height="125" rx="37.5" />
-        <rect x="650" y="100" width="75" height="125" rx="37.5" />
-        <rect x="825" y="100" width="75" height="125" rx="37.5" />
-        <rect x="325" y="400" width="550" height="75" rx="12" />
-        <rect x="325" y="550" width="550" height="75" rx="12" />
-        <rect x="325" y="700" width="350" height="75" rx="12" />
-      </g>
-      <rect x="610" y="760" width="540" height="370" rx="80" fill="#ffffff" />
-      <rect x="640" y="790" width="480" height="310" rx="58" fill={`url(#${id}b)`} />
-      <g fill="none" stroke="#ffffff" strokeWidth="52" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="705,1030 705,860 800,955 895,860 895,1030" />
-        <line x1="1010" y1="860" x2="1010" y2="1025" />
-        <polyline points="955,972 1010,1030 1065,972" />
-      </g>
-    </svg>
+    <img
+      className="svg-glyph"
+      src={icon16}
+      srcSet={`${icon16} 1x, ${icon24} 1.5x, ${icon32} 2x`}
+      width={size}
+      height={size}
+      alt=""
+      draggable={false}
+    />
   );
 });
 

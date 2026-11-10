@@ -1,53 +1,46 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="170 95 1035 1035">
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Notepadly: Windows 11 Notepad's shape (192x256), formatted lines and a pencil.
+       Edit this file, then run `npm run icons` to regenerate every PNG and icon.ico. -->
   <defs>
-    <linearGradient id="cover" x1="225" y1="150" x2="975" y2="925" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#7dd7f1"/>
-      <stop offset="1" stop-color="#45b0d1"/>
+    <linearGradient id="cover" x1="32" y1="16" x2="224" y2="212" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7dd7f1"/><stop offset="1" stop-color="#45b0d1"/>
     </linearGradient>
-    <linearGradient id="back" x1="0" y1="900" x2="0" y2="1075" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#6e3a17"/>
-      <stop offset="0.45" stop-color="#ad602a"/>
-      <stop offset="1" stop-color="#ad602a"/>
+    <linearGradient id="paper" x1="0" y1="200" x2="0" y2="236" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c9c9c9"/><stop offset="0.45" stop-color="#f3f3f3"/>
     </linearGradient>
-    <linearGradient id="paper" x1="0" y1="880" x2="0" y2="1000" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#cfcfcf"/>
-      <stop offset="0.4" stop-color="#f3f3f3"/>
-      <stop offset="1" stop-color="#f3f3f3"/>
+    <linearGradient id="back" x1="0" y1="226" x2="0" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6e3a17"/><stop offset="0.4" stop-color="#ad602a"/>
     </linearGradient>
-    <linearGradient id="badge" x1="610" y1="740" x2="1150" y2="1130" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#8b5cf6"/>
-      <stop offset="1" stop-color="#5b21b6"/>
+    <linearGradient id="pencil" x1="0" y1="-15" x2="0" y2="15" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd659"/><stop offset="0.5" stop-color="#ffc226"/><stop offset="1" stop-color="#f29d0a"/>
     </linearGradient>
   </defs>
 
-  <!-- back cover and paper edge -->
-  <rect x="225" y="850" width="750" height="225" rx="50" fill="url(#back)"/>
-  <rect x="225" y="820" width="750" height="180" rx="50" fill="url(#paper)"/>
-
-  <!-- front cover -->
-  <rect x="225" y="150" width="750" height="775" rx="50" fill="url(#cover)"/>
+  <!-- back cover, paper edge, front cover -->
+  <rect x="32" y="196" width="192" height="60" rx="14" fill="url(#back)"/>
+  <rect x="32" y="190" width="192" height="46" rx="14" fill="url(#paper)"/>
+  <rect x="32" y="16" width="192" height="196" rx="14" fill="url(#cover)"/>
 
   <!-- spiral rings -->
   <g fill="#066f94">
-    <rect x="300" y="100" width="75" height="125" rx="37.5"/>
-    <rect x="475" y="100" width="75" height="125" rx="37.5"/>
-    <rect x="650" y="100" width="75" height="125" rx="37.5"/>
-    <rect x="825" y="100" width="75" height="125" rx="37.5"/>
+    <rect x="52" y="0" width="20" height="32" rx="10"/><rect x="94" y="0" width="20" height="32" rx="10"/>
+    <rect x="142" y="0" width="20" height="32" rx="10"/><rect x="184" y="0" width="20" height="32" rx="10"/>
   </g>
 
-  <!-- text lines -->
+  <!-- formatted text: a heading and two bullet points -->
   <g fill="#066f94">
-    <rect x="325" y="400" width="550" height="75" rx="12"/>
-    <rect x="325" y="550" width="550" height="75" rx="12"/>
-    <rect x="325" y="700" width="350" height="75" rx="12"/>
+    <rect x="62" y="58" width="98" height="24" rx="12"/>
+    <circle cx="71" cy="117" r="9"/><rect x="92" y="110" width="58" height="14" rx="7"/>
+    <circle cx="71" cy="161" r="9"/><rect x="92" y="154" width="20" height="14" rx="7"/>
   </g>
 
-  <!-- Markdown badge: marks this as Notepadly, not the Windows Notepad -->
-  <rect x="610" y="760" width="540" height="370" rx="80" fill="#ffffff"/>
-  <rect x="640" y="790" width="480" height="310" rx="58" fill="url(#badge)"/>
-  <g fill="none" stroke="#ffffff" stroke-width="52" stroke-linecap="round" stroke-linejoin="round">
-    <polyline points="705,1030 705,860 800,955 895,860 895,1030"/>
-    <line x1="1010" y1="860" x2="1010" y2="1025"/>
-    <polyline points="955,972 1010,1030 1065,972"/>
+  <!-- pencil, tip pointing down-left -->
+  <g transform="translate(156 172) rotate(135)">
+    <path d="M-62,-17 H52 L84,0 L52,17 H-62 a10 10 0 0 1 -10 -10 V-7 a10 10 0 0 1 10 -10 Z" fill="#ffffff" stroke="#ffffff" stroke-width="14" stroke-linejoin="round"/>
+    <path d="M-62,-15 H-44 V15 H-62 a8 8 0 0 1 -8 -8 V-7 a8 8 0 0 1 8 -8 Z" fill="#ef6f6c"/>
+    <rect x="-44" y="-15" width="12" height="30" fill="#b9c3cd"/>
+    <rect x="-32" y="-15" width="84" height="30" fill="url(#pencil)"/>
+    <path d="M52,-15 L80,0 L52,15 Z" fill="#f4d3a4"/>
+    <path d="M70,-5.4 L80,0 L70,5.4 Z" fill="#3b3b3b"/>
   </g>
 </svg>
