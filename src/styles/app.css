@@ -83,7 +83,8 @@ a { color: var(--link); }
 }
 .editor-host { position: absolute; inset: 0; }
 .editor-host > * { height: 100%; }
-.app[data-view="settings"] .editor-host { visibility: hidden; }
+.app[data-view="settings"] .editor-host,
+.app[data-view="help"] .editor-host { visibility: hidden; }
 
 /* ---------------------------------------------------------- title bar */
 .titlebar {
@@ -98,9 +99,10 @@ a { color: var(--link); }
   flex: none;
   width: 41px;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: flex-start;
   padding-left: 14px;
+  padding-bottom: 7px;
 }
 :root[data-focused="false"] .titlebar { color: var(--text-3); }
 :root[data-focused="false"] .tb-appicon svg { opacity: 0.6; }
@@ -126,7 +128,7 @@ a { color: var(--link); }
   position: relative;
   flex: 0 1 233px;
   min-width: 96px;
-  height: 30px;
+  height: var(--tab-h);
   display: flex;
   align-items: center;
   padding: 0 4px 0 8px;
@@ -148,7 +150,12 @@ a { color: var(--link); }
 .tab:not([data-active="true"]):hover + .tab::before,
 .tab:not([data-active="true"]):hover::before { display: none; }
 .tab:not([data-active="true"]):hover { background: var(--tab-hover); }
-.tab[data-active="true"] { background: var(--surface); z-index: 1; }
+.tab[data-active="true"] {
+  background: var(--surface);
+  z-index: 1;
+  /* Hairline on the top and sides only, so the tab flows into the menu bar. */
+  box-shadow: inset 1px 1px 0 var(--tab-border, transparent), inset -1px 0 0 var(--tab-border, transparent);
+}
 /* Concave flare where the active tab meets the bar below. */
 .tab[data-active="true"]::before,
 .tab[data-active="true"]::after {
@@ -211,10 +218,11 @@ a { color: var(--link); }
 
 .strip-btn {
   flex: none;
-  align-self: center;
+  /* Sits level with the tabs, which hang from the bottom of the taller strip. */
+  align-self: flex-end;
   width: 30px;
   height: 26px;
-  margin-top: 2px;
+  margin-bottom: 2px;
   display: grid;
   place-items: center;
   border-radius: 4px;
@@ -263,6 +271,9 @@ a { color: var(--link); }
   border-radius: 4px;
   color: var(--glyph);
 }
+/* Help sits first on the right; the gear follows it. */
+.help-btn { margin-right: 2px; }
+.help-btn + .gear { margin-left: 0; }
 .gear:hover { background: var(--hover); }
 .gear:active { background: var(--press); }
 

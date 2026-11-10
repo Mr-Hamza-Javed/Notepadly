@@ -59,7 +59,7 @@ export interface PageSetup {
 export interface AppState {
   tabs: TabMeta[];
   activeId: string;
-  view: "editor" | "settings";
+  view: "editor" | "settings" | "help";
   settings: Settings;
   recent: string[];
   cursor: CursorInfo;

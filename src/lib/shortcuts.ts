@@ -7,7 +7,7 @@ export type Command =
   | "newTab" | "newWindow" | "open" | "save" | "saveAs" | "saveAll" | "print" | "closeTab" | "closeWindow"
   | "undo" | "redo" | "searchWeb" | "find" | "findNext" | "findPrev" | "replace" | "goTo" | "selectAll" | "dateTime"
   | "zoomIn" | "zoomOut" | "zoomReset" | "nextTab" | "prevTab" | "tab1" | "tab2" | "tab3" | "tab4" | "tab5"
-  | "tab6" | "tab7" | "tab8" | "tabLast" | "bold" | "italic" | "link" | "docEnd" | "docEndSelect";
+  | "tab6" | "tab7" | "tab8" | "tabLast" | "bold" | "italic" | "link" | "docEnd" | "docEndSelect" | "help";
 
 export interface Chord {
   key: string;
@@ -35,6 +35,7 @@ export function chordToCommand({ key, ctrl, shift, alt }: Chord): Command | null
   if (ctrl) return (shift ? CTRL_SHIFT_KEYS[k] : CTRL_KEYS[k]) ?? null;
   if (k === "f3") return shift ? "findPrev" : "findNext";
   if (k === "f5" && !shift) return "dateTime";
+  if (k === "f1" && !shift) return "help";
   return null;
 }
 
@@ -129,6 +130,7 @@ function run(command: Command): boolean {
     case "goTo": actions.showDialog({ kind: "goto" }); return true;
     case "selectAll": selectAllLoaded(); return true;
     case "dateTime": actions.insertDateTime(); return true;
+    case "help": actions.openHelp(); return true;
     case "zoomIn": actions.zoomBy(10); return true;
     case "zoomOut": actions.zoomBy(-10); return true;
     case "zoomReset": actions.zoomReset(); return true;
@@ -168,7 +170,7 @@ function onKeyDown(event: KeyboardEvent): void {
       stop();
       actions.closeDialog();
     } else if (!document.querySelector("[role='menu']")) {
-      if (view === "settings") {
+      if (view === "settings" || view === "help") {
         stop();
         actions.closeSettings();
       } else if (find.open) {

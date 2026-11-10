@@ -1,0 +1,90 @@
+/* Loaded with the lazy Help chunk only. Builds on settings.css (page, title bar, cards). */
+.help-grid {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 760px);
+  column-gap: 32px;
+  padding: 0 32px 40px 49px;
+  align-items: start;
+}
+.help-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.help-head .settings-h1 { margin-bottom: 0; }
+.help-search { width: 280px; margin-bottom: 6px; }
+
+.help-nav {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.help-nav-item {
+  text-align: left;
+  padding: 7px 12px;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text);
+}
+.help-nav-item:hover { background: var(--hover); }
+.help-nav-item:active { background: var(--press); }
+
+.help-main { min-width: 0; }
+.help-card {
+  padding: 16px 20px 18px;
+  margin: 0 0 8px;
+  user-select: text;
+  font-size: 14px;
+  line-height: 22px;
+}
+.help-h2 { margin: 0 0 8px; font: 600 20px/28px var(--font-display); }
+.help-card p { margin: 0 0 10px; }
+.help-card p:last-child { margin-bottom: 0; }
+.help-card ul { margin: 0; padding-left: 20px; }
+.help-card li { margin: 0 0 6px; }
+.help-card li:last-child { margin-bottom: 0; }
+.help-card code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--hover);
+}
+.help-card kbd {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  padding: 1px 6px;
+  margin: 0 1px;
+  border: 1px solid var(--card-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--control);
+  white-space: nowrap;
+}
+.help-card mark { background: color-mix(in srgb, #ffd83d 45%, transparent); color: inherit; }
+
+.help-table { width: 100%; border-collapse: collapse; margin: 4px 0 10px; }
+.help-table th,
+.help-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--card-div);
+}
+.help-table th { font-weight: 600; font-size: 13px; color: var(--text-2); }
+.help-table td:first-child { white-space: nowrap; width: 1%; padding-right: 24px; }
+.help-table tr:last-child td { border-bottom: 0; }
+
+.help-empty { color: var(--text-2); font-size: 14px; }
+
+@media (max-width: 760px) {
+  .help-grid { grid-template-columns: minmax(0, 1fr); padding: 0 16px 32px; }
+  .help-nav { display: none; }
+  .help-search { width: 100%; }
+}

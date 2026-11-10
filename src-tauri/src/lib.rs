@@ -168,11 +168,54 @@ async fn window_new(
     );
     state.store(&config.label, paths);
     let built = WebviewWindowBuilder::from_config(&app, &config).and_then(|b| b.build());
-    built.map(drop).map_err(|e| {
+    built.map(|w| use_sharp_icon(&w)).map_err(|e| {
         state.forget(&config.label);
         e.to_string()
     })
 }
+
+/// Tauri gives a window one 256 px icon and Windows shrinks it for the taskbar and
+/// Alt+Tab, which blurs it. Load the exact sizes this window's DPI needs from the
+/// exe's own multi-size icon resource instead.
+#[cfg(windows)]
+fn use_sharp_icon(window: &WebviewWindow) {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        LoadImageW, SendMessageW, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, SM_CXICON,
+        SM_CXSMICON, WM_SETICON,
+    };
+    /// Where tauri-build puts the bundle icon (tauri_utils::platform::WINDOWS_APP_ICON_RESOURCE_ID).
+    const APP_ICON_ID: usize = 32512;
+
+    let Ok(hwnd) = window.hwnd() else { return };
+    let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+    // SAFETY: plain Win32 calls on a live window handle owned by this process; the
+    // resource id is passed MAKEINTRESOURCE-style as the name pointer.
+    unsafe {
+        let dpi = GetDpiForWindow(hwnd);
+        let module = GetModuleHandleW(std::ptr::null());
+        // The taskbar draws ICON_SMALL at SM_CXSMICON, so it must be that exact size
+        // to stay sharp.
+        for (kind, metric) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)] {
+            let size = GetSystemMetricsForDpi(metric, dpi);
+            let icon = LoadImageW(
+                module,
+                APP_ICON_ID as *const u16,
+                IMAGE_ICON,
+                size,
+                size,
+                LR_DEFAULTCOLOR,
+            );
+            if !icon.is_null() {
+                SendMessageW(hwnd, WM_SETICON, kind as usize, icon as isize);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn use_sharp_icon(_window: &WebviewWindow) {}
 
 /// Existing files named on a command line, made absolute against `cwd`.
 fn paths_from_args(args: impl IntoIterator<Item = String>, cwd: &Path) -> Vec<String> {
@@ -224,12 +267,20 @@ pub fn run() {
             let cwd = std::env::current_dir().unwrap_or_default();
             let paths = paths_from_args(std::env::args().skip(1), &cwd);
             app.state::<WindowPaths>().store(MAIN_WINDOW, paths);
+            if let Some(main) = app.get_webview_window(MAIN_WINDOW) {
+                use_sharp_icon(&main);
+            }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::Destroyed) {
-                window.state::<WindowPaths>().forget(window.label());
+        .on_window_event(|window, event| match event {
+            WindowEvent::Destroyed => window.state::<WindowPaths>().forget(window.label()),
+            // Moving to a monitor with another scale needs icons of another size.
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                    use_sharp_icon(&w);
+                }
             }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             file_read_chunk,
