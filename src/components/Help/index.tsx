@@ -100,7 +100,7 @@ const SECTIONS: Section[] = [
   {
     id: "files",
     title: "Opening and saving files",
-    keywords: "save open lock large big encoding utf line ending crlf lf recent session draft changed disk background memory fast start",
+    keywords: "save open lock large big encoding utf line ending crlf lf recent session draft changed disk background memory fast start update version",
     body: (
       <>
         <ul>
@@ -130,6 +130,11 @@ const SECTIONS: Section[] = [
           <li>
             Closing the last window keeps Notepadly asleep in the background, using very little memory, so it opens
             again instantly. Turn this off in Settings under <em>Keep running in the background</em>.
+          </li>
+          <li>
+            The installed app updates itself. It downloads a new version in the background and installs it only after
+            you close the window, so your work is never interrupted. Your notes, drafts and settings are always kept.
+            Turn this off in Settings under <em>Update automatically</em>.
           </li>
         </ul>
       </>

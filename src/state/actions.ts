@@ -572,6 +572,9 @@ function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void 
     case "startup":
       loader.setPersistence(isMainWindow && value === "continue");
       break;
+    case "autoUpdate":
+      ipc.updateConfigure(value as boolean).catch(() => {});
+      break;
   }
 }
 
@@ -681,6 +684,8 @@ async function runInit(): Promise<void> {
   await openHere(pending);
   wireWindowEvents();
   loader.startHibernation();
+  // The checker thread waits for this before it ever contacts GitHub.
+  ipc.updateConfigure(state().settings.autoUpdate).catch(() => {});
 }
 
 let initRun: Promise<void> | null = null;

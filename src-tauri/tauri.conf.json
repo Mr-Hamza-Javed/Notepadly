@@ -22,7 +22,11 @@
         "transparent": true,
         "shadow": true,
         "visible": false,
-        "windowEffects": { "effects": ["tabbed"] },
+        "windowEffects": {
+          "effects": [
+            "tabbed"
+          ]
+        },
         "dragDropEnabled": true,
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
       }
@@ -30,35 +34,64 @@
     "security": {
       "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob: https:; font-src 'self' data: asset: http://asset.localhost; media-src 'self' asset: http://asset.localhost blob:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost data: blob:; object-src 'none'; base-uri 'self'",
       "devCsp": "default-src 'self' ipc: http://ipc.localhost http://localhost:1420; script-src 'self' 'unsafe-inline' http://localhost:1420; style-src 'self' 'unsafe-inline' http://localhost:1420; img-src 'self' asset: http://asset.localhost data: blob: https: http://localhost:1420; font-src 'self' data: asset: http://asset.localhost http://localhost:1420; media-src 'self' asset: http://asset.localhost blob:; worker-src 'self' blob: http://localhost:1420; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost data: blob: http://localhost:1420 ws://localhost:1420; object-src 'none'; base-uri 'self'",
-      "dangerousDisableAssetCspModification": ["style-src"],
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ],
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": [
+          "**"
+        ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "publisher": "Hamza Javed",
     "copyright": "Copyright © 2026 Hamza Javed. Licensed under Apache-2.0.",
     "license": "Apache-2.0",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
     "fileAssociations": [
       {
-        "ext": ["md", "markdown", "mdown", "mkd"],
+        "ext": [
+          "md",
+          "markdown",
+          "mdown",
+          "mkd"
+        ],
         "name": "Markdown document",
         "description": "Markdown document",
         "mimeType": "text/markdown",
         "role": "Editor"
       },
       {
-        "ext": ["txt"],
+        "ext": [
+          "txt"
+        ],
         "name": "Text document",
         "description": "Text document",
         "mimeType": "text/plain",
         "role": "Editor"
       }
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMzRUEzRjYzMTE5Mjg5OTYKUldTV2laSVJZei9xTTZRUnJVclBpZ0ZOaGwzRitzK2ZXVFZRVjAwcWNyK1h4Ri9TMGE4ZDlzZWsK",
+      "endpoints": [
+        "https://github.com/Mr-Hamza-Javed/Notepadly/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "quiet"
+      }
+    }
   }
 }

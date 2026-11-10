@@ -70,11 +70,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Signs the installer and publishes latest.json, the feed the app's silent
+      # updater reads. Needs the TAURI_SIGNING_PRIVATE_KEY and
+      # TAURI_SIGNING_PRIVATE_KEY_PASSWORD repository secrets.
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          args: --config src-tauri/tauri.release.conf.json
+          includeUpdaterJson: true
           tagName: ${{ env.TAG }}
           releaseName: Notepadly ${{ env.TAG }}
           releaseBody: |

@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
+import { ipc } from "./lib/ipc";
 import { actions } from "./state/actions";
 import { useApp } from "./state/store";
 import "./styles/app.css";
@@ -45,6 +46,13 @@ async function boot(): Promise<void> {
 
   if (mica) html.dataset.mica = "on";
   html.style.removeProperty("background");
+
+  // The restart after a background update stays asleep until the user opens Notepadly.
+  if (await ipc.launchedHidden().catch(() => false)) {
+    await init;
+    await ipc.enterBackground().catch(() => {});
+    return;
+  }
 
   await nextPaint();
   try {
