@@ -191,3 +191,13 @@ Push a version tag. GitHub Actions builds the installer and a portable exe and p
 git tag v0.2.0
 git push origin v0.2.0
 ```
+
+## License
+
+Notepadly is **free and open source** under the [Apache License 2.0](LICENSE). You may use, copy, change, share and sell it, for personal or commercial use, without paying anything. Keep the [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) files with your copy, and mark the files you changed.
+
+**The name and icon are not included.** "Notepadly" and the Notepadly icon belong to Hamza Javed. If you release a modified version, give it your own name and icon. [TRADEMARKS.md](TRADEMARKS.md) explains what is allowed.
+
+**Clean implementation.** Notepadly was written from scratch. No code was copied from Windows Notepad, Obsidian or any other app, and no software was decompiled or reverse engineered; the Windows 11 look was recreated by observing the public interface. See [ORIGINALITY.md](ORIGINALITY.md). The open-source libraries it builds on are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+Microsoft, Windows and Notepad are trademarks of Microsoft Corporation. Notepadly is not affiliated with Microsoft.
