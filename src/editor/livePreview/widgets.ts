@@ -147,7 +147,7 @@ export class HorizontalRuleWidget extends SourceWidget {
 }
 
 /** Escapes pipes the user typed so they stay inside the cell. */
-function escapeCellText(text: string): string {
+export function escapeCellText(text: string): string {
   return text.replace(/\r?\n/g, " ").replace(/\\?\|/g, (match) => (match === "|" ? "\\|" : match));
 }
 

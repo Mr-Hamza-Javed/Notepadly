@@ -124,7 +124,10 @@ fn err(e: io::Error) -> String {
 /// Opens for reading with full sharing. Other programs can edit, move or delete
 /// the file while this handle exists, and the handle closes on drop.
 pub fn open_shared(path: &Path) -> io::Result<File> {
-    OpenOptions::new().read(true).share_mode(SHARE_ALL).open(path)
+    OpenOptions::new()
+        .read(true)
+        .share_mode(SHARE_ALL)
+        .open(path)
 }
 
 fn stamp_of(meta: &fs::Metadata) -> FileStamp {
@@ -133,7 +136,10 @@ fn stamp_of(meta: &fs::Metadata) -> FileStamp {
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0.0, |d| d.as_millis() as f64);
-    FileStamp { size: meta.len(), mtime_ms }
+    FileStamp {
+        size: meta.len(),
+        mtime_ms,
+    }
 }
 
 pub fn stat(path: &Path) -> Result<Option<FileStamp>, String> {
@@ -199,9 +205,8 @@ fn first_eol(bytes: &[u8], encoding: Encoding, complete: bool) -> Option<Eol> {
             let unit = |i: usize| utf16_unit(bytes, i, encoding == Encoding::Utf16Be);
             (0..units).find_map(|i| classify(unit(i), (i + 1 < units).then(|| unit(i + 1))))
         }
-        _ => (0..bytes.len()).find_map(|i| {
-            classify(bytes[i] as u16, bytes.get(i + 1).map(|&b| b as u16))
-        }),
+        _ => (0..bytes.len())
+            .find_map(|i| classify(bytes[i] as u16, bytes.get(i + 1).map(|&b| b as u16))),
     }
 }
 
@@ -311,7 +316,11 @@ fn cut_utf16(body: &[u8], big_endian: bool) -> usize {
 fn decode(bytes: &[u8], encoding: Encoding) -> String {
     match encoding {
         Encoding::Utf8 | Encoding::Utf8Bom => String::from_utf8_lossy(bytes).into_owned(),
-        _ => encoding.codec().decode_without_bom_handling(bytes).0.into_owned(),
+        _ => encoding
+            .codec()
+            .decode_without_bom_handling(bytes)
+            .0
+            .into_owned(),
     }
 }
 
@@ -325,7 +334,9 @@ fn normalize_newlines(text: &str) -> Cow<'_, str> {
 
 fn read_up_to(file: &mut File, want: usize) -> io::Result<Vec<u8>> {
     let mut window = Vec::with_capacity(want);
-    Read::by_ref(file).take(want as u64).read_to_end(&mut window)?;
+    Read::by_ref(file)
+        .take(want as u64)
+        .read_to_end(&mut window)?;
     Ok(window)
 }
 
@@ -333,7 +344,11 @@ fn read_up_to(file: &mut File, want: usize) -> io::Result<Vec<u8>> {
 /// passes the encoding, so normally this only looks at the first few KiB, just
 /// far enough to reach the first line ending.
 fn known_format(file: &mut File, size: u64, hint: Option<Encoding>) -> io::Result<(Encoding, Eol)> {
-    let mut head_len = if hint.is_some() { 4 * 1024 } else { FIRST_CHUNK };
+    let mut head_len = if hint.is_some() {
+        4 * 1024
+    } else {
+        FIRST_CHUNK
+    };
     loop {
         file.seek(SeekFrom::Start(0))?;
         let head = read_up_to(file, head_len.min(size) as usize)?;
@@ -376,7 +391,11 @@ pub fn read_chunk(
     drop(file);
 
     let body = &window[bom_len..];
-    let cut = if eof { body.len() } else { find_cut(body, encoding) };
+    let cut = if eof {
+        body.len()
+    } else {
+        find_cut(body, encoding)
+    };
     let text = match normalize_newlines(&decode(&body[..cut], encoding)) {
         Cow::Borrowed(s) => s.to_owned(),
         Cow::Owned(s) => s,
@@ -399,7 +418,8 @@ pub fn scan(path: &Path, encoding: Encoding) -> Result<FileScan, String> {
     let bom = encoding.bom();
     let mut head = vec![0u8; bom.len()];
     let has_bom = !bom.is_empty() && file.read_exact(&mut head).is_ok() && head == bom;
-    file.seek(SeekFrom::Start(if has_bom { bom.len() as u64 } else { 0 })).map_err(err)?;
+    file.seek(SeekFrom::Start(if has_bom { bom.len() as u64 } else { 0 }))
+        .map_err(err)?;
 
     let mut decoder = encoding.codec().new_decoder_without_bom_handling();
     let mut input = vec![0u8; STREAM_BUFFER];
@@ -444,8 +464,14 @@ fn encode_text(text: &str, eol: Eol, encoding: Encoding) -> Vec<u8> {
     };
     match encoding {
         Encoding::Utf8 | Encoding::Utf8Bom => converted.into_owned().into_bytes(),
-        Encoding::Utf16Le => converted.encode_utf16().flat_map(u16::to_le_bytes).collect(),
-        Encoding::Utf16Be => converted.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+        Encoding::Utf16Le => converted
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect(),
+        Encoding::Utf16Be => converted
+            .encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect(),
         Encoding::Ansi => encode_ansi(&converted),
     }
 }
@@ -456,7 +482,8 @@ fn encode_ansi(text: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len());
     let mut rest = text;
     loop {
-        let (status, read) = encoder.encode_from_utf8_to_vec_without_replacement(rest, &mut out, true);
+        let (status, read) =
+            encoder.encode_from_utf8_to_vec_without_replacement(rest, &mut out, true);
         rest = &rest[read..];
         match status {
             encoding_rs::EncoderResult::InputEmpty => return out,
@@ -475,7 +502,9 @@ struct TempFile {
 impl TempFile {
     fn create(target: &Path) -> io::Result<(Self, File)> {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let dir = target.parent().ok_or_else(|| io::Error::other("path has no parent"))?;
+        let dir = target
+            .parent()
+            .ok_or_else(|| io::Error::other("path has no parent"))?;
         loop {
             let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = dir.join(format!("~notepadly-{}-{seq}.tmp", std::process::id()));
@@ -641,7 +670,8 @@ mod tests {
         fn new() -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let id = NEXT.fetch_add(1, Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!("notepadly-test-{}-{id}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("notepadly-test-{}-{id}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -679,10 +709,21 @@ mod tests {
         let mut encoding = None;
         loop {
             let chunk = read_chunk(path, offset, window, encoding).unwrap();
-            let start = if offset == 0 { chunk.encoding.bom().len() } else { offset as usize };
+            let start = if offset == 0 {
+                chunk.encoding.bom().len()
+            } else {
+                offset as usize
+            };
             let expected = decode(&raw[start..chunk.next_offset as usize], chunk.encoding);
-            assert_eq!(chunk.text, normalize_newlines(&expected), "window {window} at {offset}");
-            assert!(!chunk.text.contains('\u{FFFD}'), "split character, window {window}");
+            assert_eq!(
+                chunk.text,
+                normalize_newlines(&expected),
+                "window {window} at {offset}"
+            );
+            assert!(
+                !chunk.text.contains('\u{FFFD}'),
+                "split character, window {window}"
+            );
             text.push_str(&chunk.text);
             if chunk.eof {
                 assert_eq!(chunk.next_offset, raw.len() as u64);
@@ -731,7 +772,11 @@ mod tests {
             let mut bytes = encoding.bom().to_vec();
             let units: Vec<u16> = text.encode_utf16().collect();
             for unit in units {
-                bytes.extend(if encoding == LE { unit.to_le_bytes() } else { unit.to_be_bytes() });
+                bytes.extend(if encoding == LE {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
             }
             assert_every_window_round_trips(&bytes, &expected);
         }
@@ -742,7 +787,10 @@ mod tests {
         let dir = TestDir::new();
         let path = dir.file("abcdef😀 tail".as_bytes());
         let chunk = read_chunk(&path, 0, 8, None).unwrap();
-        assert_eq!((chunk.text.as_str(), chunk.next_offset, chunk.eof), ("abcdef", 6, false));
+        assert_eq!(
+            (chunk.text.as_str(), chunk.next_offset, chunk.eof),
+            ("abcdef", 6, false)
+        );
     }
 
     #[test]
@@ -752,7 +800,10 @@ mod tests {
         let chunk = read_chunk(&path, 0, 8, None).unwrap();
         assert_eq!((chunk.text.as_str(), chunk.next_offset), ("abcdefg", 7));
         let next = read_chunk(&path, 7, 8, Some(Encoding::Utf8)).unwrap();
-        assert_eq!((next.text.as_str(), next.next_offset, next.eof), ("\nhij", 12, true));
+        assert_eq!(
+            (next.text.as_str(), next.next_offset, next.eof),
+            ("\nhij", 12, true)
+        );
     }
 
     #[test]
@@ -794,15 +845,24 @@ mod tests {
     #[test]
     fn detects_encoding_and_eol() {
         assert_eq!(detect_encoding(b"plain", true), (Encoding::Utf8, 0));
-        assert_eq!(detect_encoding(&[0xEF, 0xBB, 0xBF, b'a'], true), (Encoding::Utf8Bom, 3));
+        assert_eq!(
+            detect_encoding(&[0xEF, 0xBB, 0xBF, b'a'], true),
+            (Encoding::Utf8Bom, 3)
+        );
         assert_eq!(detect_encoding(&[0xFF, 0xFE, b'a', 0], true), (LE, 2));
         assert_eq!(detect_encoding(&[0xFE, 0xFF, 0, b'a'], true), (BE, 2));
-        assert_eq!(detect_encoding(&[b'a', 0xE9, b'b'], true), (Encoding::Ansi, 0));
+        assert_eq!(
+            detect_encoding(&[b'a', 0xE9, b'b'], true),
+            (Encoding::Ansi, 0)
+        );
         // A window ending inside a valid sequence is still UTF-8, unless that is the file's end.
         assert_eq!(detect_encoding(&[b'a', 0xC3], false), (Encoding::Utf8, 0));
         assert_eq!(detect_encoding(&[b'a', 0xC3], true), (Encoding::Ansi, 0));
 
-        assert_eq!(first_eol(b"a\r\nb\n", Encoding::Utf8, true), Some(Eol::Crlf));
+        assert_eq!(
+            first_eol(b"a\r\nb\n", Encoding::Utf8, true),
+            Some(Eol::Crlf)
+        );
         assert_eq!(first_eol(b"a\nb\r\n", Encoding::Utf8, true), Some(Eol::Lf));
         assert_eq!(first_eol(b"a\rb", Encoding::Utf8, true), Some(Eol::Cr));
         assert_eq!(first_eol(b"abc", Encoding::Utf8, true), None);
@@ -815,8 +875,14 @@ mod tests {
         // The later window contains only LF endings; the file's first ending is CRLF.
         let path = dir.file(b"first\r\nsecond\nthird\nfourth\n");
         assert_eq!(read_chunk(&path, 0, 8, None).unwrap().eol, Eol::Crlf);
-        assert_eq!(read_chunk(&path, 13, 8, Some(Encoding::Utf8)).unwrap().eol, Eol::Crlf);
-        assert_eq!(read_chunk(&path, 13, 8, None).unwrap().encoding, Encoding::Utf8);
+        assert_eq!(
+            read_chunk(&path, 13, 8, Some(Encoding::Utf8)).unwrap().eol,
+            Eol::Crlf
+        );
+        assert_eq!(
+            read_chunk(&path, 13, 8, None).unwrap().encoding,
+            Encoding::Utf8
+        );
     }
 
     #[test]
@@ -824,14 +890,23 @@ mod tests {
         let dir = TestDir::new();
         let path = dir.file(&vec![b'x'; 1024 * 1024]);
         let chunk = read_chunk(&path, 0, 4096, None).unwrap();
-        assert_eq!((chunk.text.len(), chunk.next_offset, chunk.eof), (4096, 4096, false));
+        assert_eq!(
+            (chunk.text.len(), chunk.next_offset, chunk.eof),
+            (4096, 4096, false)
+        );
 
         let past = read_chunk(&path, 5 * 1024 * 1024, 4096, Some(Encoding::Utf8)).unwrap();
-        assert_eq!((past.text.as_str(), past.next_offset, past.eof), ("", 1024 * 1024, true));
+        assert_eq!(
+            (past.text.as_str(), past.next_offset, past.eof),
+            ("", 1024 * 1024, true)
+        );
 
         let empty = dir.file(b"");
         let chunk = read_chunk(&empty, 0, 4096, None).unwrap();
-        assert_eq!((chunk.text.as_str(), chunk.eof, chunk.encoding, chunk.eol), ("", true, Encoding::Utf8, Eol::Crlf));
+        assert_eq!(
+            (chunk.text.as_str(), chunk.eof, chunk.encoding, chunk.eol),
+            ("", true, Encoding::Utf8, Eol::Crlf)
+        );
     }
 
     fn request(path: &Path, text: &str, eol: Eol, encoding: Encoding) -> SaveRequest {
@@ -851,7 +926,10 @@ mod tests {
         let path = dir.0.join("new.txt");
         let cases: [(Encoding, &[u8]); 4] = [
             (Encoding::Utf8, b"a\r\nb"),
-            (Encoding::Utf8Bom, &[0xEF, 0xBB, 0xBF, b'a', b'\r', b'\n', b'b']),
+            (
+                Encoding::Utf8Bom,
+                &[0xEF, 0xBB, 0xBF, b'a', b'\r', b'\n', b'b'],
+            ),
             (LE, &[0xFF, 0xFE, b'a', 0, b'\r', 0, b'\n', 0, b'b', 0]),
             (BE, &[0xFE, 0xFF, 0, b'a', 0, b'\r', 0, b'\n', 0, b'b']),
         ];
@@ -859,7 +937,10 @@ mod tests {
             save(&request(&path, "a\nb", Eol::Crlf, encoding)).unwrap();
             assert_eq!(fs::read(&path).unwrap(), expected, "{encoding:?}");
             let chunk = read_chunk(&path, 0, 1024, None).unwrap();
-            assert_eq!((chunk.text.as_str(), chunk.encoding, chunk.eol), ("a\nb", encoding, Eol::Crlf));
+            assert_eq!(
+                (chunk.text.as_str(), chunk.encoding, chunk.eol),
+                ("a\nb", encoding, Eol::Crlf)
+            );
         }
         assert_eq!(dir.entries(), 1, "temp file left behind");
 
@@ -872,7 +953,10 @@ mod tests {
         if ansi_codec().is_single_byte() && ansi_codec() == encoding_rs::WINDOWS_1252 {
             assert_eq!(fs::read(&path).unwrap(), b"caf\xE9");
             let chunk = read_chunk(&path, 0, 1024, None).unwrap();
-            assert_eq!((chunk.text.as_str(), chunk.encoding), ("caf\u{e9}", Encoding::Ansi));
+            assert_eq!(
+                (chunk.text.as_str(), chunk.encoding),
+                ("caf\u{e9}", Encoding::Ansi)
+            );
             save(&request(&path, "x\u{4E2D}y", Eol::Lf, Encoding::Ansi)).unwrap();
             assert_eq!(fs::read(&path).unwrap(), b"x?y");
         }
@@ -892,7 +976,10 @@ mod tests {
             let path = dir.file(&original);
 
             let first = read_chunk(&path, 0, 64 * 1024, None).unwrap();
-            assert_eq!((first.encoding, first.eof, first.eol), (encoding, false, Eol::Crlf));
+            assert_eq!(
+                (first.encoding, first.eof, first.eol),
+                (encoding, false, Eol::Crlf)
+            );
             let edited = format!("EDITED\n{}", first.text);
             let mut req = request(&path, &edited, Eol::Crlf, encoding);
             req.tail_offset = Some(first.next_offset);
@@ -908,7 +995,10 @@ mod tests {
             assert_eq!(dir.entries(), 1, "temp file left behind");
 
             let reread = walk(&path, 64 * 1024);
-            assert_eq!(reread, format!("EDITED\n{}", original_text.replace("\r\n", "\n")));
+            assert_eq!(
+                reread,
+                format!("EDITED\n{}", original_text.replace("\r\n", "\n"))
+            );
         }
     }
 
@@ -938,7 +1028,10 @@ mod tests {
         let path = dir.file(b"x");
         let stamp = stat(&path).unwrap().unwrap();
         assert_eq!(stamp.mtime_ms.fract(), 0.0);
-        let js = format!(r#"{{"size":{},"mtimeMs":{}}}"#, stamp.size, stamp.mtime_ms as u64);
+        let js = format!(
+            r#"{{"size":{},"mtimeMs":{}}}"#,
+            stamp.size, stamp.mtime_ms as u64
+        );
         assert_eq!(serde_json::from_str::<FileStamp>(&js).unwrap(), stamp);
     }
 
@@ -985,10 +1078,17 @@ mod tests {
         let chunk = read_chunk(&moved, 0, 1024, None).unwrap();
         assert_eq!(chunk.text, "replaced");
 
-        let mut writer = OpenOptions::new().write(true).truncate(true).open(&moved).unwrap();
+        let mut writer = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&moved)
+            .unwrap();
         writer.write_all(b"overwritten").unwrap();
         drop(writer);
-        assert_eq!(read_chunk(&moved, 0, 1024, None).unwrap().text, "overwritten");
+        assert_eq!(
+            read_chunk(&moved, 0, 1024, None).unwrap().text,
+            "overwritten"
+        );
 
         fs::remove_file(&moved).unwrap();
         assert_eq!(stat(&moved).unwrap(), None);
@@ -1037,7 +1137,11 @@ mod tests {
     fn exclusive_lock_reports_an_error_and_keeps_the_original() {
         let dir = TestDir::new();
         let path = dir.file(b"keep me");
-        let holder = OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        let holder = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
         assert!(save(&request(&path, "new", Eol::Lf, Encoding::Utf8)).is_err());
         drop(holder);
         assert_eq!(fs::read(&path).unwrap(), b"keep me");
@@ -1084,12 +1188,19 @@ mod tests {
         for encoding in [LE, BE] {
             let mut bytes = encoding.bom().to_vec();
             for unit in text.encode_utf16() {
-                bytes.extend(if encoding == LE { unit.to_le_bytes() } else { unit.to_be_bytes() });
+                bytes.extend(if encoding == LE {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
             }
             assert_eq!(scan(&dir.file(&bytes), encoding).unwrap(), expected);
         }
 
-        assert_eq!(scan(&dir.file(b""), Encoding::Utf8).unwrap(), FileScan { chars: 0, lines: 1 });
+        assert_eq!(
+            scan(&dir.file(b""), Encoding::Utf8).unwrap(),
+            FileScan { chars: 0, lines: 1 }
+        );
     }
 
     #[test]
@@ -1104,7 +1215,11 @@ mod tests {
             assert_eq!(serde_json::from_str::<Encoding>(name).unwrap(), value);
             assert_eq!(serde_json::to_string(&value).unwrap(), name);
         }
-        for (name, value) in [(r#""CRLF""#, Eol::Crlf), (r#""LF""#, Eol::Lf), (r#""CR""#, Eol::Cr)] {
+        for (name, value) in [
+            (r#""CRLF""#, Eol::Crlf),
+            (r#""LF""#, Eol::Lf),
+            (r#""CR""#, Eol::Cr),
+        ] {
             assert_eq!(serde_json::from_str::<Eol>(name).unwrap(), value);
             assert_eq!(serde_json::to_string(&value).unwrap(), name);
         }
@@ -1115,7 +1230,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(req.tail_offset, Some(7));
-        assert_eq!(req.expected_stamp, Some(FileStamp { size: 1, mtime_ms: 2.0 }));
+        assert_eq!(
+            req.expected_stamp,
+            Some(FileStamp {
+                size: 1,
+                mtime_ms: 2.0
+            })
+        );
 
         let chunk = FileChunk {
             text: "t".into(),
@@ -1123,7 +1244,10 @@ mod tests {
             eof: true,
             encoding: Encoding::Utf8,
             eol: Eol::Lf,
-            stamp: FileStamp { size: 1, mtime_ms: 2.0 },
+            stamp: FileStamp {
+                size: 1,
+                mtime_ms: 2.0,
+            },
         };
         let value = serde_json::to_value(&chunk).unwrap();
         assert_eq!(value["nextOffset"], 3);

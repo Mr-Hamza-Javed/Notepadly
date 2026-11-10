@@ -24,6 +24,26 @@ npm run app:dev      # run with hot reload
 npm run app:build    # build the exe and installer into src-tauri/target/release
 ```
 
+## Checks
+
+Every pull request runs these checks automatically, each shown separately on the PR:
+
+| Check | What it runs |
+| --- | --- |
+| Typecheck and build | `npm run build` (TypeScript + Vite) |
+| Unit tests | `npm test` (Vitest) |
+| Rust format | `cargo fmt --check` |
+| Rust lint (clippy) | `cargo clippy -- -D warnings` |
+| Rust tests | `cargo test --lib` |
+
+Run them locally before pushing:
+
+```bash
+npm run build
+npm test
+cd src-tauri && cargo fmt --check && cargo clippy --lib --all-targets -- -D warnings && cargo test --lib
+```
+
 ## Releasing a new version
 
 Push a version tag. GitHub Actions builds the installer and a portable exe and publishes them as a release. The version comes from the tag.

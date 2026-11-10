@@ -1,34 +1,104 @@
-# Quick checks on every push and pull request: typecheck, frontend build, Rust tests.
+# Checks that run on every pull request and every push to main.
+# Each job shows as its own check on the PR, so a failure names what broke.
 name: CI
 
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new commit on the same PR cancels the checks still running for the old one.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  check:
-    runs-on: windows-latest
+  typecheck:
+    name: Typecheck and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - run: npm ci
+      - name: TypeScript typecheck and Vite build
+        run: npm run build
 
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Vitest
+        run: npx vitest run --reporter=default --reporter=github-actions
+
+  rust-format:
+    name: Rust format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --check
 
+  rust-lint:
+    name: Rust lint (clippy)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          shared-key: windows-rust
+      # The Tauri crate embeds the built frontend, so it must exist to compile.
+      - run: npm ci
+      - run: npx vite build
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --lib --all-targets -- -D warnings
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck and build frontend
-        run: npm run build
-
-      - name: Rust tests
+  rust-tests:
+    name: Rust tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: windows-rust
+      - run: npm ci
+      - run: npx vite build
+      - name: cargo test
         working-directory: src-tauri
         run: cargo test --lib
