@@ -1,17 +1,20 @@
-# Builds the Windows installer and exe whenever a version tag is pushed,
-# then publishes them on a GitHub Release for that tag.
+# Builds the Windows installer and portable zip on GitHub and publishes them on a
+# Release for an existing tag. Run it by hand from the Actions tab.
 #
-#   git tag v0.2.0
-#   git push origin v0.2.0
+# Releases are normally built on the developer's PC instead, which is much faster
+# and signs the auto-update feed with the local key:
+#
+#   powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 0.2.0
+#   gh release create v0.2.0 release\0.2.0\* --title "Notepadly v0.2.0"
+#
+# This workflow no longer runs on tag pushes, so it can never replace files a
+# local build uploaded (their update signature would no longer match).
 #
 # The version inside the app is taken from the tag, so there is no need to
 # edit package.json, Cargo.toml or tauri.conf.json before releasing.
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:

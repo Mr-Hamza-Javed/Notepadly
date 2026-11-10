@@ -44,6 +44,7 @@ import {
   useApp,
 } from "./store";
 import type { Dialog, Settings, TabMeta } from "./types";
+import { markAsleep } from "../lib/enterAnimation";
 
 const TITLE_DEBOUNCE_MS = 250;
 const TITLE_MAX_DOC_CHARS = 256 * 1024;
@@ -631,10 +632,14 @@ function wireWindowEvents(): void {
       if (!state().settings.background || !(await ipc.isLastWindow().catch(() => false))) return;
       event.preventDefault();
       await resetForBackground();
-      await ipc.enterBackground().catch(async (error) => {
-        console.error("Notepadly: could not go to the background", error);
-        await win.destroy();
-      });
+      await ipc
+        .enterBackground()
+        // Hidden now: the open animation plays when the window comes back.
+        .then(markAsleep)
+        .catch(async (error) => {
+          console.error("Notepadly: could not go to the background", error);
+          await win.destroy();
+        });
     })
     .catch(warn("close listener failed"));
 
