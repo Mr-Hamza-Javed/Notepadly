@@ -1,5 +1,6 @@
 //! Notepadly backend: per-call file I/O, drafts and session, windows, fonts.
 
+mod background;
 mod files;
 mod fonts;
 mod store;
@@ -17,6 +18,11 @@ use tauri_plugin_window_state::StateFlags;
 
 const MAIN_WINDOW: &str = "main";
 const OPEN_PATHS_EVENT: &str = "open-paths";
+/// What the window-state plugin remembers. VISIBLE must stay out: the frontend
+/// shows the window after first paint.
+const WINDOW_STATE_FLAGS: StateFlags = StateFlags::SIZE
+    .union(StateFlags::POSITION)
+    .union(StateFlags::MAXIMIZED);
 
 /// Runs blocking work on the blocking pool, never on the main thread.
 async fn blocking<T: Send + 'static>(
@@ -235,6 +241,11 @@ fn on_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
     let Some(window) = window else { return };
     let state = app.state::<WindowPaths>();
     let label = window.label().to_owned();
+    // Waiting in the background after its last window closed: wake it first so
+    // the page can take the paths, then show it below.
+    if background::is_in_background(&window) && state.is_ready(&label) {
+        background::wake(&window);
+    }
     if !state.is_ready(&label) {
         // Frontend still booting: it drains these and shows the window itself.
         state.store(&label, paths);
@@ -249,6 +260,16 @@ fn on_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
 }
 
 pub fn run() {
+    // A second launch only forwards its arguments to the running instance. Windows
+    // gives the right to come to the front to the process the user just started,
+    // so hand it on; otherwise a window woken from the background opens behind.
+    #[cfg(windows)]
+    // SAFETY: plain Win32 call with a constant argument.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+            windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+        );
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             on_second_instance(app, argv, cwd)
@@ -256,9 +277,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
-            // VISIBLE must stay out: the frontend shows the window after first paint.
             tauri_plugin_window_state::Builder::new()
-                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+                .with_state_flags(WINDOW_STATE_FLAGS)
                 .with_filter(|label| label == MAIN_WINDOW)
                 .build(),
         )
@@ -296,6 +316,8 @@ pub fn run() {
             window_new,
             system_fonts,
             reveal_in_explorer,
+            background::is_last_window,
+            background::enter_background,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Notepadly");

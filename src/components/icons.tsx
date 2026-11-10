@@ -32,6 +32,7 @@ export const G = {
   formatting: 0xedc6,
   openFile: 0xe8a7,
   startup: 0xf5a7,
+  speed: 0xec4a,
   recent: 0xe823,
   spell: 0xf87b,
   autocorrect: 0xeb7e,

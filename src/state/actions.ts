@@ -504,6 +504,19 @@ async function prepareWindowClose(): Promise<boolean> {
   }
 }
 
+/**
+ * Puts the window into the state a fresh launch would show, so waking it from the
+ * background looks exactly like starting the app. prepareWindowClose has already
+ * stored or resolved every tab.
+ */
+async function resetForBackground(): Promise<void> {
+  useApp.setState({ view: "editor", dialog: null, find: { open: false, replace: false } });
+  if (isMainWindow && state().settings.startup === "continue") return; // the session is what comes back
+  const old = state().tabs.map((t) => t.id);
+  await newTab();
+  old.forEach(removeFromList);
+}
+
 async function closeWindow(): Promise<void> {
   await getCurrentWindow().close();
 }
@@ -607,7 +620,18 @@ function wireWindowEvents(): void {
 
   win
     .onCloseRequested(async (event) => {
-      if (!(await prepareWindowClose())) event.preventDefault();
+      if (!(await prepareWindowClose())) {
+        event.preventDefault();
+        return;
+      }
+      // Like Notepad: the last window hides and waits instead of quitting.
+      if (!state().settings.background || !(await ipc.isLastWindow().catch(() => false))) return;
+      event.preventDefault();
+      await resetForBackground();
+      await ipc.enterBackground().catch(async (error) => {
+        console.error("Notepadly: could not go to the background", error);
+        await win.destroy();
+      });
     })
     .catch(warn("close listener failed"));
 

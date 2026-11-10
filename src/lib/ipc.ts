@@ -68,6 +68,11 @@ export const ipc = {
   newWindow: (paths: string[]) => invoke<void>("window_new", { paths }),
   systemFonts: () => invoke<string[]>("system_fonts"),
   revealInExplorer: (path: string) => invoke<void>("reveal_in_explorer", { path }),
+
+  /** True when no other app window is on screen. */
+  isLastWindow: () => invoke<boolean>("is_last_window"),
+  /** Hides this window and suspends its webview; the next launch wakes it. */
+  enterBackground: () => invoke<void>("enter_background"),
 };
 
 /** Event carrying string[] of paths when a second launch forwards its argv. */
