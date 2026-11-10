@@ -35,7 +35,9 @@ pub fn draft_delete(base: &Path, id: &str) -> Result<(), String> {
 /// Ids are a single path component of `[A-Za-z0-9_-]`, so a hostile or corrupt
 /// id cannot leave the drafts folder or name a Windows device.
 fn draft_path(base: &Path, id: &str) -> Result<PathBuf, String> {
-    let safe_chars = id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    let safe_chars = id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
     let upper = id.to_ascii_uppercase();
     let device = RESERVED_NAMES.contains(&upper.as_str())
         || (upper.len() == 4
@@ -78,7 +80,9 @@ mod tests {
     #[test]
     fn rejects_path_traversal_and_devices() {
         let base = Path::new("base");
-        for bad in ["", "..", "../x", "a/b", r"a\b", "C:evil", "a.b", "NUL", "com1", "LPT9"] {
+        for bad in [
+            "", "..", "../x", "a/b", r"a\b", "C:evil", "a.b", "NUL", "com1", "LPT9",
+        ] {
             assert!(draft_path(base, bad).is_err(), "{bad:?} should be rejected");
         }
         assert_eq!(
@@ -97,7 +101,10 @@ mod tests {
 
         assert_eq!(draft_read(&base, "t1").unwrap(), None);
         draft_write(&base, "t1", "hello\nüñí").unwrap();
-        assert_eq!(draft_read(&base, "t1").unwrap().as_deref(), Some("hello\nüñí"));
+        assert_eq!(
+            draft_read(&base, "t1").unwrap().as_deref(),
+            Some("hello\nüñí")
+        );
         draft_delete(&base, "t1").unwrap();
         draft_delete(&base, "t1").unwrap();
         assert_eq!(draft_read(&base, "t1").unwrap(), None);

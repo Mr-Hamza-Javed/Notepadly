@@ -9,8 +9,20 @@ const FONTS_KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts";
 /// "Black", "Medium", "Condensed" and "Narrow" are left alone: Windows ships
 /// families whose real names end in them (Arial Black, Franklin Gothic Medium).
 const STYLE_WORDS: &[&str] = &[
-    "bold", "italic", "oblique", "regular", "light", "semilight", "semibold", "demibold", "thin",
-    "extralight", "ultralight", "extrabold", "ultrabold", "heavy",
+    "bold",
+    "italic",
+    "oblique",
+    "regular",
+    "light",
+    "semilight",
+    "semibold",
+    "demibold",
+    "thin",
+    "extralight",
+    "ultralight",
+    "extrabold",
+    "ultrabold",
+    "heavy",
 ];
 
 pub fn system_fonts() -> Vec<String> {
@@ -78,7 +90,14 @@ mod tests {
         ];
         assert_eq!(
             families(raw.iter().map(|s| s.to_string())),
-            ["Arial Black", "Bold", "Cambria", "Cambria Math", "Inter", "Segoe UI"]
+            [
+                "Arial Black",
+                "Bold",
+                "Cambria",
+                "Cambria Math",
+                "Inter",
+                "Segoe UI"
+            ]
         );
     }
 

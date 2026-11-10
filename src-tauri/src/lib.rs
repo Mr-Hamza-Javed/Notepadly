@@ -116,7 +116,11 @@ impl WindowPaths {
 
     fn store(&self, label: &str, paths: Vec<String>) {
         if !paths.is_empty() {
-            self.lock().pending.entry(label.to_owned()).or_default().extend(paths);
+            self.lock()
+                .pending
+                .entry(label.to_owned())
+                .or_default()
+                .extend(paths);
         }
     }
 
@@ -158,7 +162,10 @@ async fn window_new(
         .find(|w| w.label == MAIN_WINDOW)
         .cloned()
         .ok_or("main window config is missing")?;
-    config.label = format!("window-{}", state.next_id.fetch_add(1, Ordering::Relaxed) + 1);
+    config.label = format!(
+        "window-{}",
+        state.next_id.fetch_add(1, Ordering::Relaxed) + 1
+    );
     state.store(&config.label, paths);
     let built = WebviewWindowBuilder::from_config(&app, &config).and_then(|b| b.build());
     built.map(drop).map_err(|e| {
