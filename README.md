@@ -68,7 +68,7 @@ Notepadly never reads a whole file at once. It shows the first 256 KB straight a
 | First start after a restart (median of 3) | **185 ms** | 503 ms |
 | Memory with a window open | **70 MB** | 167 MB |
 | Memory while closed, waiting in the background | — | **14 MB** |
-| Download size | built in | **4.3 MB** installer |
+| Download size | built in | **5 MB** installer |
 
 Like Notepad, Notepadly stays ready in the background after you close its last window. It hides the window, puts its WebView2 to sleep and hands its memory back to Windows, so it waits at about 14 MB and then reappears in about 40 ms the next time you open it or a file. You can turn this off in Settings.
 
@@ -134,7 +134,8 @@ Open [`sample.md`](sample.md) in Notepadly to see all of them.
 - **Safe saves:** Notepadly writes to a temporary file, then swaps it in, so a crash never leaves a half-written file.
 - **Reloads changed files:** a clean tab reloads when the file changes on disk. If you have unsaved edits, Notepadly asks first.
 - **Restores your session:** unsaved notes and open tabs come back the next time you start the app.
-- **Small:** a 6.6 MB app and a 4.3 MB installer.
+- **Updates itself quietly:** the installed app checks GitHub Releases on a background thread, downloads a new version and installs it only after you close the window, once your notes are saved. Every update is signed and checked before it runs, and your notes, drafts and settings are never touched. You can turn this off in Settings.
+- **Small:** an 8.1 MB app and a 5 MB installer.
 
 ### 8. The Notepad you know
 

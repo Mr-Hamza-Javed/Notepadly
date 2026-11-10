@@ -25,6 +25,9 @@ pub fn enter_background(app: AppHandle, window: WebviewWindow) -> Result<(), Str
     let _ = app.save_window_state(WINDOW_STATE_FLAGS);
     window.hide().map_err(|e| e.to_string())?;
     set_asleep(&window, true);
+    // Every tab is stored now, so this is the safe moment for a downloaded update.
+    // The new version comes back up hidden, exactly where this one is going.
+    crate::autoupdate::install_if_ready(&app, true);
     Ok(())
 }
 

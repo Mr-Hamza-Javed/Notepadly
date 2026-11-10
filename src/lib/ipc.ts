@@ -73,7 +73,28 @@ export const ipc = {
   isLastWindow: () => invoke<boolean>("is_last_window"),
   /** Hides this window and suspends its webview; the next launch wakes it. */
   enterBackground: () => invoke<void>("enter_background"),
+
+  /** Turns the automatic update checks on or off. */
+  updateConfigure: (enabled: boolean) => invoke<UpdateStatus>("update_configure", { enabled }),
+  updateStatus: () => invoke<UpdateStatus>("update_status"),
+  /** Checks GitHub now and downloads a newer version in the background. */
+  updateCheckNow: () => invoke<UpdateStatus>("update_check_now"),
+  /** True when this launch is the hidden restart after a background update. */
+  launchedHidden: () => invoke<boolean>("launched_hidden"),
 };
+
+export type UpdatePhase = "idle" | "checking" | "upToDate" | "downloading" | "ready" | "available" | "error";
+
+export interface UpdateStatus {
+  phase: UpdatePhase;
+  /** The new version this status is about, if any. */
+  version: string | null;
+  message: string | null;
+  /** The running version. */
+  current: string;
+  /** False for the portable exe, which cannot install updates itself. */
+  canInstall: boolean;
+}
 
 /** Event carrying string[] of paths when a second launch forwards its argv. */
 export const OPEN_PATHS_EVENT = "open-paths";

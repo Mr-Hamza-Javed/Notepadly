@@ -1,5 +1,6 @@
 //! Notepadly backend: per-call file I/O, drafts and session, windows, fonts.
 
+mod autoupdate;
 mod background;
 mod files;
 mod fonts;
@@ -11,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::{
-    AppHandle, Emitter, EventTarget, Manager, State, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, EventTarget, Manager, RunEvent, State, WebviewWindow, WebviewWindowBuilder,
     WindowEvent,
 };
 use tauri_plugin_window_state::StateFlags;
@@ -276,6 +277,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(WINDOW_STATE_FLAGS)
@@ -284,9 +286,18 @@ pub fn run() {
         )
         .manage(WindowPaths::default())
         .setup(|app| {
+            // The restart after a background update comes back hidden, and must not
+            // reopen whatever file the old process was first started with.
+            let hidden = autoupdate::take_resume_marker(app.handle());
+            app.manage(autoupdate::AutoUpdate::new(hidden));
             let cwd = std::env::current_dir().unwrap_or_default();
-            let paths = paths_from_args(std::env::args().skip(1), &cwd);
+            let paths = if hidden {
+                Vec::new()
+            } else {
+                paths_from_args(std::env::args().skip(1), &cwd)
+            };
             app.state::<WindowPaths>().store(MAIN_WINDOW, paths);
+            autoupdate::start(app.handle().clone());
             if let Some(main) = app.get_webview_window(MAIN_WINDOW) {
                 use_sharp_icon(&main);
             }
@@ -318,9 +329,20 @@ pub fn run() {
             reveal_in_explorer,
             background::is_last_window,
             background::enter_background,
+            autoupdate::update_configure,
+            autoupdate::update_status,
+            autoupdate::update_check_now,
+            autoupdate::launched_hidden,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to start Notepadly");
+        .build(tauri::generate_context!())
+        .expect("failed to start Notepadly")
+        .run(|app, event| {
+            // With background mode off the app really quits; every window has
+            // already stored or resolved its tabs, so a waiting update can go in now.
+            if let RunEvent::Exit = event {
+                autoupdate::install_if_ready(app, false);
+            }
+        });
 }
 
 #[cfg(test)]

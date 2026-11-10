@@ -17,6 +17,8 @@ export interface Settings {
   startup: "continue" | "new";
   /** Hide instead of quitting when the last window closes, so the next launch is instant. */
   background: boolean;
+  /** Check GitHub for new versions and install them silently when Notepadly closes. */
+  autoUpdate: boolean;
   recentFiles: boolean;
   spellcheck: boolean;
   autocorrect: boolean;

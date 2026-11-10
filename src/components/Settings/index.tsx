@@ -1,6 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { ipc } from "../../lib/ipc";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { ipc, type UpdateStatus } from "../../lib/ipc";
+
+const RELEASES_URL = "https://github.com/Mr-Hamza-Javed/Notepadly/releases/latest";
 import { actions } from "../../state/actions";
 import { useApp } from "../../state/store";
 import type { Settings as SettingsModel, ThemeSetting } from "../../state/types";
@@ -189,7 +192,67 @@ function About() {
       <h2 className="about-h">About this app</h2>
       <p className="about-line">Notepadly</p>
       {version && <p className="about-line">{`Version ${version}`}</p>}
+      <UpdateLine />
     </aside>
+  );
+}
+
+function describeUpdate(s: UpdateStatus | null): string {
+  if (!s) return "";
+  switch (s.phase) {
+    case "checking":
+      return "Checking for updates…";
+    case "upToDate":
+      return "Notepadly is up to date.";
+    case "downloading":
+      return `Downloading version ${s.version}…`;
+    case "ready":
+      return `Version ${s.version} is ready. It installs when you close Notepadly; your notes and settings are kept.`;
+    case "available":
+      return `Version ${s.version} is available. This portable copy can't update itself.`;
+    case "error":
+      return "Couldn't check for updates. Try again later.";
+    default:
+      return "";
+  }
+}
+
+function UpdateLine() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    ipc
+      .updateStatus()
+      .then((s) => !dead && setStatus(s))
+      .catch(() => undefined);
+    return () => {
+      dead = true;
+    };
+  }, []);
+  const checkNow = () => {
+    setBusy(true);
+    setStatus((s) => (s ? { ...s, phase: "checking" } : s));
+    ipc
+      .updateCheckNow()
+      .then(setStatus)
+      .catch(() => setStatus((s) => (s ? { ...s, phase: "error" } : s)))
+      .finally(() => setBusy(false));
+  };
+  const text = describeUpdate(status);
+  return (
+    <>
+      {text && <p className="about-line about-update">{text}</p>}
+      {status?.phase === "available" ? (
+        <button type="button" className="about-link" onClick={() => void openUrl(RELEASES_URL)}>
+          Download the new version
+        </button>
+      ) : (
+        <button type="button" className="about-link" disabled={busy || status?.phase === "downloading"} onClick={checkNow}>
+          Check for updates
+        </button>
+      )}
+    </>
   );
 }
 
@@ -271,6 +334,13 @@ export default function Settings() {
               subtitle="Opens instantly next time. Uses little memory while closed."
               value={s.background}
               onChange={(v) => set("background", v)}
+            />
+            <ToggleCard
+              icon={<Icon cp={G.update} />}
+              title="Update automatically"
+              subtitle="Downloads new versions from GitHub in the background and installs them when you close Notepadly. Your notes and settings are kept."
+              value={s.autoUpdate}
+              onChange={(v) => set("autoUpdate", v)}
             />
             <ToggleCard icon={<Icon cp={G.recent} />} title="Recent Files" value={s.recentFiles} onChange={(v) => set("recentFiles", v)} />
 

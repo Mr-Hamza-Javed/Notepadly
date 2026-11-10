@@ -192,6 +192,10 @@ button.card-head:hover .exp-chev { background: var(--hover); }
 .about { padding-top: 14px; font-size: 14px; }
 .about-h { margin: 0 0 10px; font-size: 14px; line-height: 20px; font-weight: 600; }
 .about-line { margin: 0; line-height: 19px; }
+.about-update { margin-top: 10px; max-width: 280px; color: var(--text-2); }
+.about-link { margin-top: 6px; padding: 0; color: var(--accent); font-size: 14px; line-height: 20px; }
+.about-link:hover:not(:disabled) { text-decoration: underline; }
+.about-link:disabled { color: var(--text-disabled); }
 
 @media (max-width: 860px) {
   .settings-grid { grid-template-columns: minmax(0, 1fr); padding-right: 16px; }
