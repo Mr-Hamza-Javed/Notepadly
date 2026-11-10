@@ -2,6 +2,8 @@
 name = "notepadly"
 version = "0.1.0"
 description = "A fast Windows notepad with live Markdown"
+license = "Apache-2.0"
+authors = ["Hamza Javed"]
 edition = "2021"
 
 [lib]
