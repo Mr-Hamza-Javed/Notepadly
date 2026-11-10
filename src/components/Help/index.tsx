@@ -255,8 +255,9 @@ const SECTIONS: Section[] = [
           ]}
         />
         <p>
-          Insert a table from the toolbar's table button. While a cell is selected, <em>Edit table</em> adds or
-          deletes rows and columns.
+          Insert a table from the toolbar's table button. Right-click any cell, or use <em>Edit table</em> while a
+          cell is selected, to add or delete rows and columns. A table can't be inserted inside another table, so
+          the insert options are greyed out while the cursor is in one.
         </p>
       </>
     ),

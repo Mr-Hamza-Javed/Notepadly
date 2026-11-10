@@ -9,7 +9,7 @@ const SIZE = 5;
 
 type Cursor = { r: number; c: number } | "insert" | "edit";
 
-const EDIT_OPS: { id: string; label: string; op: Extract<FormatCommand, { type: "table-edit" }>["op"] }[] = [
+export const EDIT_OPS: { id: string; label: string; op: Extract<FormatCommand, { type: "table-edit" }>["op"] }[] = [
   { id: "ra", label: "Insert row above", op: "row-above" },
   { id: "rb", label: "Insert row below", op: "row-below" },
   { id: "cl", label: "Insert column left", op: "col-left" },
@@ -45,6 +45,8 @@ export function TablePicker({
   useDismiss(() => onClose("dismiss"), ignore);
 
   const insert = (rows: number, cols: number) => {
+    // A table inside a table would break the markdown of both.
+    if (inTable) return;
     onClose("select");
     engine.format({ type: "table-insert", rows, cols });
     focusEditorSoon();
@@ -68,7 +70,7 @@ export function TablePicker({
     if (k === "Escape" || k === "Tab") {
       onClose("dismiss");
     } else if (cursor === null) {
-      if (k.startsWith("Arrow")) setCursor({ r: 0, c: 0 });
+      if (k.startsWith("Arrow")) setCursor(inTable ? "edit" : { r: 0, c: 0 });
       else handled = false;
     } else if (typeof cursor === "object") {
       if (k === "ArrowRight") setCursor({ ...cursor, c: Math.min(SIZE - 1, cursor.c + 1) });
@@ -83,7 +85,7 @@ export function TablePicker({
       else if (k === "Enter" || k === " ") insert(3, 3);
       else handled = false;
     } else {
-      if (k === "ArrowUp") setCursor("insert");
+      if (k === "ArrowUp" && !inTable) setCursor("insert");
       else if (k === "ArrowRight" || k === "Enter" || k === " ") openEdit(true);
       else handled = false;
     }
@@ -114,8 +116,10 @@ export function TablePicker({
         data-kbd={kbd}
         onKeyDown={onKeyDown}
       >
-        <div className="table-title">{grid ? `${grid.r + 1} × ${grid.c + 1} table` : "Insert table"}</div>
-        <div className="table-grid" onPointerLeave={() => setCursor(null)}>
+        <div className={`table-title${inTable ? " disabled" : ""}`}>
+          {inTable ? "Can't insert a table inside a table" : grid ? `${grid.r + 1} × ${grid.c + 1} table` : "Insert table"}
+        </div>
+        <div className={`table-grid${inTable ? " disabled" : ""}`} aria-disabled={inTable || undefined} onPointerLeave={() => setCursor(null)}>
           {Array.from({ length: SIZE * SIZE }, (_, i) => {
             const r = Math.floor(i / SIZE);
             const c = i % SIZE;
@@ -126,6 +130,7 @@ export function TablePicker({
                 key={i}
                 className={`table-cell${on ? " on" : ""}${hot ? " hot" : ""}`}
                 onPointerEnter={() => {
+                  if (inTable) return;
                   setKbd(false);
                   setCursor({ r, c });
                   setEditAnchor(null);
@@ -137,9 +142,11 @@ export function TablePicker({
         </div>
         <div className="menu-sep" />
         <div
-          className={`menu-item${cursor === "insert" ? " hot" : ""}`}
+          className={`menu-item${cursor === "insert" ? " hot" : ""}${inTable ? " disabled" : ""}`}
           role="menuitem"
+          aria-disabled={inTable || undefined}
           onPointerMove={() => {
+            if (inTable) return;
             setKbd(false);
             setCursor("insert");
             setEditAnchor(null);
