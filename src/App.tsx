@@ -9,6 +9,7 @@ import { FormatToolbar } from "./components/FormatToolbar";
 import { G, Glyph } from "./components/icons";
 import { MenuBar } from "./components/MenuBar";
 import { StatusBar } from "./components/StatusBar";
+import { TableContextMenu } from "./components/TableContextMenu";
 import { TitleBar } from "./components/TitleBar";
 import { Tooltip } from "./components/Tooltip";
 
@@ -69,6 +70,7 @@ function App() {
         <EditorHost />
         <FindBar />
       </div>
+      <TableContextMenu />
       <StatusBar />
       <PageLayer />
       <Dialogs />

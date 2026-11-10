@@ -16,13 +16,13 @@ Open a `.md` file and see headings, tables, maths, diagrams and callouts formatt
 
 ## Why Notepadly?
 
-Windows Notepad is great for plain text. Open a Markdown file in it, though, and you get raw syntax. Notepadly keeps Notepad's look and feel and adds what Markdown writers need.
+Windows 11 Notepad is great for plain text. Open a Markdown file in it, though, and you get raw syntax. Notepadly keeps Notepad's look and feel and adds what Markdown writers need.
 
-![Same file in Windows Notepad and Notepadly](docs/screenshots/compare-overview.png)
+![Same file in Windows 11 Notepad (top) and Notepadly (bottom)](docs/screenshots/compare-overview.png)
 
 ### At a glance
 
-| | Windows Notepad | **Notepadly** |
+| | Windows 11 Notepad | **Notepadly** |
 | --- | :---: | :---: |
 | Windows 11 look (Mica, tabs, menus) | ✅ | ✅ |
 | Tabs, find and replace, zoom, word wrap, dark mode | ✅ | ✅ |
@@ -36,7 +36,7 @@ Windows Notepad is great for plain text. Open a Markdown file in it, though, and
 | Syntax-coloured code blocks | ❌ | ✅ **143 languages** |
 | Images, footnotes, wikilinks, tags, comments, front matter | ❌ | ✅ |
 
-The Notepad column shows what Windows Notepad displayed for the same `.md` file with its default settings (screenshots below).
+The Notepad column shows what Windows 11 Notepad displayed for the same `.md` file with its default settings (screenshots below).
 
 ## Benchmarks
 
@@ -49,9 +49,9 @@ All numbers were measured on the same PC, with the same file, one app at a time:
 
 ### Large files
 
-![Notepad still blank after 5 seconds, Notepadly showing the file after 1 second](docs/screenshots/compare-big-file.png)
+![Windows 11 Notepad still blank after 5 seconds, Notepadly showing the file after 1 second](docs/screenshots/compare-big-file.png)
 
-| Opening a 127 MB Markdown file | Windows Notepad | **Notepadly** | |
+| Opening a 127 MB Markdown file | Windows 11 Notepad | **Notepadly** | |
 | --- | ---: | ---: | --- |
 | Time until the text is on screen | 28.4 s | **under 1 s** | **~28× faster** |
 | Time the window is frozen ("Not Responding") | ~20 s | **0 s** | |
@@ -62,7 +62,7 @@ Notepadly never reads a whole file at once. It shows the first 256 KB straight a
 
 ### Startup and memory
 
-| | Windows Notepad | Notepadly |
+| | Windows 11 Notepad | Notepadly |
 | --- | ---: | ---: |
 | **Reopening** the app (median of 5) | 208 ms | **43 ms** (~5× faster) |
 | First start after a restart (median of 3) | **185 ms** | 503 ms |
@@ -84,13 +84,13 @@ You can also switch any tab between **Formatted**, **Markdown syntax** (all mark
 
 ### 2. Tables that stay tables
 
-![Tables in Windows Notepad and Notepadly](docs/screenshots/compare-tables.png)
+![Tables in Windows 11 Notepad (top) and Notepadly (bottom)](docs/screenshots/compare-tables.png)
 
-Click any cell and edit it in place. <kbd>Tab</kbd>, <kbd>Enter</kbd> and the arrow keys move between cells, and a new row is added when you reach the end. Bold text, code, links, highlights and `<kbd>` keys all render inside cells. Column alignment (`:---:`) is respected.
+Click any cell and edit it in place. <kbd>Tab</kbd>, <kbd>Enter</kbd> and the arrow keys move between cells, and a new row is added when you reach the end. Bold text, code, links, highlights and `<kbd>` keys all render inside cells. Column alignment (`:---:`) is respected. Right-click a cell to insert or delete rows and columns.
 
 ### 3. Maths and diagrams
 
-![Maths in Windows Notepad and Notepadly](docs/screenshots/compare-math.png)
+![Maths in Windows 11 Notepad (top) and Notepadly (bottom)](docs/screenshots/compare-math.png)
 
 - **Maths:** inline `$E = mc^2$` and block `$$ … $$` formulas, rendered with KaTeX.
 - **Mermaid:** flowcharts, sequence diagrams, pie charts and more, drawn from a ` ```mermaid ` block.

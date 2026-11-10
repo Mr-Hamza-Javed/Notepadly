@@ -391,6 +391,8 @@ a { color: var(--link); }
 }
 .table-cell.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 28%, transparent); }
 .table-pop .menu-sep { margin: 2px 0 3px; }
+.table-title.disabled { color: var(--text-disabled); }
+.table-grid.disabled { opacity: 0.4; pointer-events: none; }
 .table-pop[data-kbd="true"] .menu-item.hot { outline: 2px solid var(--focus-outer); outline-offset: -1px; }
 .table-pop[data-kbd="true"] .table-cell.hot { outline: 2px solid var(--focus-outer); outline-offset: 1px; }
 

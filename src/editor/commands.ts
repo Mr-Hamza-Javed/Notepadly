@@ -292,6 +292,8 @@ function tableTab(view: EditorView, dir: 1 | -1): boolean {
 function insertTable(view: EditorView, rows: number, cols: number): void {
   const { state } = view;
   const main = state.selection.main;
+  // Never nest a table inside another: the markdown of both would break.
+  if (locateTable(state, main.head)) return;
   const line = state.doc.lineAt(main.head);
   const headers = Array.from({ length: cols }, (_v, i) => ` Header ${i + 1} `);
   const body = [
