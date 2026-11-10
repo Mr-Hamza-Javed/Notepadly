@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b8fd6"/>
+      <stop offset="1" stop-color="#1fb5a8"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="160" rx="16" fill="url(#g)"/>
+  <rect x="112" y="28" width="96" height="104" rx="8" fill="#ffffff" opacity="0.95"/>
+  <rect x="126" y="50" width="68" height="6" rx="3" fill="#2b8fd6"/>
+  <rect x="126" y="66" width="68" height="6" rx="3" fill="#9cc9ea"/>
+  <rect x="126" y="82" width="52" height="6" rx="3" fill="#9cc9ea"/>
+  <rect x="126" y="98" width="60" height="6" rx="3" fill="#9cc9ea"/>
+  <text x="160" y="152" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="#ffffff">Notepadly</text>
+</svg>

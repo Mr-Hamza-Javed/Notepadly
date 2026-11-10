@@ -1,0 +1,358 @@
+/* Editor surface. Everything is driven by CSS variables, so a theme flip rebuilds nothing.
+   Selectors use .cm-editor.notepadly-cm to outrank CodeMirror's injected base theme. */
+.notepadly-cm {
+  --nl-sel: var(--sel, color-mix(in srgb, var(--accent, #005fb8) 34%, transparent));
+  --nl-fg: var(--text, #1b1b1b);
+  --nl-dim: color-mix(in srgb, var(--nl-fg) 52%, transparent);
+  --nl-faint: color-mix(in srgb, var(--nl-fg) 7%, transparent);
+  --nl-rule: color-mix(in srgb, var(--nl-fg) 22%, transparent);
+  --nl-link: var(--link, #005fb8);
+  --nl-accent: var(--accent, #005fb8);
+  --nl-mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+  --tok-keyword: #8f08c4;
+  --tok-string: #a31515;
+  --tok-number: #098658;
+  --tok-type: #267f99;
+  --tok-function: #795e26;
+  --tok-comment: #008000;
+  --tok-variable: #001080;
+}
+
+:root[data-theme="dark"] .notepadly-cm {
+  --tok-keyword: #c586c0;
+  --tok-string: #ce9178;
+  --tok-number: #b5cea8;
+  --tok-type: #4ec9b0;
+  --tok-function: #dcdcaa;
+  --tok-comment: #6a9955;
+  --tok-variable: #9cdcfe;
+}
+
+.cm-editor.notepadly-cm {
+  height: 100%;
+  background: var(--editor, transparent);
+  color: var(--nl-fg);
+}
+
+.cm-editor.notepadly-cm.cm-focused {
+  outline: none;
+}
+
+.cm-editor.notepadly-cm .cm-scroller {
+  font-family: var(--nl-font-family, inherit);
+  font-size: var(--nl-font-size, 14.667px);
+  font-weight: var(--nl-font-weight, 400);
+  line-height: 1.5;
+  overflow: auto;
+}
+
+.cm-editor.notepadly-cm .cm-content {
+  padding: 16px 16px;
+  caret-color: var(--nl-fg);
+}
+
+.cm-editor.notepadly-cm .cm-line {
+  padding: 0;
+}
+
+.cm-editor.notepadly-cm .cm-content ::selection {
+  background: var(--nl-sel);
+}
+
+.cm-editor.notepadly-cm .cm-cursor {
+  border-left-color: var(--nl-fg);
+}
+
+/* Find */
+.notepadly-cm .cm-find-match {
+  background: color-mix(in srgb, #ffc83d 45%, transparent);
+  border-radius: 2px;
+}
+.notepadly-cm .cm-find-current {
+  background: color-mix(in srgb, #ff8c00 70%, transparent);
+  border-radius: 2px;
+}
+
+/* Headings. Sizes sit on the whole line so raw and rendered states have one height. */
+.notepadly-cm .cm-md-h { font-weight: 700; line-height: 1.3; }
+.notepadly-cm .cm-md-h1 { font-size: 2em; }
+.notepadly-cm .cm-md-h2 { font-size: 1.5em; }
+.notepadly-cm .cm-md-h3 { font-size: 1.25em; }
+.notepadly-cm .cm-md-h4 { font-size: 1.1em; }
+.notepadly-cm .cm-md-h5 { font-size: 1em; }
+.notepadly-cm .cm-md-h6 { font-size: 0.9em; color: var(--nl-dim); }
+
+/* Spans */
+.notepadly-cm .cm-md-mark { color: var(--nl-dim); font-weight: inherit; }
+.notepadly-cm .cm-md-strong { font-weight: 700; }
+.notepadly-cm .cm-md-em { font-style: italic; }
+.notepadly-cm .cm-md-strike { text-decoration: line-through; }
+.notepadly-cm .cm-md-highlight { background: color-mix(in srgb, #ffd83d 45%, transparent); border-radius: 2px; }
+.notepadly-cm .cm-md-code {
+  font-family: var(--nl-mono);
+  font-size: 0.92em;
+  background: var(--nl-faint);
+  border-radius: 3px;
+}
+.notepadly-cm .cm-md-sub { vertical-align: sub; font-size: 0.8em; line-height: 0; }
+.notepadly-cm .cm-md-sup { vertical-align: super; font-size: 0.8em; line-height: 0; }
+.notepadly-cm .cm-md-u { text-decoration: underline; text-underline-offset: 2px; }
+.notepadly-cm .cm-md-small { font-size: 0.85em; }
+/* Keyboard keys, inline and in table cells. */
+.notepadly-cm .cm-md-kbd,
+.notepadly-cm .cm-md-table kbd {
+  font-family: var(--nl-mono);
+  font-size: 0.85em;
+  padding: 1px 6px;
+  border: 1px solid var(--nl-rule);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--nl-faint);
+  white-space: nowrap;
+}
+.notepadly-cm .cm-md-html { color: var(--tok-type); font-family: var(--nl-mono); font-size: 0.92em; }
+.notepadly-cm .cm-md-html-block { color: var(--tok-type); font-family: var(--nl-mono); font-size: 0.92em; }
+.notepadly-cm .cm-md-comment { color: var(--nl-dim); font-style: italic; }
+.notepadly-cm .cm-md-link { color: var(--nl-link); text-decoration: underline; text-underline-offset: 2px; }
+.notepadly-cm .cm-md-linkdef { color: var(--nl-dim); }
+.notepadly-cm .cm-md-tag {
+  color: var(--nl-accent);
+  background: color-mix(in srgb, var(--nl-accent) 14%, transparent);
+  border-radius: 999px;
+  padding: 0 0.45em;
+}
+.notepadly-cm .cm-md-footnote {
+  color: var(--nl-link);
+  vertical-align: super;
+  font-size: 0.75em;
+  line-height: 0;
+}
+.notepadly-cm .cm-md-footnote-label { color: var(--nl-dim); font-weight: 600; }
+.notepadly-cm .cm-md-math-source { font-family: var(--nl-mono); font-size: 0.92em; color: var(--tok-type); }
+.notepadly-cm .cm-md-math-raw { font-family: var(--nl-mono); font-size: 0.92em; color: var(--tok-type); }
+.notepadly-cm .cm-md-table-raw { font-family: var(--nl-mono); font-size: 0.92em; }
+.notepadly-cm .cm-md-math-inline { padding: 0 1px; }
+.notepadly-cm .cm-md-pending { color: var(--nl-dim); font-family: var(--nl-mono); font-size: 0.92em; }
+.notepadly-cm .cm-md-render-error { color: #c42b1c; font-family: var(--nl-mono); font-size: 0.92em; white-space: pre-wrap; }
+
+/* Lists */
+.notepadly-cm .cm-md-listmark { color: var(--nl-dim); }
+.notepadly-cm .cm-md-bullet { display: inline-block; min-width: 0.7em; text-align: center; font-weight: 700; }
+.notepadly-cm .cm-md-checkbox {
+  width: 1em;
+  height: 1em;
+  margin: 0 0.15em 0 0;
+  vertical-align: -0.12em;
+  accent-color: var(--nl-accent);
+  cursor: pointer;
+}
+.notepadly-cm .cm-md-task-done { color: var(--nl-dim); }
+
+/* Blockquotes: one 3px bar per nesting level. */
+.notepadly-cm .cm-md-quote {
+  --bars: repeating-linear-gradient(90deg, var(--nl-rule) 0 3px, transparent 3px 16px);
+  background-image: var(--bars);
+  background-repeat: no-repeat;
+}
+.cm-editor.notepadly-cm .cm-line.cm-md-q1 { padding-left: 16px; background-size: 16px 100%; }
+.cm-editor.notepadly-cm .cm-line.cm-md-q2 { padding-left: 32px; background-size: 32px 100%; }
+.cm-editor.notepadly-cm .cm-line.cm-md-q3 { padding-left: 48px; background-size: 48px 100%; }
+.cm-editor.notepadly-cm .cm-line.cm-md-q4 { padding-left: 64px; background-size: 64px 100%; }
+
+/* Right-to-left quotes and callouts: the bar sits on the right, next to where text starts. */
+.cm-editor.notepadly-cm .cm-line.cm-md-quote:dir(rtl) {
+  background-position: right top;
+  padding-left: 0;
+}
+.cm-editor.notepadly-cm .cm-line.cm-md-quote:not(.cm-md-callout):dir(rtl) {
+  --bars: repeating-linear-gradient(270deg, var(--nl-rule) 0 3px, transparent 3px 16px);
+}
+.cm-editor.notepadly-cm .cm-line.cm-md-q1:dir(rtl) { padding-right: 16px; }
+.cm-editor.notepadly-cm .cm-line.cm-md-q2:dir(rtl) { padding-right: 32px; }
+.cm-editor.notepadly-cm .cm-line.cm-md-q3:dir(rtl) { padding-right: 48px; }
+.cm-editor.notepadly-cm .cm-line.cm-md-q4:dir(rtl) { padding-right: 64px; }
+.cm-editor.notepadly-cm .cm-line.cm-md-callout:dir(rtl) { padding-left: 16px; padding-right: 20px; }
+
+/* Callouts */
+.notepadly-cm .cm-md-callout {
+  --callout: #086ddd;
+  --bars: linear-gradient(var(--callout), var(--callout));
+  background-color: color-mix(in srgb, var(--callout) 11%, transparent);
+  background-size: 3px 100%;
+}
+/* Callout box: thin accent bar, roomy padding, rounded ends. Beats the .cm-md-qN rules,
+   which would otherwise widen the bar to the full indent and glue the text to it. */
+.cm-editor.notepadly-cm .cm-line.cm-md-callout {
+  background-size: 3px 100%;
+  background-repeat: no-repeat;
+  padding-left: 20px;
+  padding-right: 16px;
+}
+.cm-editor.notepadly-cm .cm-line.cm-md-callout.cm-md-q2 { padding-left: 36px; }
+.cm-editor.notepadly-cm .cm-line.cm-md-callout.cm-md-q3 { padding-left: 52px; }
+.cm-editor.notepadly-cm .cm-line.cm-md-callout-title {
+  padding-top: 10px;
+  padding-bottom: 4px;
+  border-top-left-radius: 4px;
+  border-top-right-radius: 6px;
+}
+.cm-editor.notepadly-cm .cm-line.cm-md-callout-last {
+  padding-bottom: 10px;
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 6px;
+}
+.notepadly-cm .cm-md-callout-tip,
+.notepadly-cm .cm-md-callout-hint,
+.notepadly-cm .cm-md-callout-success,
+.notepadly-cm .cm-md-callout-check,
+.notepadly-cm .cm-md-callout-done { --callout: #08a04b; }
+.notepadly-cm .cm-md-callout-warning,
+.notepadly-cm .cm-md-callout-caution,
+.notepadly-cm .cm-md-callout-attention { --callout: #d97706; }
+.notepadly-cm .cm-md-callout-danger,
+.notepadly-cm .cm-md-callout-error,
+.notepadly-cm .cm-md-callout-failure,
+.notepadly-cm .cm-md-callout-fail,
+.notepadly-cm .cm-md-callout-bug { --callout: #d13438; }
+.notepadly-cm .cm-md-callout-question,
+.notepadly-cm .cm-md-callout-help,
+.notepadly-cm .cm-md-callout-faq { --callout: #ca8a04; }
+.notepadly-cm .cm-md-callout-example { --callout: #7c3aed; }
+.notepadly-cm .cm-md-callout-quote,
+.notepadly-cm .cm-md-callout-cite { --callout: #808080; }
+.notepadly-cm .cm-md-callout-title { font-weight: 600; }
+.notepadly-cm .cm-md-callout-head { color: var(--callout); }
+.notepadly-cm .cm-md-callout-icon {
+  font-family: var(--font-icons, "Segoe Fluent Icons", "Segoe MDL2 Assets");
+  font-weight: 400;
+  margin-right: 0.5em;
+  vertical-align: -0.1em;
+}
+.notepadly-cm .cm-md-callout-default { margin-right: 0.4em; }
+.notepadly-cm .cm-md-callout-fold {
+  font-family: var(--font-icons, "Segoe Fluent Icons", "Segoe MDL2 Assets");
+  font-size: 0.7em;
+  font-weight: 400;
+  display: inline-block;
+  margin-right: 0.6em;
+  cursor: pointer;
+  transition: transform 0.12s;
+}
+.notepadly-cm .cm-md-callout-fold.is-folded { transform: rotate(-90deg); }
+
+/* Code */
+.cm-editor.notepadly-cm .cm-line.cm-md-codeblock {
+  font-family: var(--nl-mono);
+  font-size: 0.92em;
+  background: var(--nl-faint);
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.notepadly-cm .cm-md-codeblock-first { border-radius: 6px 6px 0 0; }
+.notepadly-cm .cm-md-codeblock-last { border-radius: 0 0 6px 6px; }
+.notepadly-cm .cm-md-code-label { color: var(--nl-dim); font-size: 0.85em; }
+
+.notepadly-cm .tok-keyword,
+.notepadly-cm .tok-operatorKeyword { color: var(--tok-keyword); }
+.notepadly-cm .tok-string,
+.notepadly-cm .tok-string2 { color: var(--tok-string); }
+.notepadly-cm .tok-number,
+.notepadly-cm .tok-bool,
+.notepadly-cm .tok-atom { color: var(--tok-number); }
+.notepadly-cm .tok-typeName,
+.notepadly-cm .tok-className,
+.notepadly-cm .tok-namespace { color: var(--tok-type); }
+.notepadly-cm .tok-macroName,
+.notepadly-cm .tok-variableName2 { color: var(--tok-function); }
+.notepadly-cm .tok-propertyName,
+.notepadly-cm .tok-variableName { color: var(--tok-variable); }
+.notepadly-cm .tok-comment { color: var(--tok-comment); font-style: italic; }
+
+/* Live preview styles Markdown itself, so its tokens must not recolour prose. */
+.notepadly-cm.cm-mode-formatted .cm-line:not(.cm-md-codeblock) [class*="tok-"] {
+  color: inherit;
+  font-style: inherit;
+}
+
+/* Syntax mode: plain text size, with markers tinted. */
+.notepadly-cm.cm-mode-syntax .tok-heading { font-weight: 700; }
+.notepadly-cm.cm-mode-syntax .tok-strong { font-weight: 700; }
+.notepadly-cm.cm-mode-syntax .tok-emphasis { font-style: italic; }
+.notepadly-cm.cm-mode-syntax .tok-strikethrough { text-decoration: line-through; }
+.notepadly-cm.cm-mode-syntax .tok-meta { color: var(--nl-dim); }
+.notepadly-cm.cm-mode-syntax .tok-link,
+.notepadly-cm.cm-mode-syntax .tok-url { color: var(--nl-link); }
+.notepadly-cm.cm-mode-syntax .tok-labelName { color: var(--nl-accent); }
+
+/* Frontmatter */
+.cm-editor.notepadly-cm .cm-line.cm-md-frontmatter {
+  background: var(--nl-faint);
+  color: var(--nl-dim);
+  font-size: 0.92em;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.notepadly-cm .cm-md-fm-key { color: var(--nl-fg); font-weight: 600; }
+
+/* Block widgets */
+.notepadly-cm .cm-md-hr { height: 1.5em; display: flex; align-items: center; cursor: text; }
+.notepadly-cm .cm-md-hr hr { flex: 1; height: 1px; margin: 0; border: 0; background: var(--nl-rule); }
+
+.notepadly-cm .cm-md-table { padding: 4px 0 8px; overflow-x: auto; cursor: text; }
+.notepadly-cm .cm-md-table table { border-collapse: collapse; }
+.notepadly-cm .cm-md-table th,
+.notepadly-cm .cm-md-table td {
+  border: 1px solid var(--nl-rule);
+  padding: 4px 10px;
+  min-width: 48px;
+  text-align: left;
+}
+.notepadly-cm .cm-md-table th { font-weight: 700; background: var(--nl-faint); }
+.notepadly-cm .cm-md-table code {
+  font-family: var(--nl-mono);
+  font-size: 0.92em;
+  background: var(--nl-faint);
+  border-radius: 3px;
+}
+.notepadly-cm .cm-md-table mark { background: color-mix(in srgb, #ffd83d 45%, transparent); color: inherit; }
+.notepadly-cm .cm-md-table a { color: var(--nl-link); text-decoration: underline; }
+
+/* Cells are edited in place; the one being edited shows its markdown. */
+.notepadly-cm .cm-md-table th,
+.notepadly-cm .cm-md-table td { outline: none; cursor: text; white-space: pre-wrap; }
+.notepadly-cm .cm-md-table .is-editing {
+  box-shadow: inset 0 0 0 2px var(--nl-accent);
+}
+
+.notepadly-cm .cm-md-math-block,
+.notepadly-cm .cm-md-mermaid { position: relative; padding: 6px 0; text-align: center; overflow-x: auto; cursor: default; }
+.notepadly-cm .cm-md-hr { cursor: default; }
+.notepadly-cm .cm-md-edit-source {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--nl-faint);
+  color: var(--nl-dim);
+  font: 14px var(--font-icons, "Segoe Fluent Icons", "Segoe MDL2 Assets");
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.notepadly-cm .cm-md-math-block:hover .cm-md-edit-source,
+.notepadly-cm .cm-md-mermaid:hover .cm-md-edit-source { opacity: 1; }
+.notepadly-cm .cm-md-edit-source:hover { color: var(--nl-accent); }
+.notepadly-cm .cm-md-image { cursor: default; }
+.notepadly-cm .cm-md-mermaid svg { max-width: 100%; height: auto; }
+
+.notepadly-cm .cm-md-image { max-width: 100%; height: auto; vertical-align: bottom; border-radius: 2px; }
+.notepadly-cm .cm-md-image-broken { min-width: 24px; min-height: 24px; outline: 1px dashed var(--nl-rule); }
+.notepadly-cm .cm-md-embed {
+  color: var(--nl-link);
+  background: var(--nl-faint);
+  border-radius: 4px;
+  padding: 1px 6px;
+}

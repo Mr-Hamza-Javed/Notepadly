@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Notepadly editor harness</title>
+    <style>
+      html, body { height: 100%; margin: 0; background: var(--editor); color: var(--text); font-family: "Segoe UI", sans-serif; }
+      body { display: flex; flex-direction: column; }
+      #bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px; font-size: 12px; border-bottom: 1px solid var(--hairline); }
+      #bar output { margin-left: auto; font-variant-numeric: tabular-nums; }
+      #host { flex: 1; min-height: 0; position: relative; }
+      #host > * { height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <button data-action="sample">Sample</button>
+      <button data-action="stress">Stress 10 MB</button>
+      <button data-action="formatted">Formatted</button>
+      <button data-action="syntax">Syntax</button>
+      <button data-action="plain">Plain</button>
+      <button data-action="theme">Theme</button>
+      <button data-action="wrap">Wrap</button>
+      <button data-action="measure">Measure keystrokes</button>
+      <output id="status"></output>
+    </div>
+    <div id="host"></div>
+    <script type="module" src="./harness.ts"></script>
+  </body>
+</html>

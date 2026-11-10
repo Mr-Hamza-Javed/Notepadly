@@ -1,0 +1,95 @@
+# Builds the Windows installer and exe whenever a version tag is pushed,
+# then publishes them on a GitHub Release for that tag.
+#
+#   git tag v0.2.0
+#   git push origin v0.2.0
+#
+# The version inside the app is taken from the tag, so there is no need to
+# edit package.json, Cargo.toml or tauri.conf.json before releasing.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set app version from tag
+        shell: pwsh
+        run: |
+          $version = $env:TAG -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$') {
+            throw "Tag '$env:TAG' is not a version like v1.2.3"
+          }
+          node -e "
+            const fs = require('fs');
+            const v = process.argv[1];
+            for (const f of ['package.json', 'src-tauri/tauri.conf.json']) {
+              const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+              j.version = v;
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n');
+            }
+            const cargo = 'src-tauri/Cargo.toml';
+            const t = fs.readFileSync(cargo, 'utf8').replace(/^version = \".*\"/m, 'version = \"' + v + '\"');
+            fs.writeFileSync(cargo, t);
+          " $version
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ env.TAG }}
+          releaseName: Notepadly ${{ env.TAG }}
+          releaseBody: |
+            Notepadly ${{ env.APP_VERSION }} for Windows.
+
+            Download **Notepadly_${{ env.APP_VERSION }}_x64-setup.exe** below and run it to install.
+          releaseDraft: false
+          prerelease: ${{ contains(env.TAG, '-') }}
+
+      - name: Attach the standalone exe
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $exe = "src-tauri/target/release/notepadly.exe"
+          $named = "Notepadly_${env:APP_VERSION}_x64-portable.exe"
+          Copy-Item $exe $named
+          gh release upload $env:TAG $named --clobber

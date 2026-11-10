@@ -1,0 +1,143 @@
+/* All Notepadly colours and shared metrics. Values sampled from the reference frames (see docs/SPEC.md). */
+:root {
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --font-icons: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  --strip-h: 32px;
+  --bar-h: 32px;
+  --status-h: 30px;
+  --ease-out: cubic-bezier(0.1, 0.9, 0.2, 1);
+  --close-hover: #c42b1c;
+  --close-press: #b0281a;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --strip: #212121;
+  --surface: #2c2c2c;
+  --editor: #282828;
+  --status: #2c2c2c;
+  --hairline: #1d1d1d;
+  --menu: #2c2c2c;
+  --menu-border: #1a1a1a;
+  --menu-sep: #363636;
+  --accent: #60cdff;
+  --accent-hover: #5abce9;
+  --accent-press: #52a9d2;
+  --on-accent: #000000;
+  --text: #f0f0f0;
+  --text-2: #c9c9c9;
+  --text-3: #9d9d9d;
+  --text-disabled: #6f6f6f;
+  --glyph: #d6d6d6;
+  --hover: rgba(255, 255, 255, 0.085);
+  --press: rgba(255, 255, 255, 0.05);
+  --active-fill: rgba(255, 255, 255, 0.1);
+  --tab-hover: rgba(255, 255, 255, 0.06);
+  --tab-sep: rgba(255, 255, 255, 0.14);
+  --focus-outer: #ffffff;
+  --focus-inner: rgba(0, 0, 0, 0.7);
+  --shadow-popup: 0 8px 16px rgba(0, 0, 0, 0.36);
+  --shadow-dialog: 0 16px 32px rgba(0, 0, 0, 0.42);
+  --smoke: rgba(0, 0, 0, 0.3);
+  --dialog: #2b2b2b;
+  --dialog-footer: #202020;
+  --control: #373739;
+  --control-hover: #3e3e40;
+  --control-press: #323234;
+  --control-border: #403e41;
+  --control-border-b: #4b494c;
+  --input: #333335;
+  --input-focus: #1f1f1f;
+  --input-border-b: #9a9a9a;
+  --page: #1f1f21;
+  --page-grad:
+    radial-gradient(60% 55% at 12% 10%, #16232d 0%, rgba(22, 35, 45, 0) 100%),
+    radial-gradient(55% 60% at 88% 92%, #231f28 0%, rgba(35, 31, 40, 0) 100%),
+    #1f1f21;
+  --card: rgba(255, 255, 255, 0.053);
+  --card-border: rgba(0, 0, 0, 0.22);
+  --card-sub: rgba(255, 255, 255, 0.022);
+  --card-div: rgba(0, 0, 0, 0.3);
+  --link: #60cdff;
+  --toggle-off-border: #919193;
+  --toggle-off-knob: #cfcfd1;
+  --toggle-on-knob: #000000;
+  --radio-border: #919193;
+  --radio-fill: rgba(0, 0, 0, 0.18);
+  --radio-dot: #000000;
+  --scroll-thumb: rgba(255, 255, 255, 0.42);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.6);
+  --cell-border: #6a6a6a;
+  --cell-fill: rgba(255, 255, 255, 0.03);
+  --tooltip: #2c2c2c;
+  --warn-bar: #3a3323;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --strip: #d2dbea;
+  --surface: #f2f6f9;
+  --editor: #f9f9f9;
+  --status: #f3f4f7;
+  --hairline: #eaebed;
+  --menu: #f9f9f9;
+  --menu-border: #e2e2e4;
+  --menu-sep: #e9e9eb;
+  --accent: #005fb8;
+  --accent-hover: #1a6fc0;
+  --accent-press: #2f7dc6;
+  --on-accent: #ffffff;
+  --text: #1b1b1b;
+  --text-2: #5d5d5d;
+  --text-3: #7c7c7c;
+  --text-disabled: #a4a4a4;
+  --glyph: #2b2b2b;
+  --hover: rgba(0, 0, 0, 0.055);
+  --press: rgba(0, 0, 0, 0.035);
+  --active-fill: rgba(0, 0, 0, 0.075);
+  --tab-hover: rgba(255, 255, 255, 0.4);
+  --tab-sep: rgba(0, 0, 0, 0.16);
+  --focus-outer: #000000;
+  --focus-inner: rgba(255, 255, 255, 0.75);
+  --shadow-popup: 0 8px 16px rgba(0, 0, 0, 0.14);
+  --shadow-dialog: 0 16px 32px rgba(0, 0, 0, 0.22);
+  --smoke: rgba(0, 0, 0, 0.3);
+  --dialog: #fbfbfb;
+  --dialog-footer: #f3f3f3;
+  --control: #fbfbfb;
+  --control-hover: #f6f6f6;
+  --control-press: #f2f2f2;
+  --control-border: #e3e3e3;
+  --control-border-b: #cfcfcf;
+  --input: #fdfdfd;
+  --input-focus: #ffffff;
+  --input-border-b: #868686;
+  --page: #f0f3f8;
+  --page-grad:
+    radial-gradient(45% 40% at 26% 36%, #eef5f2 0%, rgba(238, 245, 242, 0) 100%),
+    radial-gradient(50% 50% at 86% 88%, #f6eff5 0%, rgba(246, 239, 245, 0) 100%),
+    #f0f3f8;
+  --card: rgba(255, 255, 255, 0.75);
+  --card-border: #e4e5e7;
+  --card-sub: rgba(255, 255, 255, 0.3);
+  --card-div: #e4e5e7;
+  --link: #005fb8;
+  --toggle-off-border: #868686;
+  --toggle-off-knob: #5c5c5c;
+  --toggle-on-knob: #ffffff;
+  --radio-border: #8b8b8b;
+  --radio-fill: rgba(0, 0, 0, 0.03);
+  --radio-dot: #ffffff;
+  --scroll-thumb: rgba(0, 0, 0, 0.4);
+  --scroll-thumb-hover: rgba(0, 0, 0, 0.58);
+  --cell-border: #949494;
+  --cell-fill: rgba(0, 0, 0, 0.018);
+  --tooltip: #f9f9f9;
+  --warn-bar: #fff4ce;
+}
+
+/* With Mica active the title strip lets the system backdrop through. */
+:root[data-mica="on"] {
+  --strip: transparent;
+}

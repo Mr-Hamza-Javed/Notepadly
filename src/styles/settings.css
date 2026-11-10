@@ -1,0 +1,199 @@
+/* Loaded with the lazy Settings chunk only. */
+.settings-page {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--page-grad);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+}
+.settings-title {
+  flex: none;
+  height: var(--strip-h);
+  display: flex;
+  align-items: stretch;
+}
+.settings-back {
+  flex: none;
+  width: 34px;
+  height: 28px;
+  margin: 2px 0 0 2px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--glyph);
+}
+.settings-back:hover { background: var(--hover); }
+.settings-back:active { background: var(--press); }
+.settings-appicon { flex: none; display: flex; align-items: center; padding-left: 9px; }
+.settings-appname {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding-left: 15px;
+  font-size: 12px;
+  line-height: 16px;
+}
+.settings-drag { flex: 1 1 auto; }
+:root[data-focused="false"] .settings-appname,
+:root[data-focused="false"] .settings-back { color: var(--text-3); }
+
+.settings-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  column-gap: 56px;
+  padding: 0 0 32px 49px;
+}
+.settings-h1 {
+  grid-column: 1 / -1;
+  margin: 20px 0 7px;
+  font: 600 40px/52px var(--font-display);
+}
+.settings-col { min-width: 0; }
+.settings-label {
+  margin: 14px 0 11px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+}
+
+.card {
+  margin: 0 0 6px 2px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 4px;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 62px;
+  padding: 0 11px 0 15px;
+  text-align: left;
+  border-radius: 3px;
+}
+.card-icon { flex: none; width: 32px; display: flex; align-items: center; color: var(--text); }
+.card-text { flex: 1 1 auto; min-width: 0; }
+.card-title { font-size: 14px; line-height: 20px; color: var(--text); }
+.card-sub { font-size: 12px; line-height: 16px; color: var(--text-2); }
+
+.exp-chev {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin-right: -3px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--glyph);
+}
+button.card-head:hover .exp-chev { background: var(--hover); }
+.exp-body { background: var(--card-sub); border-top: 1px solid var(--card-div); border-radius: 0 0 3px 3px; }
+
+.radio-group { padding: 4px 0 9px 46px; display: flex; flex-direction: column; }
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  height: 39px;
+  text-align: left;
+  border-radius: 4px;
+  padding-right: 8px;
+  font-size: 14px;
+}
+.radio-mark {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--radio-border);
+  background: var(--radio-fill);
+  display: block;
+  transition: border-width 120ms var(--ease-out);
+}
+.radio:hover .radio-mark { background: var(--hover); }
+.radio[aria-checked="true"] .radio-mark,
+.radio[aria-checked="true"]:hover .radio-mark {
+  border: 5px solid var(--accent);
+  background: var(--radio-dot);
+}
+
+.font-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 51px 0 47px;
+}
+.font-row + .font-row, .font-sample { border-top: 1px solid var(--card-div); }
+.font-row .select { width: 192px; height: 30px; }
+.font-sample {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 76px;
+  padding: 8px 24px;
+  text-align: center;
+  overflow: hidden;
+}
+
+.toggle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  height: 32px;
+  border-radius: 4px;
+  font-size: 14px;
+}
+.toggle-track {
+  position: relative;
+  display: block;
+  width: 40px;
+  height: 20px;
+  border-radius: 10px;
+  border: 1px solid var(--toggle-off-border);
+  background: transparent;
+  transition: background-color 120ms linear, border-color 120ms linear;
+}
+.toggle:hover .toggle-track { background: var(--hover); }
+.toggle[aria-checked="true"] .toggle-track,
+.toggle[aria-checked="true"]:hover .toggle-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.toggle-knob {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--toggle-off-knob);
+  transition: left 140ms var(--ease-out), width 90ms linear, height 90ms linear, top 90ms linear, background-color 90ms linear;
+}
+.toggle:hover .toggle-knob { width: 14px; height: 14px; top: 2px; left: 2px; }
+.toggle:active .toggle-knob { width: 17px; }
+.toggle[aria-checked="true"] .toggle-knob { left: 23px; background: var(--toggle-on-knob); }
+.toggle[aria-checked="true"]:hover .toggle-knob { left: 22px; }
+.toggle[aria-checked="true"]:active .toggle-knob { left: 19px; }
+.toggle-text { width: 19px; text-align: left; color: var(--text); }
+
+.card-head > .select { margin-right: 1px; min-width: 160px; }
+
+.about { padding-top: 14px; font-size: 14px; }
+.about-h { margin: 0 0 10px; font-size: 14px; line-height: 20px; font-weight: 600; }
+.about-line { margin: 0; line-height: 19px; }
+
+@media (max-width: 860px) {
+  .settings-grid { grid-template-columns: minmax(0, 1fr); padding-right: 16px; }
+  .about { padding-top: 24px; }
+}
