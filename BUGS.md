@@ -1,347 +1,345 @@
-# Notepadly: mukammal bug aur edge-case report
+# Notepadly: bug and edge-case report
 
-**Tareekh:** 10 November 2026 · **Code:** `main` ka commit `c578712` · **Kul masail:** 70 (8 critical, 16 high, 22 medium, 16 low, 8 Windows par check karne wale)
+**Date:** 10 November 2026 · **Code:** commit `c578712` · **Total:** 70 issues (8 critical, 16 high, 22 medium, 16 low, 8 to check on Windows)
 
-## Yeh analysis kaise hua
+This report covers **functionality**: broken features, wrong results, data loss and unexpected behaviour. No obvious security bug was found, so there is no security section.
 
-- Poora code padha gaya: Rust backend (`src-tauri/src`), state/loader (`src/state`, `src/lib`), editor engine (`src/editor`), aur tamam UI components.
-- `npm run typecheck` aur `npm test` chalaye: dono pass (30 tests).
-- Asli frontend ko Chromium mein ek nakli (fake) Tauri backend ke saath chalaya gaya aur har shak wale bug ko keyboard/mouse se repro kiya gaya.
-- 900 random keystrokes/format commands ka "monkey test" `sample.md` par chalaya: koi exception ya crash nahi aaya.
+## How this was checked
 
-**Had (limit):** yeh container Linux hai. Rust code sirf Windows par compile hota hai, is liye Rust wale bugs code padh kar nikale gaye hain, chala kar nahi. WebView2 ke khaas behaviour (clipboard, drag-drop, context menu) bhi yahan check nahi ho sakte; woh alag section mein hain.
+- Read all of the code: Rust backend, state and loader, editor engine, UI components.
+- `npm run typecheck` and `npm test` both pass (30 tests).
+- Ran the real frontend in Chromium against a fake Tauri backend and reproduced each suspected bug with keyboard and mouse.
+- Ran 900 random keystrokes and format commands on `sample.md`: no crash, no exception.
 
-Har bug ke saath status likha hai:
+**Limit:** this machine is Linux. The Rust code only compiles on Windows, so Rust bugs were found by reading, not by running. WebView2-only behaviour (clipboard, drag and drop, context menu) is in its own section.
 
-| Nishaan | Matlab |
+| Mark | Meaning |
 | --- | --- |
-| ✅ | Browser mein chala kar confirm hua |
-| 📖 | Code padh kar mila (logic saaf hai, lekin chala kar nahi dekha) |
-| ⚠️ | Windows par asli app mein verify karna zaroori hai |
+| ✅ | Reproduced by running the app |
+| 📖 | Found by reading the code, not run |
+| ⚠️ | Needs a check in the real app on Windows |
 
 ---
 
-## Sab se pehle yeh 10 theek karein
+## Fix these 10 first
 
-| # | Bug | Kyun pehle |
+| # | Bug | Why first |
 | --- | --- | --- |
-| C1 | Save As bina extension ke doosri file chupke se overwrite karta hai | Data loss |
-| C2 | Replace all loading ke dauran sirf aadhi file badalta hai | Chupke se ghalat natija |
-| C3 | Bari file disk par badal jaye to edits kahin save nahi hote | Kaam phans jata hai |
-| C4 | Message dialog ke baad tab/window kabhi band nahi hoti | App atak jati hai |
-| C5 | Main window pehle band ho to session wapas nahi aata | Unsaved notes "ghayab" |
-| C6 | ANSI file mein Urdu/Unicode save par `?` ban jata hai | Data loss |
-| C8 | Tab badalte waqt typing pichhli tab mein chali jati hai | Ghalat file badalti hai |
-| H1 | Table cell mein Ctrl+B `****text` bana deta hai | Roz ka feature toota hai |
-| H2 | Left/Right arrow table, maths, diagram par atak jata hai | Keyboard navigation tooti hai |
-| H9 | Print screen jaisa nahi hota, comments bhi chhap jate hain | README ke khilaf |
+| C1 | Save As without an extension silently overwrites another file | Data loss |
+| C2 | Replace all during loading changes only part of the file | Silent wrong result |
+| C3 | Edits in a big file cannot be saved once the file changes on disk | Work is stuck |
+| C4 | After an error message, a tab or the window can never close | App is stuck |
+| C5 | Session does not come back if the main window closed first | Unsaved notes "vanish" |
+| C6 | Urdu/Unicode saved in an ANSI file becomes `?` | Data loss |
+| C8 | Typing goes into the previous tab while a tab loads | Wrong file is edited |
+| H1 | Ctrl+B in a table cell makes `****text` | Everyday feature broken |
+| H2 | Left/Right arrow gets stuck at tables, maths and diagrams | Keyboard navigation broken |
+| H9 | Print does not match the screen, and comments are printed | README says otherwise |
 
 ---
 
-## CRITICAL: data loss ya app ka atak jana
+## CRITICAL: data loss or the app gets stuck
 
-### C1. Save As bina extension wali file ka naam badal kar doosri file overwrite kar deta hai ✅
-- **Kya hota hai:** Save As mein "All files" chun kar naam `LICENSE` likhein. App khud `.md` (ya `.txt`) jor kar `LICENSE.md` par likh deti hai. Agar `LICENSE.md` pehle se maujood ho to woh **bina poochhe overwrite** ho jati hai, kyun ke Windows dialog ne sirf `LICENSE` ke liye check kiya tha.
-- **Test:** `LICENSE.md` mein "IMPORTANT EXISTING CONTENT" tha, Save As `C:\d\LICENSE` → file ka content "hello" ho gaya.
-- **Saath ke masail:** `.gitignore` → `.gitignore.txt` ban jata hai. `Makefile`, `LICENSE`, `hosts` jaisi bina extension wali file kabhi Save As nahi ho sakti.
-- **Wajah:** `src/state/actions.ts:383` (`withDefaultExtension`) aur `src/state/logic.ts:198`. `extOf(".gitignore")` khali string deta hai.
-- **Fix:** user ka chuna hua path waise hi rakhein. Extension sirf tab jorein jab dialog ka filter Markdown/Text ho, aur jorne ke baad file maujood ho to dobara poochhein.
+### C1. Save As without an extension renames the file and overwrites another one ✅
+- **What happens:** in Save As, pick "All files" and type `LICENSE`. The app adds `.md` (or `.txt`) itself and writes to `LICENSE.md`. If `LICENSE.md` already exists it is **overwritten without asking**, because the Windows dialog only checked `LICENSE`.
+- **Test:** `LICENSE.md` held "IMPORTANT EXISTING CONTENT". Save As `C:\d\LICENSE` → its content became "hello".
+- **Also:** `.gitignore` becomes `.gitignore.txt`. Files with no extension (`Makefile`, `LICENSE`, `hosts`) can never be saved with Save As.
+- **Cause:** `src/state/actions.ts:383` (`withDefaultExtension`), `src/state/logic.ts:198`.
+- **Fix:** keep the path the user chose. Add an extension only when the Markdown/Text filter is selected, and ask again if the new name exists.
 
-### C2. "Replace all" file load hone se pehle chale to sirf load shuda hissa badalta hai ✅
-- **Kya hota hai:** bari file (2 MB se zyada) khol kar foran Ctrl+H → Replace all dabayein. Sirf utna text badalta hai jitna us waqt memory mein tha. Baqi file baad mein load hoti hai aur waisi ki waisi rehti hai. Koi warning nahi.
-- **Test:** 5.4 MB file, 150,000 "foo". Replace all ke baad: 7,521 badle, **142,479 reh gaye**.
-- **Wajah:** `src/components/FindBar.tsx:176`. `openFind` full load shuru karta hai lekin Replace all us ka intezar nahi karta.
-- **Fix:** Replace/Replace all se pehle `await actions.ensureFullyLoaded(activeId)`; load ke dauran button disabled rakhein.
+### C2. "Replace all" before the file has loaded changes only the loaded part ✅
+- **What happens:** open a file over 2 MB and press Ctrl+H → Replace all straight away. Only the text in memory at that moment is changed. The rest loads later, unchanged. No warning.
+- **Test:** 5.4 MB file with 150,000 "foo". After Replace all: 7,521 replaced, **142,479 left**.
+- **Cause:** `src/components/FindBar.tsx:176`. `openFind` starts the full load but Replace all does not wait for it.
+- **Fix:** `await actions.ensureFullyLoaded(activeId)` before Replace and Replace all; disable the buttons while loading.
 
-### C3. Aadhi load hui bari file disk par badal jaye to edits kahin bhi save nahi hote ✅
-- **Kya hota hai:** bari file mein edit karein, koi doosra program file badal de (log file, sync tool). Ab:
+### C3. Edits in a partly loaded big file cannot be saved anywhere once the file changes on disk ✅
+- **What happens:** edit a big file, then another program changes it (a logger, a sync tool). Now:
   1. Save → "File changed on disk ... use Save as to keep your text under another name."
   2. Save as → "This file changed on disk while only part of it was loaded. Reload it to continue."
-  3. "Keep mine" dabane ke baad bhi yahi hota hai.
-- Yani app khud jo raasta batati hai (Save as) woh band hai. Sirf Reload bachta hai, jis se edits khatam ho jate hain.
-- **Wajah:** `src/lib/loader.ts:219` (`LoadBlockedError`) aur `:457` (partial tab ka purana stamp).
-- **Fix:** Save As ke liye loaded text + **nayi** file ka tail likhne ki ijazat dein, ya kam az kam "sirf load shuda text ko nayi file mein save karein" ka option dein. Message bhi sahi karein.
+  3. Pressing "Keep mine" first changes nothing.
+- The way out the app suggests (Save as) is blocked. Only Reload is left, which throws the edits away.
+- **Cause:** `src/lib/loader.ts:219` (`LoadBlockedError`) and `:457` (old stamp kept for a partial tab).
+- **Fix:** let Save As write the loaded text plus the tail of the **new** file, or at least offer "save only the loaded text to a new file". Correct the message.
 
-### C4. Confirm dialog ke upar message aa jaye to tab aur window kabhi band nahi hoti ✅
-- **Kya hota hai:** "Do you want to save changes?" khula ho aur usi waqt koi error message aa jaye (maslan pichhla slow save fail ho, ya background load fail ho). Message confirm dialog ki jagah le leta hai, lekin confirm ka promise kabhi resolve nahi hota.
-- **Natija:** us tab ka X kuch nahi karta. Agar yeh window band karte waqt hua ho to `closeInProgress` hamesha `true` rehta hai aur **window band hi nahi hoti** (sirf Task Manager).
-- **Test:** dono halaat repro hue: tab close dobara dabane par koi dialog nahi, window close ke 2 aur try par kuch nahi hua.
-- **Wajah:** `src/state/store.ts:149` `showMessage` seedha `dialog` set karta hai. `actions.showDialog` yeh case sambhalta hai, `showMessage` nahi.
-- **Fix:** `showMessage` mein pehle pending `confirm-close` ko `cancel` se resolve karein (ya messages ki queue banayein).
+### C4. If a message appears over the "save changes?" dialog, that tab and the window can never close ✅
+- **What happens:** the confirm dialog is open and an error message arrives at the same moment (an earlier slow save fails, a background load fails). The message replaces the confirm dialog, but the confirm's promise never resolves.
+- **Result:** the tab's X does nothing from then on. If it happened while closing the window, `closeInProgress` stays `true` forever and **the window will not close** (Task Manager only).
+- **Test:** both cases reproduced.
+- **Cause:** `src/state/store.ts:149`: `showMessage` sets `dialog` directly. `actions.showDialog` handles this case, `showMessage` does not.
+- **Fix:** in `showMessage`, resolve a pending `confirm-close` as `cancel` first, or queue messages.
 
-### C5. Main window pehle band ho to agli dafa session wapas nahi aata 📖
-- **Kya hota hai (background mode on, jo default hai):** 2 windows kholein. Pehle **main** window band karein, phir doosri. Doosri window background mein chhup jati hai. Ab Notepadly dobara kholein: khali "Untitled" milta hai, pichhle tabs aur unsaved notes nahi aate.
-- **Wajah:** session sirf `main` label wali window restore karti hai. Main window destroy ho chuki hai, aur `src-tauri/src/lib.rs:242` koi bhi bachi hui window jaga deta hai. Woh window `isMainWindow = false` hai, is liye na restore karti hai na drafts likhti hai (`src/state/actions.ts:489`, `:515`).
-- Notes disk par maujood rehte hain aur PC restart ke baad wapas aate hain, lekin tab tak user ko lagta hai sab ghayab ho gaya. Is dauran likhe gaye naye notes ka draft bhi nahi banta.
-- **Fix:** jab koi window na bache ya main na ho to nayi `main` window banayein; ya background mein jane wali aakhri window ko main ka role dein.
+### C5. If the main window is closed first, the session does not come back next time 📖
+- **What happens (background mode on, the default):** open 2 windows. Close the **main** one first, then the other. The second window hides in the background. Open Notepadly again: an empty "Untitled", no previous tabs, no unsaved notes.
+- **Cause:** only the window labelled `main` restores the session. It has been destroyed, and `src-tauri/src/lib.rs:242` wakes any window that is left. That window has `isMainWindow = false`, so it neither restores nor writes drafts (`src/state/actions.ts:489`, `:515`).
+- The notes are still on disk and return after a PC restart, but until then they look lost. New notes written in that window get no draft either.
+- **Fix:** create a new `main` window when none exists, or give the last hidden window the main role.
 
-### C6. ANSI encoding mein save karte waqt Urdu/Unicode chupke se `?` ban jata hai 📖
-- **Kya hota hai:** file ANSI detect ho (ya status bar se ANSI chunein), us mein Urdu, emoji ya koi aisa harf likhein jo code page mein nahi. Save par har aisa harf `?` ban jata hai. Koi warning nahi, aur tab "saved" dikhti hai.
-- **Khatarnak rasta:** UTF-8 file mein pehle 256 KB ke andar ek bhi kharab byte ho to poori file ANSI maan li jati hai. Phir us mein Urdu likh kar save karein to woh hamesha ke liye `????` ho jata hai.
-- **Wajah:** `src-tauri/src/files.rs:491` (`Unmappable(_) => out.push(b'?')`).
-- **Fix:** save se pehle check karein; unmappable harf hon to user se poochhein ("UTF-8 mein save karein?").
+### C6. Saving in ANSI silently turns Urdu/Unicode into `?` 📖
+- **What happens:** the file is detected as ANSI (or ANSI is picked in the status bar). Type Urdu, emoji or any letter the code page lacks. On save each one becomes `?`. No warning, and the tab shows as saved.
+- **Dangerous path:** one bad byte in the first 256 KB of a UTF-8 file makes the whole file ANSI. Urdu typed into it then becomes `????` for good.
+- **Cause:** `src-tauri/src/files.rs:491` (`Unmappable(_) => out.push(b'?')`).
+- **Fix:** check before saving and ask the user ("Save as UTF-8?").
 
-### C7. Encoding sirf pehle 256 KB se pehchani jati hai 📖
-- **Kya hota hai:** ANSI file jis ka pehla non-ASCII harf 256 KB ke baad aaye, UTF-8 maan li jati hai. Baad ke chunks mein woh bytes `U+FFFD` (�) ban jate hain. Save karne par load shuda hisse ke woh bytes hamesha ke liye kharab ho jate hain.
-- **Wajah:** `src-tauri/src/files.rs:174` `detect_encoding` sirf pehli window dekhta hai; baad ke chunks `from_utf8_lossy` se decode hote hain.
-- **Fix:** baad ke chunk mein invalid UTF-8 mile to tab ko ANSI mein dobara load karein, ya kam az kam save rok kar warning dein.
+### C7. Encoding is detected from the first 256 KB only 📖
+- **What happens:** an ANSI file whose first non-ASCII letter comes after 256 KB is treated as UTF-8. Those bytes show as `�` in later chunks. Saving then damages those bytes in the loaded part for good.
+- **Cause:** `src-tauri/src/files.rs:174` (`detect_encoding`); later chunks use `from_utf8_lossy`.
+- **Fix:** when a later chunk has invalid UTF-8, reload the tab as ANSI, or at least block saving with a warning.
 
-### C8. Tab badalte waqt typing pichhli tab ki file mein chali jati hai ✅
-- **Kya hota hai:** aisi tab par click karein jo abhi load nahi hui (session se restore, hibernated, ya slow/network drive). Tab strip foran nayi tab ko active dikhati hai, lekin editor mein load hone tak **pichhli file** rehti hai. Is dauran jo likhein woh pichhli file mein jata hai aur woh dirty ho jati hai.
-- **Test:** `a.txt` par click (1.5 s ki read delay), "TYPED" likha → `b.txt` ka text "TYPEDBBB file" ho gaya, `a.txt` saaf.
-- **Wajah:** `src/state/actions.ts:227-238`. `activeId` pehle set hota hai, `engine.activate` load ke baad.
-- **Fix:** load ke dauran editor ko read-only/khali state par rakhein, ya `activeId` tab badlein jab doc tayyar ho.
+### C8. Typing goes into the previous tab's file while a tab is loading ✅
+- **What happens:** click a tab that is not loaded yet (restored from the session, hibernated, or on a slow drive). The tab strip shows the new tab as active at once, but the editor still holds the **previous** file until loading ends. Anything typed in between goes into the previous file and marks it unsaved.
+- **Test:** clicked `a.txt` (1.5 s read delay), typed "TYPED" → `b.txt` became "TYPEDBBB file", `a.txt` untouched.
+- **Cause:** `src/state/actions.ts:227-238`: `activeId` is set first, `engine.activate` runs after the load.
+- **Fix:** show an empty read-only state while loading, or switch `activeId` only when the document is ready.
 
 ---
 
-## HIGH: bare feature tootay hue ya ghalat natija
+## HIGH: main features broken or wrong results
 
-### H1. Table cell mein Ctrl+B / Ctrl+I / Bold button `****text` bana deta hai ✅
-- Cell mein "apple" select kar ke Ctrl+B → document mein `| ****apple | 2 |`.
-- **Wajah:** `src/lib/shortcuts.ts:144` global handler (capture phase) pehle chalta hai aur editor ki chhupi hui selection (cell ka shuru) par bold lagata hai. Table widget ka apna Ctrl+B code (`widgets.ts:451`) kabhi chalta hi nahi.
-- **Fix:** global handler mein table cell (`contenteditable="plaintext-only"`) ko pehchan kar widget ko handle karne dein.
+### H1. Ctrl+B / Ctrl+I / the Bold button in a table cell make `****text` ✅
+- Select "apple" in a cell, press Ctrl+B → the document has `| ****apple | 2 |`.
+- **Cause:** the global handler in `src/lib/shortcuts.ts:144` runs first (capture phase) and applies bold at the editor's hidden selection (start of the cell). The table's own Ctrl+B code (`widgets.ts:451`) never runs.
+- **Fix:** let the table widget handle these keys when focus is in a cell.
 
-### H2. Left/Right arrow rendered table, maths block aur Mermaid diagram par atak jata hai ✅
-- **Kya hota hai:** table ke neeche wali line ke shuru se Left arrow dabayein. Cursor chhupe hue source mein ek ek harf chalta hai aur nazar nahi aata.
-- **Test:** 2 row ki chhoti table paar karne ke liye **58 dafa** Left arrow dabana para. Bare Mermaid diagram ke liye sainkron dafa.
-- Is dauran cursor ki state aur screen ka caret alag jagah hote hain (state 16 par, type kiya hua harf 22 par gaya).
-- **Wajah:** `src/editor/livePreview/block.ts` replace decorations ke liye `EditorView.atomicRanges` nahi deta.
-- **Fix:** block widgets ke ranges ko `atomicRanges` mein dein. Saath hi keyboard se table/maths ke andar jane ka tareeqa dein (abhi sirf mouse click se mumkin hai).
+### H2. Left/Right arrow gets stuck at rendered tables, maths blocks and Mermaid diagrams ✅
+- **What happens:** from the start of the line below a table, press Left. The cursor walks through the hidden source one character at a time and cannot be seen.
+- **Test:** crossing a small 2-row table took **58** Left presses. A big diagram takes hundreds.
+- **Cause:** `src/editor/livePreview/block.ts` gives no `EditorView.atomicRanges` for its replaced blocks.
+- **Fix:** mark block widgets as atomic ranges. Also add a way to enter a table or maths block from the keyboard (only a mouse click works today).
 
-### H3. Document ke bilkul shuru mein table ho to Up arrow ke baad typing bikhar jati hai ✅
-- Header cell mein Up arrow → "abc" type karein. "a" table ke neeche chala gaya (aur table ki nayi row ban gaya), "b" document ke aakhir mein, "c" ghayab.
-- **Wajah:** `src/editor/livePreview/widgets.ts:393` `anchor = Math.max(0, start - 1)`; position 0 table ke replaced range ke andar hai.
-- **Fix:** table doc ke shuru mein ho to pehle ek khali line insert karein, phir cursor wahan rakhein.
+### H3. With a table at the very top of the document, Up arrow then typing scatters the text ✅
+- In the header cell press Up, type "abc". "a" landed below the table (and became a new table row), "b" at the end of the document, "c" was lost.
+- **Cause:** `src/editor/livePreview/widgets.ts:393`: `anchor = Math.max(0, start - 1)`; position 0 is inside the table.
+- **Fix:** when the table starts the document, insert an empty line first and put the cursor there.
 
-### H4. Khali line par table insert karein to neeche wala paragraph table ki row ban jata hai ✅
-- `first`, khali line, `second paragraph`. Khali line par 2×2 table insert → "second paragraph" table ki teesri row.
-- **Wajah:** `src/editor/commands.ts:312` `suffix`: khali line par hon aur neeche text ho to table ke baad khali line nahi jorta.
-- **Fix:** agli line khali na ho to hamesha `\n` jorein.
+### H4. Inserting a table on an empty line swallows the paragraph below it ✅
+- `first`, empty line, `second paragraph`. Insert a 2×2 table on the empty line → "second paragraph" becomes the table's third row.
+- **Cause:** `src/editor/commands.ts:312` (`suffix`) adds no empty line after the table in this case.
+- **Fix:** always add `\n` when the next line is not empty.
 
-### H5. Blockquote/callout ke andar wali table par table commands table ko kharab kar dete hain ✅
-- `> | a | b |` wali table mein "Insert row below" → har row `| > | a | b |` ban gayi aur table quote se bahar nikal gayi.
-- **Wajah:** `src/editor/commands.ts:221` `locateTable` line ke shuru se parse karta hai, `> ` samet.
-- **Saath:** list, quote ya callout ke andar table, Mermaid, block maths aur `---` render hi nahi hote (`block.ts:143` sirf top-level blocks dekhta hai), jab ke toolbar "Edit table" enabled dikhata hai.
-- **Fix:** nested tables ke liye quote/indent prefix alag kar ke parse karein, ya nested table par commands disable karein.
+### H5. Table commands corrupt a table inside a blockquote or callout ✅
+- In a `> | a | b |` table, "Insert row below" → every row becomes `| > | a | b |` and the table leaves the quote.
+- **Cause:** `src/editor/commands.ts:221` (`locateTable`) parses from the line start, including `> `.
+- **Also:** tables, Mermaid, block maths and `---` inside a list, quote or callout are not rendered at all (`block.ts:143` looks at top-level blocks only), yet the toolbar shows "Edit table" as enabled.
+- **Fix:** strip the quote/indent prefix before parsing, or disable the commands for nested tables.
 
-### H6. Ek lambi line (20,000+ characters) poore document ka live preview hamesha ke liye band kar deti hai ✅
-- Base64 image (`![](data:image/png;base64,...)`) ya koi minified line paste karein. Poora document raw Markdown ban jata hai.
-- Status bar phir bhi **"Formatted"** kehta hai aur toolbar dikhta rehta hai. Line delete ya Undo karne par bhi wapas nahi aata; file band kar ke dobara kholni parti hai.
-- **Wajah:** `src/editor/index.ts:323` `checkDegrade`; `degraded` flag "sticky" hai.
-- **Fix:** lambi line hat jaye to preview wapas chalu karein; status bar mein wajah dikhayein; behtar yeh ke sirf us line ko skip karein.
+### H6. One long line (over 20,000 characters) turns off live preview for the whole document for good ✅
+- Paste a base64 image (`![](data:image/png;base64,...)`) or a minified line. The whole document becomes raw Markdown.
+- The status bar still says **"Formatted"** and the toolbar stays. Deleting the line or pressing Undo does not bring it back; the file must be closed and reopened.
+- **Cause:** `src/editor/index.ts:323` (`checkDegrade`); the `degraded` flag never clears.
+- **Fix:** turn preview back on when the long line is gone; show the reason in the status bar; better, skip only that line.
 
-### H7. File delete ho kar dobara ban jaye to saaf tab "unsaved" ban jati hai ✅
-- `git checkout`, OneDrive sync, ya woh editors jo "delete + rename" se save karte hain. Tab pehle "deleted" flag hoti hai aur dirty ban jati hai, phir file wapas aane par "This file changed on disk" bar aati hai aur band karte waqt "save changes?" poochha jata hai, halan ke user ne kuch nahi likha.
-- **Wajah:** `src/lib/loader.ts:590` `flag-deleted` par `forceDirty`; phir `decideExternal` dirty tab ko reload nahi karta.
-- **Fix:** agar user ne khud edit nahi kiya (`editSeq` wahi hai) to file wapas aane par chupke se reload karein aur dirty hata dein.
+### H7. A file that is deleted and created again turns a clean tab into "unsaved" ✅
+- `git checkout`, OneDrive, or editors that save by delete + rename. The tab is flagged "deleted" and marked unsaved, then when the file is back it shows "This file changed on disk" and asks "save changes?" on close, though the user typed nothing.
+- **Cause:** `src/lib/loader.ts:590` forces dirty on `flag-deleted`; `decideExternal` then refuses to reload a dirty tab.
+- **Fix:** if the user made no edit, reload silently when the file returns and clear the dirty mark.
 
-### H8. Har typing ke waqfe par poora document draft mein dobara likha jata hai ✅
-- 1.59 MB ki dirty file mein har "x" ke baad 1.59 MB ka draft likha gaya (4 keystrokes = 4 poore writes). 100 MB file mein yeh har 800 ms par 100 MB ka IPC + disk write hai.
-- Spec kehta hai "no work proportional to document length per keystroke".
-- **Wajah:** `src/lib/loader.ts:729`. Save bhi poora text IPC se bhejta hai.
-- **Fix:** bari files ke liye lamba debounce, ya sirf tabdeeli (diff/patch) likhein, ya idle time mein likhein.
+### H8. The whole document is written to the draft file after every typing pause ✅
+- In a 1.59 MB unsaved file, each "x" wrote a full 1.59 MB draft (4 keystrokes, 4 full writes). For a 100 MB file that is 100 MB over IPC and to disk every 800 ms.
+- The spec says "no work proportional to document length per keystroke".
+- **Cause:** `src/lib/loader.ts:729`. Save also sends the whole text over IPC.
+- **Fix:** a longer debounce for big files, write only the changes, or write during idle time.
 
-### H9. Print screen jaisa nahi hota, aur comments bhi chhap jate hain ✅
-- README aur Help kehte hain comments "left out of printing". Asal mein `%% secret comment %%` chhapta hai.
-- Print mein yeh sab **raw** aata hai: `$E=mc^2$`, `$$...$$`, Mermaid (code ki tarah), callout (`[!warning]`), `==highlight==`, `[[wikilink]]`, `#tag`. Front matter `<hr>` aur `<h2>title: x</h2>` ban jata hai.
-- **Wajah:** `src/lib/print.ts:134` sirf `marked` (plain GFM) istemal karta hai.
-- **Fix:** print se pehle `%%...%%` aur front matter nikalein; KaTeX/Mermaid/callouts ko print HTML mein render karein.
+### H9. Print does not match the screen, and comments are printed ✅
+- README and Help say comments are "left out of printing". In fact `%% secret comment %%` is printed.
+- Printed **raw**: `$E=mc^2$`, `$$...$$`, Mermaid (as code), callouts (`[!warning]`), `==highlight==`, `[[wikilink]]`, `#tag`. Front matter prints as a rule and a heading "title: x".
+- **Cause:** `src/lib/print.ts:134` uses plain `marked` only.
+- **Fix:** remove `%%...%%` and front matter before printing; render KaTeX, Mermaid and callouts into the print HTML.
 
-### H10. Find ka "x of y" counter ghalat hota hai ✅
-1. Cursor kahin aur le ja kar Next dabayein: line 40 ke match par counter **"3 of 50"** dikhata hai (sirf +1 karta hai).
-2. F3 / Shift+F3 se match badalta hai lekin counter bilkul update nahi hota.
-3. 10,000 ya zyada matches: "1 of 10000", phir Next par **"0 of 10000"**. "10000+" hona chahiye.
-- **Wajah:** `src/editor/find.ts:197`; `src/lib/shortcuts.ts:123` natija FindBar ko nahi deta; `FindBar.tsx:93` `FIND_COUNT_LIMIT` istemal nahi karta.
+### H10. The Find "x of y" counter is wrong ✅
+1. Move the cursor elsewhere and press Next: on the match at line 40 the counter says **"3 of 50"** (it only adds 1).
+2. F3 / Shift+F3 move the match but never update the counter.
+3. With 10,000 or more matches: "1 of 10000", then **"0 of 10000"** after Next. It should say "10000+".
+- **Cause:** `src/editor/find.ts:197`; `src/lib/shortcuts.ts:123` does not pass the result to the find bar; `FindBar.tsx:93` ignores `FIND_COUNT_LIMIT`.
 
-### H11. Table, block maths aur Mermaid ke andar ke Find matches nazar nahi aate ✅
-- Table mein "pear" dhoondein: counter "1 of 1", lekin screen par koi highlight nahi. Lagta hai Find ne kuch nahi kiya. Replace phir bhi andhe mein kaam karta hai.
-- **Wajah:** yeh blocks widget se replace hain; mark decorations un ke andar nahi dikhte.
-- **Fix:** match widget ke andar ho to source khol dein ya cell ko highlight karein.
+### H11. Find matches inside tables, block maths and Mermaid cannot be seen ✅
+- Search "pear" in a table: the counter says "1 of 1" but nothing is highlighted, so Find seems to do nothing. Replace still works, blind.
+- **Cause:** these blocks are replaced by widgets; highlight marks inside them are not drawn.
+- **Fix:** open the source or highlight the cell when the match is inside a widget.
 
-### H12. Settings aur Recent list windows ke darmiyan sync nahi hoti 📖
-- Ek window mein theme/font/startup badlein to doosri khuli window mein nahi badalta.
-- Har window poora settings object likhti hai, is liye purani window ki agli tabdeeli pehli window ki settings **mita deti hai**. Recent files ka bhi yahi haal.
-- **Wajah:** `src/state/store.ts:111`; `storage` event ka koi listener nahi.
+### H12. Settings and the Recent list are not shared between windows 📖
+- Change the theme, font or startup option in one window: the other open window does not change.
+- Each window writes the whole settings object, so the next change in an older window **wipes out** the first window's changes. Same for recent files.
+- **Cause:** `src/state/store.ts:111`; there is no `storage` event listener.
 
-### H13. "Update automatically" band karne se download shuda update nahi rukta 📖
-- Update download ho chuka ho ("ready") aur user setting off kar de, to bhi band karte waqt install ho jata hai.
-- **Wajah:** `src-tauri/src/autoupdate.rs:208` `install_if_ready` `enabled` check nahi karta.
+### H13. Turning off "Update automatically" does not stop an update that is already downloaded 📖
+- If an update is "ready" and the user turns the setting off, it still installs on close.
+- **Cause:** `src-tauri/src/autoupdate.rs:208` (`install_if_ready`) does not check `enabled`.
 
-### H14. Mixed line endings wali file save par poori badal jati hai 📖
-- File mein CRLF aur LF dono hon to save par **har** line pehli line wale style mein likhi jati hai. Git diff mein poori file badli hui dikhti hai. Koi warning nahi; status bar sirf pehli line ka style dikhata hai.
-- **Wajah:** `src-tauri/src/files.rs:458` `encode_text`.
+### H14. A file with mixed line endings is fully rewritten on save 📖
+- With both CRLF and LF in a file, **every** line is saved in the first line's style. A Git diff shows the whole file changed. No warning; the status bar shows the first line's style only.
+- **Cause:** `src-tauri/src/files.rs:458` (`encode_text`).
 
-### H15. Jis folder mein nayi file banane ki ijazat nahi wahan save fail hota hai 📖
-- File khud writable ho lekin folder mein temp file na ban sake (kuch ACLs, root folders, kuch network shares) to save "Access is denied" deta hai, halan ke seedha likhna mumkin tha.
-- **Wajah:** `src-tauri/src/files.rs:644`. In-place fallback sirf replace fail hone par hai, temp file banne mein fail hone par nahi.
+### H15. Save fails in a folder where new files cannot be created 📖
+- The file itself is writable but a temp file cannot be made in its folder (some ACLs, drive roots, some network shares). Save gives "Access is denied" although writing in place would work.
+- **Cause:** `src-tauri/src/files.rs:644`. The in-place fallback covers a failed replace, not a failed temp file.
 
-### H16. Band app ke dauran delete hui file restore par khali "unsaved" tab ban jati hai ✅
-- Session mein `gone.md` tha, file delete ho gayi. Start par: khali document, dirty dot, "deleted" bar. "Keep mine" + Save → disk par **khali file** ban jati hai. Band karte waqt khali document ke liye "save changes?" poochha jata hai.
-- **Wajah:** `src/lib/loader.ts:397` `materialiseOrFlag`.
-- **Fix:** aisi tab ko dirty na karein; "file nahi mili, tab band karein?" poochhein.
+### H16. A file deleted while the app was closed comes back as an empty "unsaved" tab ✅
+- The session had `gone.md`; the file was deleted. On start: empty document, dirty dot, "deleted" bar. "Keep mine" + Save writes an **empty file** to disk. Closing asks "save changes?" for an empty document.
+- **Cause:** `src/lib/loader.ts:397` (`materialiseOrFlag`).
+- **Fix:** do not mark such a tab dirty; ask "file not found, close this tab?".
 
 ---
 
 ## MEDIUM
 
-### M1. Table cell mein Ctrl+A poora document select kar leta hai ✅
-Focus cell mein rehta hai, cell ka text select nahi hota, status bar "68 of 68 characters" dikhata hai. Wajah: `src/lib/shortcuts.ts:131`; table cell "native input" nahi mani jati.
+### M1. Ctrl+A in a table cell selects the whole document ✅
+Focus stays in the cell, the cell text is not selected, the status bar shows "68 of 68 characters". Cause: `src/lib/shortcuts.ts:131`; a table cell is not treated as a native input.
 
-### M2. Table cell mein F5, Ctrl+K aur Edit > Paste cell ke shuru mein insert karte hain ✅
-Caret cell ke aakhir mein tha, F5 → `| 11:50 AM 11/10/2026apple |` (yeh test hua). Code ke mutabiq Ctrl+K aur Edit > Paste bhi isi jagah insert karte hain, aur Edit > Copy/Cut cell ki selection nahi dekhte (disabled rehte hain).
+### M2. F5, Ctrl+K and Edit > Paste in a table cell insert at the start of the cell ✅
+The caret was at the end of the cell; F5 gave `| 11:50 AM 11/10/2026apple |` (tested). By the code, Ctrl+K and Edit > Paste insert at the same place, and Edit > Copy/Cut do not see the cell's selection (they stay disabled).
 
-### M3. Ctrl+M ke baad Tab key editor se bahar chali jati hai ✅
-Ghalti se Ctrl+M dab jaye to Tab focus ko status bar par le jata hai aur typing kahin nahi jati. Koi ishara nahi ke mode badla. Wajah: `src/editor/index.ts:212` CodeMirror ka `toggleTabFocusMode` default keymap mein reh gaya. `Ctrl+/`, `Alt+Arrow`, `Ctrl+[`/`]`, `Ctrl+Shift+K` bhi chhupe hue chalu hain.
+### M3. After Ctrl+M the Tab key leaves the editor ✅
+Press Ctrl+M by mistake and Tab moves focus to the status bar; typing goes nowhere. Nothing shows that a mode changed. Cause: `src/editor/index.ts:212` keeps CodeMirror's `toggleTabFocusMode` from the default keymap. `Ctrl+/`, `Alt+Arrow`, `Ctrl+[` / `]` and `Ctrl+Shift+K` are also active but hidden.
 
-### M4. Heading / Bold kai lines par ghalat Markdown banate hain ✅
-- Sab select kar ke H2 → `## ` khali lines par bhi, aur `## - item`, `## > quote`.
-- Do paragraphs select kar ke Bold → `**one\n\ntwo**`, jo bold nahi banta.
-- Wajah: `src/editor/commands.ts:108` aur `:44`.
+### M4. Heading and Bold produce wrong Markdown on several lines ✅
+- Select all, choose H2 → `## ` on empty lines too, and `## - item`, `## > quote`.
+- Select two paragraphs, Bold → `**one\n\ntwo**`, which is not bold.
+- Cause: `src/editor/commands.ts:108` and `:44`.
 
-### M5. Aakhri table row se neeche jane par document "unsaved" ho jata hai ✅
-Document ke aakhir mein table ho to Down arrow ya Escape ek newline jorta hai aur tab dirty ho jati hai. Wajah: `widgets.ts:387`.
+### M5. Moving down out of the last table row marks the document unsaved ✅
+With a table at the end of the document, Down arrow or Escape adds a newline and the tab becomes dirty. Cause: `widgets.ts:387`.
 
-### M6. Save As kisi aur khuli tab ke path par → ek hi file ki do tabs ✅
-Dono tabs mein `a.txt`; ek mein save karein to doosri STALE/reload mein phansti hai.
+### M6. Save As onto the path of another open tab gives two tabs for one file ✅
+Both tabs show `a.txt`; saving in one leaves the other in a stale/reload state.
 
-### M7. Links jo ghalat khulte hain ✅
-| Link | Kya hota hai |
+### M7. Links that open wrongly ✅
+| Link | What happens |
 | --- | --- |
-| `[x](report.pdf)`, `[x](photo.png)` | PDF/image ke bytes **text tab** mein kachra ban kar khulte hain |
-| `[[v1.2 notes]]` | `.md` nahi jurta → "Could not open file" |
-| `[x](C%23 guide.md)`, `a%26b.md` | `%23`, `%26` decode nahi hote → file nahi milti |
-| `[x](file:///C:/notes/a.md)` | kuch nahi hota |
-| `[x](sub/)` | `sub\.md` kholne ki koshish |
-| `[x](/docs/a.md)` | document ke folder se relative maana jata hai |
-Wajah: `src/state/logic.ts:145-161` (`decodeURI` reserved characters decode nahi karta).
+| `[x](report.pdf)`, `[x](photo.png)` | The PDF or image bytes open as garbage in a **text tab** |
+| `[[v1.2 notes]]` | `.md` is not added → "Could not open file" |
+| `[x](C%23 guide.md)`, `a%26b.md` | `%23`, `%26` are not decoded → file not found |
+| `[x](file:///C:/notes/a.md)` | Nothing happens |
+| `[x](sub/)` | Tries to open `sub\.md` |
+| `[x](/docs/a.md)` | Treated as relative to the document's folder |
+Cause: `src/state/logic.ts:145-161` (`decodeURI` leaves reserved characters encoded).
 
-### M8. `.mdx` installer mein Markdown hai lekin app mein plain text ✅
-`src-tauri/windows/hooks.nsh` `.mdx` ko main Markdown type banata hai; `src/state/logic.ts:117` mein `.mdx` nahi. Open/Save filters mein bhi nahi.
+### M8. `.mdx` is Markdown in the installer but plain text in the app ✅
+`src-tauri/windows/hooks.nsh` registers `.mdx` as a main Markdown type; `src/state/logic.ts:117` does not list it. It is missing from the Open/Save filters too.
 
-### M9. Startup ke dauran doosri file kholne ka event zaya ho sakta hai 📖
-`open-paths` listener `openHere(pending)` ke **baad** lagta hai (`src/state/actions.ts:689-690`), jab ke Rust window ko pehle hi "ready" maan leta hai. Is waqfe mein Explorer se kholi gayi file chupke se nahi khulti. Close handler bhi der se lagta hai.
+### M9. A file opened during startup can be lost 📖
+The `open-paths` listener is added **after** `openHere(pending)` (`src/state/actions.ts:689-690`), while Rust already counts the window as ready. A file opened from Explorer in that gap silently does not open. The close handler is added late as well.
 
-### M10. "Open in a new window" setting ke ajeeb natije 📖
-- Explorer se file kholein: nayi window banti hai **aur** main window bhi samne aa jati hai (background se jaagne par khali/purani session wali window bhi dikhti hai).
-- Khali window mein File > Open bhi nayi window kholta hai aur khali window reh jati hai.
-- Wikilink click bhi nayi window kholta hai.
-- Doosri window mein khuli file ka pata nahi chalta, is liye ek file do windows mein khul sakti hai.
+### M10. Odd results with "Open in a new window" 📖
+- Open a file from Explorer: a new window appears **and** the main window comes to the front too (when woken from the background, the empty or old-session window shows as well).
+- File > Open in an empty window also opens a new window and leaves the empty one.
+- Clicking a wikilink opens a new window.
+- A file open in another window is not noticed, so one file can be open in two windows.
 
-### M11. Command line se nayi file ka naam dein to kuch nahi hota 📖
-`notepadly newfile.txt` (file maujood nahi) → khali Untitled. Notepad poochhta hai "create a new file?". App chalu ho aur dobara launch karein to sirf purani window focus hoti hai, nayi tab/window nahi. `-` se shuru hone wale file names bhi nahi khulte. Wajah: `src-tauri/src/lib.rs:229`.
+### M11. Giving a new file name on the command line does nothing 📖
+`notepadly newfile.txt` (file does not exist) → empty Untitled. Notepad asks "create a new file?". Launching again while the app runs only focuses the old window; no new tab or window. File names that start with `-` cannot be opened. Cause: `src-tauri/src/lib.rs:229`.
 
-### M12. Hibernation Undo history mita deta hai 📖
-1 MB se bari saaf tab 60 second inactive rahe to us ka editor state gira diya jata hai. Wapas aane par Ctrl+Z kuch nahi karta, callout fold state bhi reset. Wajah: `src/lib/loader.ts:634`.
+### M12. Hibernation wipes the Undo history 📖
+A clean tab over 1 MB that is inactive for 60 seconds has its editor state dropped. On return Ctrl+Z does nothing and callout fold state is reset. Cause: `src/lib/loader.ts:634`.
 
-### M13. Poori file wale kaam bari files par memory bhar dete hain 📖
-Find, Replace, Select all, Ctrl+End, Print, Save As, Go to line, aur EOL/encoding badalna poori file RAM mein laate hain. Cancel ka koi tareeqa nahi. Taqreeban 500 MB se bari file par `getText()` JS string limit se fail hoga. Print 100 MB par `marked.parse` main thread ko jaam kar dega.
+### M13. Whole-file actions fill memory on very big files 📖
+Find, Replace, Select all, Ctrl+End, Print, Save As, Go to line and changing the line ending or encoding all load the full file into RAM. There is no cancel. Above roughly 500 MB `getText()` fails on the JS string limit. Printing 100 MB freezes the UI in `marked.parse`.
 
-### M14. Bari file mein Find har keystroke par poori file scan karta hai 📖
-`recount` aur `firstFrom` synchronous hain (sirf 120 ms debounce). Kam matches wali 100 MB file mein har harf par UI ruk sakta hai. Wajah: `src/editor/find.ts:107`.
+### M14. Find scans the whole file on each keystroke in big files 📖
+`recount` and `firstFrom` run on the UI thread (120 ms debounce only). In a 100 MB file with few matches the UI can stall on each letter. Cause: `src/editor/find.ts:107`.
 
-### M15. Encoding ghalat pehchani jaye to theek karne ka koi tareeqa nahi 📖
-- BOM ke baghair UTF-16 file UTF-8 maan li jati hai (har harf ke beech NUL).
-- Status bar se encoding badalna sirf **save** par asar karta hai; file dobara decode nahi hoti ("Reopen with encoding" nahi hai).
-- Binary file text ki tarah khulti hai aur save karne par kharab ho jati hai, koi warning nahi.
-- Sirf code pages 874, 932, 936, 949, 950, 1250-1258 support hain; baqi sab (maslan 866) windows-1252 maan liye jate hain.
+### M15. A wrongly detected encoding cannot be corrected 📖
+- A UTF-16 file without a BOM is read as UTF-8 (a NUL between every letter).
+- Changing the encoding in the status bar only affects **saving**; the file is not decoded again (no "Reopen with encoding").
+- A binary file opens as text and is damaged on save, with no warning.
+- Only code pages 874, 932, 936, 949, 950 and 1250-1258 are supported; all others (for example 866) are read as windows-1252.
 
-### M16. Edit > Cut clipboard fail hone par bhi text delete kar deta hai 📖
-`src/editor/index.ts:611`: `writeText` ka intezar nahi. `paste()` (`:623`) mein koi error handling nahi; fail ho to chupke se kuch nahi hota.
+### M16. Edit > Cut deletes the text even when the clipboard write fails 📖
+`src/editor/index.ts:611` does not wait for `writeText`. `paste()` (`:623`) has no error handling; if it fails nothing happens and nothing is shown.
 
-### M17. "Exit" app band nahi karta, aur ghalat window bach sakti hai 📖
-Background mode on ho to File > Exit sirf window chhupata hai. Kai windows hon to race hoti hai: kabhi main window destroy ho jati hai aur doosri bachti hai (phir C5 wala masla).
+### M17. "Exit" does not quit, and the wrong window can be left over 📖
+With background mode on, File > Exit only hides the window. With several windows there is a race: sometimes the main window is destroyed and another is left (then C5 applies).
 
-### M18. Doosri windows session aur size yaad nahi rakhtin 📖
-Sirf `main` window session/drafts likhti hai aur size/position yaad rakhti hai (`src-tauri/src/lib.rs:285`). Doosri window ke tabs agli dafa nahi aate; har nayi window 1280×800 par khulti hai.
+### M18. Extra windows do not remember their session or size 📖
+Only the `main` window writes the session and drafts and remembers size and position (`src-tauri/src/lib.rs:285`). Tabs in other windows do not return; every new window opens at 1280×800.
 
-### M19. Formatting toggle sab tabs badal deta hai; `.txt` kabhi Formatted nahi ho sakti 📖
-- View > Formatting off/on karne se "Markdown syntax" chuni hui tabs ka intikhab kho jata hai.
-- Untitled (Formatted) note ko `.txt` naam se save karein to mode Plain ho jata hai aur status bar se wapas nahi aa sakta. `.txt`, `.log` wagaira mein Markdown likha ho to dekhne ka koi tareeqa nahi.
+### M19. The Formatting toggle changes every tab; a `.txt` can never be Formatted 📖
+- View > Formatting off then on loses the "Markdown syntax" choice of each tab.
+- Save an Untitled (Formatted) note as `.txt`: the mode becomes Plain and the status bar cannot switch it back. Markdown inside `.txt`, `.log` and similar files cannot be viewed formatted at all.
 
-### M20. File kholne ke error message mein ghalat naam, aur Recent saaf nahi hota 📖
-`src/state/actions.ts:320` hamesha list ki **aakhri** file ka naam likhta hai. Fail hui file Recent mein rehti hai kyun ke entry "name: error" hoti hai aur path se match nahi karti.
+### M20. Wrong name in the "could not open" message, and Recent is not cleaned 📖
+`src/state/actions.ts:320` always uses the **last** file in the list. The failed file stays in Recent because the entry is "name: error" and never matches a path.
 
-### M21. Find bar khuli ho aur be-load tab par jayein to F3 "No results" deta hai 📖
-Find purani tab ke doc par chalta hai, phir `engine.activate` session clear kar deta hai. Query dobara likhne tak Next kaam nahi karta.
+### M21. With the find bar open, moving to an unloaded tab makes F3 say "No results" 📖
+Find runs on the old tab's document, then `engine.activate` clears the session. Next does not work until the query is typed again.
 
-### M22. Restore par file parhi na ja sake to khali document milta hai 📖
-File kisi aur program ne lock ki ho to tab khali khulti hai (partial, offset 0). Is mein likh kar save karein to likha hua text asli file ke **shuru mein jur** jata hai. Data nahi jata, lekin screen aur disk mel nahi khate.
+### M22. If a restored file cannot be read, the tab is empty 📖
+When another program has locked the file, the tab opens empty (partial, offset 0). Text typed there and saved is **added to the start** of the real file. Nothing is lost, but the screen and the disk do not match.
 
 ---
 
-## LOW: chhote bugs aur ghalat pehchan
+## LOW: small bugs and wrong detection
 
-| # | Masla | Status |
+| # | Issue | Status |
 | --- | --- | --- |
-| L1 | `$HOME/$USER` maths ban jata hai ("Use HOME/USER for paths" dikhta hai) | ✅ |
-| L2 | `#fff`, `#1a2b3c` jaise colour codes tag pill ban jate hain | ✅ |
-| L3 | `if a==b or c==d` mein "b or c" highlight ho jata hai aur `==` chhup jate hain | ✅ |
-| L4 | Time/Date (F5) hamesha US format `3:05 PM 11/10/2026`, system locale nahi | ✅ |
-| L5 | "characters" UTF-16 units ginta hai (emoji = 2). Partial dirty file ka total purana rehta hai | 📖 |
-| L6 | Font list mein ghalat families ("Montserrat Extra"), "Inter" hamesha dikhta hai chahe install na ho | 📖 |
-| L7 | 400 undo steps ke baad "undo se saved state par wapas" dirty dot nahi hatata (`index.ts:57`) | 📖 |
-| L8 | Table cell renderer: `2 * 3 * 4` italic ban jata hai; `_x_`, maths, images, wikilinks cell mein render nahi hote | 📖 |
-| L9 | Bina padding wali table (`\|a\|b\|`) ke cell ke aakhir mein `\` likhein to agla cell is mein mil jata hai | 📖 |
-| L10 | Table commands header se zyada cells wali row ke fazool cells delete kar dete hain | 📖 |
-| L11 | Band na hua `$$` / `%%` 5,000 lines tak, aur band na hua front matter 1,000 lines tak styling badal deta hai | 📖 |
-| L12 | Block maths, comment block aur footnote definition sirf top level par; list/quote/callout ke andar nahi | 📖 |
-| L13 | Ctrl+click links sirf Formatted mode mein; Markdown syntax aur Plain mein nahi | 📖 |
-| L14 | Remote images khud load hoti hain (privacy/tracking). `http://` aur `file://` images nahi dikhtin | 📖 |
-| L15 | Find box mein Ctrl+B / Ctrl+I / Ctrl+K / F5 document par asar karte hain | 📖 |
-| L16 | Drafts folder kabhi saaf nahi hota: kharab `session.json` ya crash ke baad draft files hamesha pari rehti hain; draft parhne mein error ho to draft delete ho jata hai | 📖 |
+| L1 | `$HOME/$USER` becomes maths (shows "Use HOME/USER for paths") | ✅ |
+| L2 | Colour codes like `#fff`, `#1a2b3c` become tag pills | ✅ |
+| L3 | In `if a==b or c==d`, "b or c" is highlighted and the `==` are hidden | ✅ |
+| L4 | Time/Date (F5) is always US format `3:05 PM 11/10/2026`, not the system format | ✅ |
+| L5 | "characters" counts UTF-16 units (an emoji is 2). The total of a partly loaded unsaved file is stale | 📖 |
+| L6 | The font list has false families ("Montserrat Extra"); "Inter" is always listed even when not installed | 📖 |
+| L7 | After 400 undo steps, undoing back to the saved state no longer clears the unsaved dot (`index.ts:57`) | 📖 |
+| L8 | In table cells `2 * 3 * 4` turns italic; `_x_`, maths, images and wikilinks are not rendered | 📖 |
+| L9 | In a table without padding (`\|a\|b\|`), a `\` typed at the end of a cell merges it with the next cell | 📖 |
+| L10 | Table commands delete the extra cells of a row that has more cells than the header | 📖 |
+| L11 | An unclosed `$$` or `%%` restyles up to 5,000 lines; unclosed front matter up to 1,000 lines | 📖 |
+| L12 | Block maths, comment blocks and footnote definitions work at top level only, not inside a list, quote or callout | 📖 |
+| L13 | Ctrl+click on links works in Formatted mode only, not in Markdown syntax or Plain | 📖 |
+| L14 | `http://` and `file://` images do not show (only `https://`, local paths and data URLs do) | 📖 |
+| L15 | In the Find box, Ctrl+B / Ctrl+I / Ctrl+K / F5 act on the document | 📖 |
+| L16 | The drafts folder is never cleaned: after a corrupt `session.json` or a crash, draft files stay forever; a draft that cannot be read is deleted | 📖 |
 
-Mazeed chhoti baatein: khali nested list item par Enter outdent nahi karta, poora item hata deta hai; Tab se indent karne par numbering theek nahi hoti; `pathsEqual` `..`, 8.3 names ya UNC/mapped drive ko nahi pehchanta (ek file do tabs mein); Ctrl+wheel/pinch har event par 10% zoom; partial file par galat "changed" message jab file asal mein delete hui ho (3 second mein khud theek).
+Other small points: Enter on an empty nested list item removes the item instead of outdenting; indenting with Tab does not fix numbering; `pathsEqual` does not understand `..`, 8.3 names or UNC vs mapped drive (one file in two tabs); Ctrl+wheel or pinch zooms 10% per event; a partly loaded file that was deleted first shows "changed" instead of "deleted" (corrects itself within 3 seconds).
 
 ---
 
-## ⚠️ Windows par asli app mein check karne wali cheezein
+## ⚠️ To check in the real app on Windows
 
-Yeh code se mumkin lagte hain lekin WebView2 par chala kar dekhna zaroori hai.
+These look likely from the code but need a run on WebView2.
 
-| # | Shak | Kyun |
+| # | Suspected problem | Why |
 | --- | --- | --- |
-| W1 | Editor mein select kiya hua text mouse se drag kar ke move nahi hota | `tauri.conf.json` mein `dragDropEnabled: true`; Tauri Windows par is se HTML5 drag-drop band kar deta hai |
-| W2 | Edit > Paste pehli dafa permission popup dikhata hai ya kuch nahi karta | `navigator.clipboard.readText()`; clipboard access enable nahi kiya gaya |
-| W3 | Rendered table border, maths, diagram, image ya checkbox par right-click → WebView2 ka page menu ("Refresh", "Back", "Save as") | `shortcuts.ts:62` `.cm-content` ke andar sab ko text surface manta hai. "Refresh" unsaved kaam gira sakta hai |
-| W4 | Settings/Help ya dialog khula ho to F3 WebView2 ka apna Find bar khol deta hai | F3 suppressed list mein nahi (`shortcuts.ts:45`) |
-| W5 | Maximize button par hover se Windows 11 Snap Layouts nahi aata | Custom caption buttons |
-| W6 | "Autocorrect" setting ka koi asar nahi | `autocorrect` attribute Chromium mein kaam nahi karta |
-| W7 | Kai MB ki ek hi line wali file (minified JSON) word wrap ke saath bohat sust | CodeMirror lambi lines par kamzor hai; yahan naap nahi saka |
-| W8 | 260 characters se lambe path, FAT/exFAT USB aur network share par save | `ReplaceFileW` ko raw path diya jata hai (`files.rs:545`) |
+| W1 | Selected text cannot be dragged to move it inside the editor | `dragDropEnabled: true` in `tauri.conf.json`; on Windows Tauri then turns off HTML5 drag and drop |
+| W2 | Edit > Paste shows a permission popup the first time, or does nothing | `navigator.clipboard.readText()`; clipboard access is not enabled |
+| W3 | Right-click on a table border, maths, diagram, image or checkbox shows the WebView2 page menu ("Refresh", "Back", "Save as") | `shortcuts.ts:62` treats everything inside `.cm-content` as text. "Refresh" can drop unsaved work |
+| W4 | With Settings, Help or a dialog open, F3 opens WebView2's own find bar | F3 is not in the suppressed list (`shortcuts.ts:45`) |
+| W5 | Hovering the maximize button does not show Windows 11 Snap Layouts | Custom caption buttons |
+| W6 | The "Autocorrect" setting has no effect | The `autocorrect` attribute does nothing in Chromium |
+| W7 | A file that is one line of several MB (minified JSON) is very slow with word wrap | CodeMirror is weak on very long lines; not measured here |
+| W8 | Saving on paths over 260 characters, FAT/exFAT USB drives and network shares | `ReplaceFileW` gets the raw path (`files.rs:545`) |
 
 ---
 
-## Edge cases: kis haal mein app kya karti hai
+## Edge cases: what the app does
 
-| Haalat | App kya karti hai | Theek? |
+| Case | What the app does | OK? |
 | --- | --- | --- |
-| Khali file | Khulti hai, UTF-8 + CRLF maan leti hai | ✅ |
-| 127 MB file | Pehle 256 KB foran, baqi scroll par | ✅ (C2, C3, M13 dekhein) |
-| File kisi aur ne badli, tab saaf | Chupke se reload, scroll barqarar, Undo history khatam | ✅ |
-| File badli, tab dirty | Bar: Reload / Keep mine. Save STALE deta hai jab tak Keep mine na dabayein | ✅ |
-| File delete hui | Bar + tab dirty. Wapas aa jaye to H7 | ⚠️ |
-| File rename hui | "deleted" samjhi jati hai | Qabil-e-qabool |
-| Read-only file | Typing ho jati hai, Save par "Access is denied". Pehle se koi ishara nahi | Kamzor |
-| File kisi ne exclusive lock ki | Kholne par "Could not open file"; save par error, asli file mehfooz | ✅ |
-| Disk full / save ke beech crash | Temp file fail, asli file mehfooz | ✅ |
-| Network drive toot gayi | Stat error nazar-andaz, koi ghalat flag nahi | ✅ |
-| Window focus mein nahi | Disk ki tabdeeli tab tak nahi dikhti jab tak focus na aaye (side-by-side log dekhna mumkin nahi) | Design, lekin ghair mutawaqqa |
-| Ek file do windows mein | Doosra save STALE | ✅ |
-| Folder drop karna | "Could not open file" | ✅ |
-| Binary file | Kachra text; save par kharab | M15 |
-| Sirf CR line endings | Support hai ("Macintosh (CR)") | ✅ |
-| Urdu/RTL text | Line `dir="auto"` se sahi; table cells mein RTL alignment nahi | Adhoora |
-| Akeli aakhri tab band karna | Window band (background mein chhup jati hai) | Notepad jaisa |
-| App crash / kill | Aakhri 800 ms ke ilawa drafts mehfooz (sirf main window) | ✅ |
-| Kharab `session.json` | Nayi session; purane drafts yateem (L16) | Kamzor |
-| Typing start hote hi (pehle ~200 ms) | Session restore se pehle likha hua kho sakta hai | Chhota risk |
+| Empty file | Opens; assumes UTF-8 and CRLF | ✅ |
+| 127 MB file | First 256 KB at once, the rest on scroll | ✅ (see C2, C3, M13) |
+| File changed by another program, tab clean | Silent reload, scroll kept, Undo history gone | ✅ |
+| File changed, tab unsaved | Bar: Reload / Keep mine. Save is refused until Keep mine | ✅ |
+| File deleted | Bar, tab marked unsaved. If it comes back, see H7 | ⚠️ |
+| File renamed | Treated as deleted | Acceptable |
+| Read-only file | Typing works; Save says "Access is denied". No sign beforehand | Weak |
+| File locked by another program | "Could not open file" on open; error on save, original kept | ✅ |
+| Disk full, or crash during save | Temp file fails, original kept | ✅ |
+| Network drive drops | Stat errors ignored, no false flag | ✅ |
+| Window not focused | Disk changes are not seen until the window gets focus (no live view side by side) | By design, but unexpected |
+| One file in two windows | The second save is refused as stale | ✅ |
+| Dropping a folder | "Could not open file" | ✅ |
+| Binary file | Garbage text; damaged on save | M15 |
+| CR-only line endings | Supported ("Macintosh (CR)") | ✅ |
+| Urdu / right-to-left text | Lines are right with `dir="auto"`; table cells get no RTL alignment | Partial |
+| Closing the only tab | Closes the window (hides in the background) | Like Notepad |
+| App crash or kill | Drafts kept except the last 800 ms (main window only) | ✅ |
+| Corrupt `session.json` | New session; old drafts are orphaned (L16) | Weak |
+| Typing in the first ~200 ms after start | Text typed before the session is restored can be lost | Small risk |
 
 ---
 
-## Kya theek mila
+## What works well
 
-- Typecheck saaf, 30 unit tests pass.
-- 900 random keystrokes aur format commands par koi exception nahi.
-- File lock na karne ka design, STALE check aur temp-file se safe save soch samajh kar bana hai.
-- Print ka HTML sanitizer `<script>` aur `onerror` hata deta hai; KaTeX `trust: false` aur Mermaid `securityLevel: "strict"` hain; table cell renderer HTML escape karta hai. Document se script chalane ka koi rasta nahi mila.
-- Draft IDs path traversal se mehfooz hain (`store.rs`).
+- Typecheck is clean and all 30 unit tests pass.
+- 900 random keystrokes and format commands caused no exception.
+- The no-lock file design, the stale check and the temp-file safe save are carefully built.
+- No obvious security bug: a document cannot run scripts (print output is sanitised, KaTeX and Mermaid run in strict mode, table cells escape HTML).
