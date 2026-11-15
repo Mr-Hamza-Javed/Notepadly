@@ -1,6 +1,7 @@
 // Printing: renders the whole document into a hidden root, prints, cleans up.
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { engine } from "../editor";
+import { plainMarkdownParser } from "../editor/markdown";
 import { ensureFullyLoaded } from "./loader";
 import { dirOf, fileNameOf, fontStack, fontWeightOf, headerFooterBoxes, resolveRelative } from "../state/logic";
 import { getTab, useApp } from "../state/store";
@@ -120,6 +121,31 @@ function imagesReady(root: HTMLElement): Promise<unknown> {
   return Promise.race([Promise.all(pending), new Promise((resolve) => setTimeout(resolve, IMAGE_WAIT_MS))]);
 }
 
+/** Parts of a note that are never shown on paper. */
+const NOT_PRINTED = new Set(["Frontmatter", "CommentBlock", "InlineComment"]);
+
+/**
+ * The markdown that goes to paper: front matter and `%%comments%%` are left
+ * out, as the editor promises. The parser finds them, so `%%` inside code stays.
+ */
+export function printableMarkdown(text: string): string {
+  const cuts: [number, number][] = [];
+  plainMarkdownParser.parse(text).iterate({
+    enter: (node) => {
+      if (!NOT_PRINTED.has(node.name)) return true;
+      cuts.push([node.from, node.to]);
+      return false;
+    },
+  });
+  let out = "";
+  let at = 0;
+  for (const [from, to] of cuts) {
+    out += text.slice(at, from);
+    at = to;
+  }
+  return out + text.slice(at);
+}
+
 export async function printTab(id: string): Promise<void> {
   await ensureFullyLoaded(id);
   const tab = getTab(id);
@@ -131,7 +157,7 @@ export async function printTab(id: string): Promise<void> {
   root.id = ROOT_ID;
   if (tab.mode === "formatted") {
     const { marked } = await import("marked");
-    const html = marked.parse(text, { async: false, gfm: true }) as string;
+    const html = marked.parse(printableMarkdown(text), { async: false, gfm: true }) as string;
     root.appendChild(sanitizeHtml(html, tab.path ? dirOf(tab.path) : null));
   } else {
     const pre = document.createElement("pre");
