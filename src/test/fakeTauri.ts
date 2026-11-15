@@ -199,7 +199,7 @@ export class FakeBackend {
     }
     const eol = req.eol === "CRLF" ? "\r\n" : req.eol === "CR" ? "\r" : "\n";
     const body = encoder.encode(normalize(req.text).replace(/\n/g, eol));
-    const parts = [req.encoding === "utf-8-bom" ? new Uint8Array(BOM) : new Uint8Array(), body];
+    const parts: Uint8Array[] = [req.encoding === "utf-8-bom" ? new Uint8Array(BOM) : new Uint8Array(), body];
     if (req.tailOffset !== null) {
       if (!existing || req.tailOffset > existing.bytes.length) throw "STALE";
       parts.push(existing.bytes.subarray(req.tailOffset));
