@@ -31,6 +31,23 @@ function nodeAround(state: EditorState, pos: number, names: readonly string[]): 
   return ancestorOf(tree.resolveInner(pos, -1), names) ?? ancestorOf(tree.resolveInner(pos, 1), names);
 }
 
+/**
+ * Dispatches line-prefix changes. A bare cursor sitting where a prefix is
+ * inserted (an empty line, or the start of a line) ends up after the new
+ * marker, so typing goes into the heading or list item rather than before it.
+ */
+function dispatchPrefixChanges(view: EditorView, changes: ChangeSpec[]): void {
+  const { state } = view;
+  const changeSet = state.changes(changes);
+  const selection = EditorSelection.create(
+    state.selection.ranges.map((range) =>
+      range.empty ? EditorSelection.cursor(changeSet.mapPos(range.head, 1)) : range.map(changeSet),
+    ),
+    state.selection.mainIndex,
+  );
+  view.dispatch({ changes: changeSet, selection, userEvent: "input.format", scrollIntoView: true });
+}
+
 function selectedLines(state: EditorState, range: SelectionRange): Line[] {
   const first = state.doc.lineAt(range.from);
   const last = state.doc.lineAt(range.to);
@@ -110,12 +127,15 @@ function setBlockKind(view: EditorView, kind: BlockKind): void {
   const prefix = kind === "body" ? "" : `${"#".repeat(Number(kind.slice(1)))} `;
   const changes: ChangeSpec[] = [];
   for (const range of state.selection.ranges) {
-    for (const line of selectedLines(state, range)) {
+    const lines = selectedLines(state, range);
+    for (const line of lines) {
+      // "## " on a blank line is an empty heading, not formatting: skip blanks in a multi-line selection.
+      if (lines.length > 1 && !line.text.trim()) continue;
       const existing = /^#{1,6}[ \t]+/.exec(line.text);
       changes.push({ from: line.from, to: line.from + (existing ? existing[0].length : 0), insert: prefix });
     }
   }
-  view.dispatch({ changes, userEvent: "input.format", scrollIntoView: true });
+  dispatchPrefixChanges(view, changes);
 }
 
 function lineListKind(text: string): ListKind {
@@ -145,7 +165,7 @@ function setListKind(view: EditorView, kind: ListKind): void {
       changes.push({ from: line.from, to: line.from + consumed, insert: indent + marker });
     }
   }
-  view.dispatch({ changes, userEvent: "input.format", scrollIntoView: true });
+  dispatchPrefixChanges(view, changes);
 }
 
 function clearFormatting(view: EditorView): void {
@@ -309,7 +329,9 @@ function insertTable(view: EditorView, rows: number, cols: number): void {
   if (!atBlankLine) prefix = "\n\n";
   else if (previous && previous.text.trim() !== "") prefix = "\n";
   const hasNext = line.number < state.doc.lines;
-  const suffix = hasNext && (atBlankLine ? false : state.doc.line(line.number + 1).text.trim() !== "") ? "\n" : atBlankLine && !hasNext ? "\n" : "";
+  // A blank line must follow the table, or the next paragraph would become its last row.
+  const nextIsText = hasNext && state.doc.line(line.number + 1).text.trim() !== "";
+  const suffix = nextIsText || (atBlankLine && !hasNext) ? "\n" : "";
 
   const cellFrom = from + prefix.length + 2;
   view.dispatch({
