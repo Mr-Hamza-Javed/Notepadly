@@ -55,6 +55,11 @@ describe("markdown parser", () => {
     expect(nodeNames(tree)).not.toContain("InlineMath");
   });
 
+  it("parses an empty document and a document of blank lines", () => {
+    expect(plainMarkdownParser.parse("").length).toBe(0);
+    expect(nodeNames(plainMarkdownParser.parse("\n\n\n"))).toEqual(new Set(["Document"]));
+  });
+
   // The fast parser reuses the tree before an edit. Whatever the edit, its result
   // must be identical to parsing the whole document from scratch.
   it("incremental parsing matches a full parse after random edits", () => {
@@ -79,5 +84,103 @@ describe("markdown parser", () => {
       fragments = TreeFragment.addTree(tree, fragments);
       expect(tree.toString(), `edit ${i} at ${from}`).toBe(plainMarkdownParser.parse(text).toString());
     }
+  });
+});
+
+/** Source text of every node with this name, in document order. */
+function texts(source: string, name: string): string[] {
+  const out: string[] = [];
+  plainMarkdownParser.parse(source).iterate({
+    enter: (node) => {
+      if (node.name === name) out.push(source.slice(node.from, node.to));
+    },
+  });
+  return out;
+}
+
+describe("markdown extensions: edge cases", () => {
+  it("reads inline maths, but not escaped or spaced dollars", () => {
+    expect(texts("a $x^2$ b", "InlineMath")).toEqual(["$x^2$"]);
+    expect(texts("inline $$e=mc^2$$ here", "InlineMath")).toEqual(["$$e=mc^2$$"]);
+    expect(texts("\\$x\\$ and $ y $", "InlineMath")).toEqual([]);
+    expect(texts("$a \\$ b$", "InlineMath")).toEqual(["$a \\$ b$"]);
+    expect(texts("$unclosed", "InlineMath")).toEqual([]);
+  });
+
+  it("reads multi-line and one-line block maths, at top level only", () => {
+    expect(texts("$$\na\nb\n$$\nafter", "BlockMath")).toEqual(["$$\na\nb\n$$"]);
+    expect(texts("$$x$$", "BlockMath")).toEqual(["$$x$$"]);
+    expect(texts("- $$\n  a\n  $$", "BlockMath")).toEqual([]);
+  });
+
+  it("does not let an unclosed $$ run past its line limit", () => {
+    const doc = "$$\n" + "x\n".repeat(6000);
+    const [math] = texts(doc, "BlockMath");
+    expect(math.split("\n").length).toBeLessThanOrEqual(5002);
+  });
+
+  it("reads comments inline and as blocks", () => {
+    expect(texts("a %%hidden%% b", "InlineComment")).toEqual(["%%hidden%%"]);
+    expect(texts("%%\nblock\n%%", "CommentBlock")).toEqual(["%%\nblock\n%%"]);
+    expect(texts("100%% sure", "InlineComment")).toEqual([]);
+  });
+
+  it("reads tags in any script but not numbers or mid-word hashes", () => {
+    expect(texts("#todo #اردو #a/b-c #123 x#y (#paren)", "Tag")).toEqual(["#todo", "#اردو", "#a/b-c", "#paren"]);
+    expect(texts("# Heading", "Tag")).toEqual([]);
+  });
+
+  it("reads wikilinks with aliases and embeds with sizes", () => {
+    expect(texts("[[Page|Shown]]", "WikiAlias")).toEqual(["Shown"]);
+    expect(texts("[[Page#Part]]", "WikiTarget")).toEqual(["Page#Part"]);
+    expect(texts("![[img.png|200]]", "Embed")).toEqual(["![[img.png|200]]"]);
+    expect(texts("[[]] and [[unclosed", "WikiLink")).toEqual([]);
+  });
+
+  it("reads highlights but not a lone or tripled equals", () => {
+    expect(texts("==marked==", "Highlight")).toEqual(["==marked=="]);
+    expect(texts("a === b", "Highlight")).toEqual([]);
+    expect(texts("x = y", "Highlight")).toEqual([]);
+  });
+
+  it("reads footnote references and definitions", () => {
+    const doc = "Text[^1] and[^note].\n\n[^1]: First\n[^note]: Second\n    continued";
+    expect(texts(doc, "FootnoteRef")).toEqual(["[^1]", "[^note]"]);
+    expect(texts(doc, "FootnoteDefinition")).toEqual(["[^1]: First", "[^note]: Second\n    continued"]);
+    expect(texts("[^ spaced]", "FootnoteRef")).toEqual([]);
+  });
+
+  it("reads front matter only at the very start", () => {
+    expect(texts("---\ntitle: x\n---\nbody", "Frontmatter")).toEqual(["---\ntitle: x\n---"]);
+    expect(texts("intro\n\n---\ntitle: x\n---", "Frontmatter")).toEqual([]);
+    // A rule followed by prose is not front matter.
+    expect(texts("---\nJust prose here\n", "Frontmatter")).toEqual([]);
+  });
+
+  it("reads callout tags only at the start of a quote line", () => {
+    expect(texts("> [!warning]- Careful", "CalloutTag")).toEqual(["[!warning]-"]);
+    expect(texts("> text [!note]", "CalloutTag")).toEqual([]);
+  });
+
+  it("parses deeply nested lists and quotes without losing structure", () => {
+    const doc = Array.from({ length: 12 }, (_v, i) => `${"  ".repeat(i)}- level ${i}`).join("\n");
+    expect(texts(doc, "ListItem")).toHaveLength(12);
+    expect(texts("> > > deep", "Blockquote")).toHaveLength(3);
+  });
+
+  it("keeps inline scanning bounded on a very long line full of openers", () => {
+    const line = "$a ==b %%c [[d [^e #f ".repeat(20_000);
+    const started = performance.now();
+    const tree = plainMarkdownParser.parse(line);
+    expect(tree.length).toBe(line.length);
+    expect(performance.now() - started).toBeLessThan(5000);
+  });
+
+  // BUGS.md L2 and L3: false tags and highlights.
+  it.skip("L2: colour codes are not tags", () => {
+    expect(texts("color: #fff and #1a2b3c", "Tag")).toEqual([]);
+  });
+  it.skip("L3: comparison operators are not highlight markers", () => {
+    expect(texts("if a==b or c==d", "Highlight")).toEqual([]);
   });
 });
