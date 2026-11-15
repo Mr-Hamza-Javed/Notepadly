@@ -343,3 +343,69 @@ These look likely from the code but need a run on WebView2.
 - 900 random keystrokes and format commands caused no exception.
 - The no-lock file design, the stale check and the temp-file safe save are carefully built.
 - No obvious security bug: a document cannot run scripts (print output is sanitised, KaTeX and Mermaid run in strict mode, table cells escape HTML).
+
+---
+
+## Found while writing tests (2026-11)
+
+**Branch:** `test/core-features` · **How:** Vitest (jsdom, real CodeMirror, an in-memory fake of the Rust commands at the IPC boundary) and `cargo test` on Windows. Rust tests ran on this machine this time.
+
+Nothing above was removed. Bugs from the report that a test now pins down are listed first; the tests named `it.skip(...)` / `#[ignore]` reproduce the ones still open (each fails when un-skipped).
+
+### Fixed on this branch (listed bugs)
+
+| # | What was fixed | Commit |
+| --- | --- | --- |
+| C4 | `showMessage` now answers a pending "save changes?" dialog as Cancel before replacing it, so the tab and the window can close again | `d510cf2` |
+| M20 | "Could not open file" names the file that failed, and that file is removed from Recent | `d510cf2` |
+| H4 | Inserting a table on a blank line above a paragraph keeps a blank line after the table | `d573f19` |
+| M4 (first part) | A heading change over several lines skips blank lines. Bold across paragraphs (second part) is still open | `d573f19` |
+| H10 (first part) | Find Next/Previous report the real index after the cursor was moved. Parts 2 (F3 does not update the bar) and 3 ("10000+") are still open | `96a6e76` |
+| H9 (part) | `%%comments%%` and front matter are left out of printing. Maths, Mermaid, callouts, highlights, wikilinks and tags still print raw | `ccacdde` |
+| L6 (part) | "Montserrat Extra Bold" no longer lists a false "Montserrat Extra"; bitmap `.fon` fonts ("Courier 10,12,15", "MS Sans Serif 8,10,12,14,18,24") are left out. "Inter" is still always listed | `ea5c821`, `fec7557` |
+
+### Fixed on this branch (new)
+
+#### T1. Choosing a heading or list kind at the start of a line puts the cursor before the marker ✅ (fixed in `d573f19`)
+- **What happened:** on an empty line (or with the cursor at the start of a line), pick H1 or "Bulleted list", then type "x". The line became `x# ` / `x- ` instead of `# x` / `- x`.
+- **Cause:** `src/editor/commands.ts` (`setBlockKind`, `setListKind`) inserted the marker at the cursor position, and a cursor at an insertion point stays in front of it.
+- **Fix:** a bare cursor at the insertion point is mapped to after the new marker. Test: `commands.test.ts` "puts a cursor at the start of the line after the new marker".
+
+### Still open, with a skipped test
+
+| # | Test |
+| --- | --- |
+| H5 | `src/editor/commands.test.ts` "H5: adding a row to a table inside a blockquote keeps it in the quote" |
+| H7 | `src/state/actions.test.ts` "H7: a deleted-then-restored file leaves an unedited tab clean" |
+| H14 | `src-tauri/src/files.rs` `mixed_line_endings_are_kept_on_save` (`#[ignore]`) |
+| H16 | `src/state/actions.test.ts` "H16: a restored tab whose file is gone is not an empty unsaved document" |
+| M4 (second part) | `src/editor/commands.test.ts` "M4: bolding two paragraphs bolds each one" |
+| M7 | `src/state/logic.test.ts` "M7: [[v1.2 notes]] opens v1.2 notes.md" |
+| M12 | `src/lib/loader.test.ts` "M12: undo still works after a tab was hibernated and woken" |
+| M15 | `src-tauri/src/files.rs` `utf16_without_bom_is_detected` (`#[ignore]`) |
+| L2, L3 | `src/editor/markdown.test.ts` "L2: colour codes are not tags", "L3: comparison operators are not highlight markers" |
+| L8 | `src/editor/tableModel.test.ts` "L8: 2 * 3 * 4 stays plain text" |
+
+### New, not fixed
+
+#### T2. An untitled tab closed right after typing comes back named "Untitled" ✅
+- **What happens:** type the first line of a new note and close the window within a quarter of a second. Next start the tab has its text and its draft, but the tab is called "Untitled" until the next edit.
+- **Steps:** new tab, type `Shopping list`, close the window at once (background mode, continue session), start again.
+- **Expected:** title "Shopping list". **Actual:** "Untitled".
+- **Cause:** `src/state/actions.ts:49` / `:85` (`scheduleTitle`): the title is set on a 250 ms timer, and `prepareWindowClose` (`:484`) stores the session without running a pending title update. The test in `actions.test.ts` waits for the title before closing to stay deterministic.
+- **Fix:** flush pending title timers in `prepareWindowClose`, or derive the title in `buildSession` for untitled dirty tabs.
+
+#### T3. A note whose first line is a Windows device name suggests an invalid file name 📖
+- **What happens:** an untitled tab whose first line is `con`, `nul`, `aux`, `prn`, `com1`..`com9` or `lpt1`..`lpt9` suggests `con.md` etc. in Save As. Windows reserves these names with any extension, so the dialog refuses or the save fails.
+- **Expected:** a usable suggestion (`con_.md` or `Untitled.md`). **Actual:** `con.md`.
+- **Cause:** `src/state/logic.ts:192` (`suggestedFileName`) strips forbidden characters but not reserved names.
+
+#### T4. A Save As name ending in a dot keeps a "." extension that Windows then drops 📖
+- **What happens:** in Save As type `notes.` → `extOf` sees the extension `.`, so no `.md`/`.txt` is added. Windows strips the trailing dot and writes `notes` with no extension, while the tab's path stays `...\notes.`. `pathsEqual` then treats `notes.` and `notes` as different files, so opening `notes` again gives a second tab for the same file.
+- **Cause:** `src/state/logic.ts:111` (`extOf`) and `:198` (`withDefaultExtension`); related to C1.
+- **Fix:** trim trailing dots and spaces from the chosen path before using it (Windows does the same).
+
+### Could not be checked here
+- The fake backend follows `files.rs`, but it is not Rust. Rust behaviour itself is covered by `cargo test` (56 passing, 2 ignored as known bugs).
+- Layout-dependent behaviour (cursor movement across widgets, H2; drag and drop; clipboard; WebView2 menus W1–W8) cannot run in jsdom and was not tested.
+- The auto-updater's network, download and install path needs a real `AppHandle` and GitHub; only the resume marker and status wire format are tested. H13 stays open.
