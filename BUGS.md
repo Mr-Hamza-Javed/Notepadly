@@ -409,3 +409,30 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 - The fake backend follows `files.rs`, but it is not Rust. Rust behaviour itself is covered by `cargo test` (56 passing, 2 ignored as known bugs).
 - Layout-dependent behaviour (cursor movement across widgets, H2; drag and drop; clipboard; WebView2 menus W1–W8) cannot run in jsdom and was not tested.
 - The auto-updater's network, download and install path needs a real `AppHandle` and GitHub; only the resume marker and status wire format are tested. H13 stays open.
+
+---
+
+## Missing features (to add when fixing bugs)
+
+These are not bugs in existing code: Windows Notepad does these things and Notepadly does not. Add them together with the window bugs they touch.
+
+### F1. Launching the app again only brings back the old window; it should open a new window 📖
+- **What happens:** while Notepadly is running, starting it again from the Start menu, taskbar, a shortcut or the command line does not open anything new. The running window is shown and focused again.
+- **Expected (as in Notepad):** every new launch opens a **new window**. The windows that are already open stay as they are.
+- **Cause:** the app uses `tauri-plugin-single-instance` (`src-tauri/src/lib.rs:276`). `on_second_instance` (`src-tauri/src/lib.rs:238`) only sends the paths to the main window, then runs `unminimize`, `show` and `set_focus`.
+- **To do:** in `on_second_instance`, open a new window when there are no paths, the same way `window_new` does. When a file is opened from Explorer, still follow the "Open files in" setting (`openFilesIn`: tab or window). Keep the single process, so drafts, the session and settings stay in one place.
+- **Related:** M10, M11, M17 and M18 (extra windows do not remember their session or size). Once every launch makes a window, M18 and H12 (settings and Recent not shared between windows) matter much more, so fix them with this.
+
+### F2. Tabs cannot be dragged out to a new window or between windows 📖
+- **What happens:** tabs can only be reordered or used inside their own window.
+- **Expected (as in Notepad):**
+  - Drag a tab out of the tab bar and drop it outside the window: that tab opens in a **new window** of its own and leaves the old window.
+  - Drag a tab from one window and drop it on another window's tab bar: the tab **moves** into that window at the drop position.
+  - The moved tab keeps everything: its text, unsaved changes, undo history if possible, cursor and scroll position, encoding, line endings and mode. It must never be saved or reloaded from disk because of the move.
+  - Dragging the last tab out of a window moves the whole window, so no empty window is left behind.
+- **Cause:** the tab bar has no drag-out handling, and there is no Rust command that moves a tab's state from one window to another. Each window keeps its own tab list (`src/state/store.ts`), and only the `main` window writes the session (see M18).
+- **To do:**
+  - Add a `tab_move` command: the source window sends the tab's full state (or saves its draft first), Rust creates or targets the window, and the target window loads it.
+  - Use the drag position on screen to tell a drop outside every window (new window) from a drop on another window's tab bar (move).
+  - Make sure the moved tab's draft and session entry belong to the new window, so nothing is lost or duplicated on restart.
+- **Related:** M18, C5 and H12. Test the move with a dirty tab, a partly loaded big file and an untitled tab.
