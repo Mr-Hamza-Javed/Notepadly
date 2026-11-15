@@ -72,6 +72,8 @@ interface Session {
   doc: EditorState["doc"] | null;
   total: number;
   current: number;
+  /** The match `current` points at; any other selection makes the index stale. */
+  at: Match | null;
 }
 
 function firstFrom(state: EditorState, query: SearchQuery, from: number, to: number): Match | null {
@@ -115,6 +117,7 @@ export class FindController {
     }
     session.total = total;
     session.current = current;
+    session.at = current > 0 ? { from: main.from, to: main.to } : null;
     session.doc = view.state.doc;
   }
 
@@ -144,7 +147,7 @@ export class FindController {
       caseSensitive: options.caseSensitive,
       literal: true,
     });
-    const session: Session = { options, query, doc: null, total: 0, current: 0 };
+    const session: Session = { options, query, doc: null, total: 0, current: 0, at: null };
     this.session = session;
     view.dispatch({ effects: setQuery.of(query) });
     const { state } = view;
@@ -189,7 +192,13 @@ export class FindController {
     }
     if (!match) return this.result(view, session);
 
-    const countValid = session.doc === state.doc && session.current > 0;
+    // The running index only holds while the selection is still the match it counted.
+    const countValid =
+      session.doc === state.doc &&
+      session.current > 0 &&
+      session.at !== null &&
+      session.at.from === main.from &&
+      session.at.to === main.to;
     this.select(view, match);
     if (!countValid) {
       this.recount(view, session);
@@ -200,6 +209,7 @@ export class FindController {
       // Past the counting bound an exact index is unknown, so report it as not computed.
       session.current = 0;
     }
+    if (countValid) session.at = { from: match.from, to: match.to };
     return { total: session.total, current: session.current };
   }
 
