@@ -59,6 +59,9 @@ fn parse_value_name(name: &str) -> Vec<String> {
     name.split('&').filter_map(family_of).collect()
 }
 
+/// Words that only modify a following style word: "Extra Bold", "Semi Light".
+const STYLE_MODIFIERS: &[&str] = &["extra", "ultra", "semi", "demi"];
+
 fn family_of(face: &str) -> Option<String> {
     let mut words: Vec<&str> = face.split_whitespace().collect();
     while words.len() > 1 {
@@ -67,6 +70,12 @@ fn family_of(face: &str) -> Option<String> {
             break;
         }
         words.pop();
+        // "Montserrat Extra Bold" is "Montserrat", not a family "Montserrat Extra".
+        while words.len() > 1
+            && STYLE_MODIFIERS.contains(&words[words.len() - 1].to_ascii_lowercase().as_str())
+        {
+            words.pop();
+        }
     }
     let family = words.join(" ");
     (!family.is_empty() && !family.starts_with('@')).then_some(family)
@@ -98,6 +107,37 @@ mod tests {
                 "Inter",
                 "Segoe UI"
             ]
+        );
+    }
+
+    // Regression for BUGS.md L6: "Montserrat Extra Bold" produced a false family
+    // "Montserrat Extra".
+    #[test]
+    fn split_style_words_like_extra_bold_are_removed_together() {
+        let raw = [
+            "Montserrat Extra Bold (TrueType)",
+            "Montserrat Semi Light Italic (TrueType)",
+            "Montserrat ExtraBold (TrueType)",
+            "Montserrat (TrueType)",
+        ];
+        assert_eq!(families(raw.iter().map(|s| s.to_string())), ["Montserrat"]);
+        // A modifier that is not followed by a style word is part of the name.
+        assert_eq!(family_of("Ultra Sans").as_deref(), Some("Ultra Sans"));
+        assert_eq!(family_of("Extra Bold").as_deref(), Some("Extra"));
+    }
+
+    #[test]
+    fn skips_vertical_faces_blank_names_and_odd_suffixes() {
+        let raw = [
+            "@MS Gothic (TrueType)",
+            "   (TrueType)",
+            "Small Fonts (VGA res)",
+            "Noto Nastaliq Urdu (TrueType)",
+            "Fira Code Retina (OpenType)",
+        ];
+        assert_eq!(
+            families(raw.iter().map(|s| s.to_string())),
+            ["Fira Code Retina", "Noto Nastaliq Urdu"]
         );
     }
 

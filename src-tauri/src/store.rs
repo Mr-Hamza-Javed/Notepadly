@@ -110,4 +110,91 @@ mod tests {
         assert_eq!(draft_read(&base, "t1").unwrap(), None);
         fs::remove_dir_all(&base).unwrap();
     }
+
+    struct TempBase(PathBuf);
+
+    impl TempBase {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("notepadly-store-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempBase {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn rewriting_replaces_the_old_content_and_leaves_no_temp_file() {
+        let base = TempBase::new("rewrite");
+        session_write(&base.0, "{\"v\":1,\"tabs\":[1,2,3]}").unwrap();
+        session_write(&base.0, "{}").unwrap();
+        assert_eq!(session_read(&base.0).unwrap().as_deref(), Some("{}"));
+        draft_write(&base.0, "t", "a much longer first draft").unwrap();
+        draft_write(&base.0, "t", "short").unwrap();
+        assert_eq!(draft_read(&base.0, "t").unwrap().as_deref(), Some("short"));
+        let names: Vec<_> = fs::read_dir(base.0.join("drafts"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["t.txt"]);
+        assert!(!base.0.join("session.tmp").exists());
+    }
+
+    #[test]
+    fn drafts_keep_unicode_crlf_and_empty_text_exactly() {
+        let base = TempBase::new("exact");
+        for text in [
+            "",
+            "سلام\r\nدنیا 😀",
+            "\u{FEFF}starts with a BOM",
+            "tab\there",
+        ] {
+            draft_write(&base.0, "d", text).unwrap();
+            assert_eq!(draft_read(&base.0, "d").unwrap().as_deref(), Some(text));
+        }
+    }
+
+    #[test]
+    fn a_corrupt_draft_is_an_error_not_garbage() {
+        let base = TempBase::new("corrupt");
+        fs::create_dir_all(base.0.join("drafts")).unwrap();
+        fs::write(
+            base.0.join("drafts").join("bad.txt"),
+            [0xFF, 0xFE, 0x00, 0xD8],
+        )
+        .unwrap();
+        assert!(draft_read(&base.0, "bad").is_err());
+    }
+
+    #[test]
+    fn draft_ids_have_a_length_limit_and_reject_every_device_name() {
+        let base = Path::new("base");
+        assert!(draft_path(base, &"a".repeat(128)).is_ok());
+        assert!(draft_path(base, &"a".repeat(129)).is_err());
+        for device in ["CON", "prn", "Aux", "nul", "COM9", "lpt1"] {
+            assert!(draft_path(base, device).is_err(), "{device}");
+        }
+        // Names that merely start like a device are fine.
+        for ok in ["CONSOLE", "nul_1", "COM", "LPT10", "t-con"] {
+            assert!(draft_path(base, ok).is_ok(), "{ok}");
+        }
+        assert!(
+            draft_path(base, "تب").is_err(),
+            "non-ASCII ids are rejected"
+        );
+        assert!(draft_path(base, "a b").is_err());
+    }
+
+    #[test]
+    fn deleting_a_draft_with_a_bad_id_is_refused_and_touches_nothing() {
+        let base = TempBase::new("baddelete");
+        session_write(&base.0, "keep").unwrap();
+        assert!(draft_delete(&base.0, "../session").is_err());
+        assert_eq!(session_read(&base.0).unwrap().as_deref(), Some("keep"));
+    }
 }

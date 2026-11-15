@@ -364,6 +364,44 @@ mod tests {
     }
 
     #[test]
+    fn args_accept_absolute_paths_spaces_and_unicode_but_not_folders() {
+        let dir = std::env::temp_dir().join(format!("notepadly-args-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub folder")).unwrap();
+        let spaced = dir.join("my notes اردو 😀.md");
+        std::fs::write(&spaced, "x").unwrap();
+        let elsewhere = std::env::temp_dir();
+        let args = vec![
+            spaced.to_string_lossy().into_owned(),
+            "sub folder".into(),
+            "my notes اردو 😀.md".into(),
+        ];
+        let expected = spaced.to_string_lossy().into_owned();
+        // An absolute argument ignores the working directory; a relative one uses it.
+        assert_eq!(
+            paths_from_args(args.clone(), &elsewhere),
+            vec![expected.clone()]
+        );
+        assert_eq!(
+            paths_from_args(args, &dir),
+            vec![expected.clone(), expected]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_closed_window_forgets_its_pending_paths() {
+        let state = WindowPaths::default();
+        state.store("window-1", vec!["a".into()]);
+        state.forget("window-1");
+        assert!(!state.is_ready("window-1"));
+        assert!(state.take("window-1").is_empty());
+        // Storing nothing does not create an entry.
+        state.store("window-2", Vec::new());
+        assert!(state.lock().pending.is_empty());
+    }
+
+    #[test]
     fn pending_paths_drain_once_per_label() {
         let state = WindowPaths::default();
         state.store("main", vec!["a".into()]);

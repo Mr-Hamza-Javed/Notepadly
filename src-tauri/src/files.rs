@@ -1253,4 +1253,160 @@ mod tests {
         assert_eq!(value["nextOffset"], 3);
         assert_eq!(value["stamp"]["mtimeMs"], 2.0);
     }
+
+    #[test]
+    fn saves_and_reads_paths_with_spaces_and_unicode() {
+        let dir = TestDir::new();
+        let folder = dir.0.join("My Notes اردو");
+        fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("ہیلو 😀 file.md");
+        let stamp = save(&request(&path, "سلام\nدنیا", Eol::Crlf, Encoding::Utf8)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), "سلام\r\nدنیا".as_bytes());
+        assert_eq!(stat(&path).unwrap(), Some(stamp));
+        let chunk = read_chunk(&path, 0, 1024, None).unwrap();
+        assert_eq!(
+            (chunk.text.as_str(), chunk.eol, chunk.eof),
+            ("سلام\nدنیا", Eol::Crlf, true)
+        );
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 1, "temp file left");
+    }
+
+    #[test]
+    fn empty_documents_round_trip_in_every_encoding() {
+        let dir = TestDir::new();
+        let path = dir.0.join("empty.txt");
+        for encoding in [Encoding::Utf8, Encoding::Utf8Bom, LE, BE] {
+            save(&request(&path, "", Eol::Crlf, encoding)).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), encoding.bom(), "{encoding:?}");
+            let chunk = read_chunk(&path, 0, 1024, None).unwrap();
+            assert_eq!((chunk.text.as_str(), chunk.eof), ("", true), "{encoding:?}");
+            // A BOM-only file keeps its encoding, so the next save writes it back.
+            let expected = if encoding == Encoding::Utf8 {
+                Encoding::Utf8
+            } else {
+                encoding
+            };
+            assert_eq!(chunk.encoding, expected);
+        }
+    }
+
+    #[test]
+    fn classic_mac_cr_files_keep_their_line_endings() {
+        let dir = TestDir::new();
+        let path = dir.file(b"one\rtwo\rthree");
+        let chunk = read_chunk(&path, 0, 1024, None).unwrap();
+        assert_eq!(
+            (chunk.text.as_str(), chunk.eol),
+            ("one\ntwo\nthree", Eol::Cr)
+        );
+        save(&request(&path, &chunk.text, chunk.eol, chunk.encoding)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"one\rtwo\rthree");
+        assert_eq!(scan(&path, Encoding::Utf8).unwrap().lines, 3);
+    }
+
+    #[test]
+    fn text_that_already_has_crlf_is_not_doubled() {
+        assert_eq!(
+            encode_text("a\r\nb\rc\n", Eol::Crlf, Encoding::Utf8),
+            b"a\r\nb\r\nc\r\n"
+        );
+        assert_eq!(
+            encode_text("a\r\nb", Eol::Lf, Encoding::Utf8),
+            b"a\nb".to_vec()
+        );
+    }
+
+    #[test]
+    fn a_trailing_newline_survives_the_round_trip() {
+        let dir = TestDir::new();
+        let path = dir.file(b"line\r\n");
+        let chunk = read_chunk(&path, 0, 1024, None).unwrap();
+        assert_eq!(chunk.text, "line\n");
+        save(&request(&path, &chunk.text, chunk.eol, chunk.encoding)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"line\r\n");
+    }
+
+    #[test]
+    fn a_save_with_the_current_stamp_succeeds() {
+        let dir = TestDir::new();
+        let path = dir.file(b"old");
+        let mut req = request(&path, "new", Eol::Lf, Encoding::Utf8);
+        req.expected_stamp = stat(&path).unwrap();
+        let stamp = save(&req).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(stamp.size, 3);
+    }
+
+    #[test]
+    fn a_tail_offset_past_the_end_is_stale_and_changes_nothing() {
+        let dir = TestDir::new();
+        let path = dir.file(b"short");
+        let mut req = request(&path, "x", Eol::Lf, Encoding::Utf8);
+        req.tail_offset = Some(100);
+        assert_eq!(save(&req).unwrap_err(), "STALE");
+        assert_eq!(fs::read(&path).unwrap(), b"short");
+        assert_eq!(dir.entries(), 1, "temp file left behind");
+    }
+
+    #[test]
+    fn folders_and_missing_files_are_not_files() {
+        let dir = TestDir::new();
+        assert_eq!(stat(&dir.0).unwrap(), None);
+        assert_eq!(stat(&dir.0.join("missing.txt")).unwrap(), None);
+        assert!(read_chunk(&dir.0.join("missing.txt"), 0, 1024, None).is_err());
+        assert!(read_chunk(&dir.0, 0, 1024, None).is_err());
+    }
+
+    #[test]
+    fn saving_into_a_missing_folder_fails_without_creating_it() {
+        let dir = TestDir::new();
+        let path = dir.0.join("no such folder").join("a.txt");
+        assert!(save(&request(&path, "x", Eol::Lf, Encoding::Utf8)).is_err());
+        assert!(!dir.0.join("no such folder").exists());
+    }
+
+    #[test]
+    fn a_long_single_line_is_cut_on_a_character_boundary() {
+        let dir = TestDir::new();
+        // No line break at all, two-byte characters, odd window.
+        let text = "é".repeat(5000);
+        let path = dir.file(text.as_bytes());
+        let chunk = read_chunk(&path, 0, 4097, None).unwrap();
+        assert_eq!((chunk.next_offset, chunk.eof), (4096, false));
+        assert_eq!(walk(&path, 4097), text);
+    }
+
+    #[test]
+    fn utf16_tail_save_keeps_the_rest_of_the_file() {
+        let dir = TestDir::new();
+        let original = utf16(&"سطر\n".repeat(50), LE);
+        let path = dir.file(&original);
+        let first = read_chunk(&path, 0, 32, None).unwrap();
+        assert!(!first.eof);
+        let mut req = request(&path, &format!("NEW{}", first.text), Eol::Lf, LE);
+        req.tail_offset = Some(first.next_offset);
+        req.expected_stamp = Some(first.stamp);
+        save(&req).unwrap();
+        assert_eq!(walk(&path, 1024), format!("NEW{}", "سطر\n".repeat(50)));
+    }
+
+    // BUGS.md H14: mixed line endings are all rewritten in the first line's style.
+    #[test]
+    #[ignore = "known bug BUGS.md H14"]
+    fn mixed_line_endings_are_kept_on_save() {
+        let dir = TestDir::new();
+        let path = dir.file(b"a\r\nb\nc");
+        let chunk = read_chunk(&path, 0, 1024, None).unwrap();
+        save(&request(&path, &chunk.text, chunk.eol, chunk.encoding)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"a\r\nb\nc");
+    }
+
+    // BUGS.md M15: a UTF-16 file without a BOM is read as UTF-8.
+    #[test]
+    #[ignore = "known bug BUGS.md M15"]
+    fn utf16_without_bom_is_detected() {
+        let dir = TestDir::new();
+        let path = dir.file(&encode_text("hello", Eol::Lf, LE));
+        assert_eq!(read_chunk(&path, 0, 1024, None).unwrap().text, "hello");
+    }
 }

@@ -111,15 +111,18 @@ fn marker_path(app: &AppHandle) -> Option<PathBuf> {
 /// True (once) when this launch is the restart after an update installed from the
 /// background. Consumes the marker.
 pub fn take_resume_marker(app: &AppHandle) -> bool {
-    let Some(path) = marker_path(app) else {
-        return false;
-    };
-    let fresh = std::fs::metadata(&path)
+    marker_path(app).is_some_and(|path| consume_marker(&path, SystemTime::now()))
+}
+
+/// True when the marker exists and was written at most `MARKER_MAX_AGE` before
+/// `now`. The marker is removed either way, so it works only once.
+fn consume_marker(path: &Path, now: SystemTime) -> bool {
+    let fresh = std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| SystemTime::now().duration_since(t).ok())
+        .and_then(|t| now.duration_since(t).ok())
         .is_some_and(|age| age <= MARKER_MAX_AGE);
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path);
     fresh
 }
 
@@ -259,4 +262,75 @@ pub async fn update_check_now(app: AppHandle) -> Status {
 #[tauri::command]
 pub fn launched_hidden(app: AppHandle) -> bool {
     app.state::<AutoUpdate>().launched_hidden
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_marker(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("notepadly-update-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join(RESUME_MARKER)
+    }
+
+    #[test]
+    fn a_fresh_marker_means_resume_hidden_exactly_once() {
+        let path = temp_marker("fresh");
+        write_marker(&path);
+        assert!(consume_marker(&path, SystemTime::now()));
+        assert!(!path.exists());
+        assert!(!consume_marker(&path, SystemTime::now()));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_stale_marker_is_ignored_and_removed() {
+        // A marker left by an install that failed must not hide a later normal start.
+        let path = temp_marker("stale");
+        write_marker(&path);
+        let later = SystemTime::now() + MARKER_MAX_AGE + Duration::from_secs(60);
+        assert!(!consume_marker(&path, later));
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_missing_marker_is_a_normal_start() {
+        assert!(!consume_marker(&temp_marker("missing"), SystemTime::now()));
+    }
+
+    #[test]
+    fn status_serializes_in_the_shape_the_frontend_expects() {
+        let status = Status {
+            phase: Phase::UpToDate,
+            version: Some("1.2.3".into()),
+            message: None,
+            current: "1.2.2".into(),
+            can_install: true,
+        };
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["phase"], "upToDate");
+        assert_eq!(value["canInstall"], true);
+        assert_eq!(value["version"], "1.2.3");
+        for (phase, name) in [
+            (Phase::Idle, "idle"),
+            (Phase::Checking, "checking"),
+            (Phase::Downloading, "downloading"),
+            (Phase::Ready, "ready"),
+            (Phase::Available, "available"),
+            (Phase::Error, "error"),
+        ] {
+            assert_eq!(serde_json::to_value(phase).unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn nothing_is_checked_until_the_frontend_enables_it() {
+        let state = AutoUpdate::new(false);
+        assert!(!state.enabled.load(Ordering::Relaxed));
+        assert!(state.ready.lock().unwrap().is_none());
+        assert_eq!(state.status.lock().unwrap().0, Phase::Idle);
+    }
 }
