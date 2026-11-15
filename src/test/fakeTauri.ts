@@ -1,8 +1,17 @@
 // An in-memory stand-in for the Rust side, at the IPC boundary only. It follows the
-// contract in src/lib/ipc.ts and the behaviour of src-tauri/src/files.rs closely
-// enough for the frontend's loading, saving and change detection to be exercised
-// for real: byte offsets, chunk cuts on line boundaries, CRLF, BOM, tail saves and
-// STALE rejections.
+// contract in src/lib/ipc.ts and the behaviour of src-tauri/src/files.rs and
+// store.rs closely enough for the frontend's loading, saving and change detection
+// to be exercised for real: byte offsets, chunk cuts (last LF, or a CR that is not
+// the window's last byte, else a UTF-8 character boundary), CRLF/LF/CR, the UTF-8
+// BOM, tail saves, STALE rejections, missing folders and draft id validation.
+//
+// Known differences from Rust, none of which the frontend tests rely on:
+// - Only UTF-8 (with or without BOM) is modelled. Rust also detects UTF-16 BOMs
+//   and falls back to the ANSI code page for invalid UTF-8; the fake decodes
+//   invalid bytes as U+FFFD.
+// - Writes are not atomic and there is no ReplaceFileW / in-place fallback.
+// - Error strings for missing files and folders copy Windows' wording, but other
+//   I/O errors only happen when a test injects them with `failNext`.
 
 export interface FakeStamp {
   size: number;
@@ -30,18 +39,54 @@ function concat(...parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
-function firstEol(bytes: Uint8Array): "CRLF" | "LF" | "CR" | null {
+/** files.rs `first_eol`: a CR at the end of an incomplete window may be half a CRLF. */
+function firstEol(bytes: Uint8Array, complete: boolean): "CRLF" | "LF" | "CR" | null {
   for (let i = 0; i < bytes.length; i++) {
     if (bytes[i] === 10) return "LF";
-    if (bytes[i] === 13) return bytes[i + 1] === 10 ? "CRLF" : "CR";
+    if (bytes[i] === 13) {
+      if (i + 1 < bytes.length) return bytes[i + 1] === 10 ? "CRLF" : "CR";
+      return complete ? "CR" : "CRLF";
+    }
   }
   return null;
 }
+
+/** files.rs `cut_bytes` + `utf8_char_cut`. */
+function cutChunk(body: Uint8Array): number {
+  const len = body.length;
+  for (let i = len - 1; i >= 0; i--) {
+    if (body[i] === 10 || (body[i] === 13 && i + 1 < len)) return i + 1;
+  }
+  if (body[len - 1] === 13) return len - 1;
+  for (let back = 1; back <= Math.min(3, len); back++) {
+    const byte = body[len - back];
+    if ((byte & 0xc0) === 0x80) continue;
+    const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    return needed > back ? len - back : len;
+  }
+  return len;
+}
+
+/** store.rs `draft_path`: one path component of [A-Za-z0-9_-], never a device name. */
+function validDraftId(id: string): boolean {
+  const upper = id.toUpperCase();
+  const device =
+    ["CON", "PRN", "AUX", "NUL"].includes(upper) || /^(COM|LPT)\d$/.test(upper);
+  return id.length > 0 && id.length <= 128 && /^[A-Za-z0-9_-]+$/.test(id) && !device;
+}
+
+const parentKey = (path: string) => {
+  const k = key(path);
+  const cut = k.lastIndexOf("\\");
+  return cut > 0 ? k.slice(0, cut) : null;
+};
 
 const normalize = (text: string) => text.replace(/\r\n?/g, "\n");
 
 export class FakeBackend {
   files = new Map<string, FakeFile>();
+  /** Folders that exist. Writing a file creates its folders; saving does not. */
+  dirs = new Set<string>();
   session: string | null = null;
   drafts = new Map<string, string>();
   pendingPaths: string[] = [];
@@ -56,6 +101,7 @@ export class FakeBackend {
 
   reset(): void {
     this.files.clear();
+    this.dirs.clear();
     this.session = null;
     this.drafts.clear();
     this.pendingPaths = [];
@@ -68,7 +114,13 @@ export class FakeBackend {
   /** Writes a file "from another program". Strings are stored as UTF-8. */
   write(path: string, content: string | Uint8Array): void {
     const bytes = typeof content === "string" ? encoder.encode(content) : content;
+    this.mkdir(parentKey(path) ?? "");
     this.files.set(key(path), { bytes, mtimeMs: (this.clock += 1000) });
+  }
+
+  /** Creates a folder and its parents, like `mkdir -p`. */
+  mkdir(path: string): void {
+    for (let k: string | null = key(path); k; k = parentKey(k)) this.dirs.add(k);
   }
 
   delete(path: string): void {
@@ -125,13 +177,15 @@ export class FakeBackend {
         this.session = args.json as string;
         return null;
       case "draft_read":
-        return this.drafts.get(args.id as string) ?? null;
       case "draft_write":
-        this.drafts.set(args.id as string, args.text as string);
+      case "draft_delete": {
+        const id = args.id as string;
+        if (!validDraftId(id)) throw `invalid draft id: ${JSON.stringify(id)}`;
+        if (cmd === "draft_read") return this.drafts.get(id) ?? null;
+        if (cmd === "draft_write") this.drafts.set(id, args.text as string);
+        else this.drafts.delete(id);
         return null;
-      case "draft_delete":
-        this.drafts.delete(args.id as string);
-        return null;
+      }
       case "take_pending_paths": {
         const paths = this.pendingPaths;
         this.pendingPaths = [];
@@ -171,22 +225,19 @@ export class FakeBackend {
     const eof = start + window.length >= size;
     const bom = start === 0 && this.stripBom(window) !== window ? 3 : 0;
     const body = window.subarray(bom);
-    let cut = body.length;
-    if (!eof) {
-      const lastLf = body.lastIndexOf(10);
-      if (lastLf >= 0) cut = lastLf + 1;
-      else {
-        // No line break: back off to a character boundary.
-        while (cut > 0 && (body[cut - 1] & 0xc0) === 0x80) cut--;
-        if (cut > 0 && body[cut - 1] >= 0xc0) cut--;
-      }
-    }
+    const cut = eof ? body.length : cutChunk(body);
+    // The first chunk detects the line ending from its own window; later chunks
+    // repeat what the first 256 KiB of the file says (files.rs `known_format`).
+    const eol =
+      start === 0
+        ? firstEol(body, eof)
+        : firstEol(this.stripBom(all.subarray(0, 256 * 1024)), size <= 256 * 1024);
     return {
       text: normalize(decoder.decode(body.subarray(0, cut))),
       nextOffset: start + bom + cut,
-      eof: eof && cut === body.length,
-      encoding: bom ? "utf-8-bom" : "utf-8",
-      eol: firstEol(this.stripBom(all)) ?? "CRLF",
+      eof,
+      encoding: this.stripBom(all) !== all ? "utf-8-bom" : "utf-8",
+      eol: eol ?? "CRLF",
       stamp: { size, mtimeMs: file.mtimeMs },
     };
   }
@@ -200,8 +251,12 @@ export class FakeBackend {
     const eol = req.eol === "CRLF" ? "\r\n" : req.eol === "CR" ? "\r" : "\n";
     const body = encoder.encode(normalize(req.text).replace(/\n/g, eol));
     const parts: Uint8Array[] = [req.encoding === "utf-8-bom" ? new Uint8Array(BOM) : new Uint8Array(), body];
+    const parent = parentKey(req.path);
+    if (parent && !this.dirs.has(parent)) throw "The system cannot find the path specified. (os error 3)";
     if (req.tailOffset !== null) {
-      if (!existing || req.tailOffset > existing.bytes.length) throw "STALE";
+      // files.rs `append_tail`: a missing source is an I/O error, a short one is STALE.
+      if (!existing) throw "The system cannot find the file specified. (os error 2)";
+      if (req.tailOffset > existing.bytes.length) throw "STALE";
       parts.push(existing.bytes.subarray(req.tailOffset));
     }
     this.files.set(key(req.path), { bytes: concat(...parts), mtimeMs: (this.clock += 1000) });

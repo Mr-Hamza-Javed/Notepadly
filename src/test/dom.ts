@@ -23,6 +23,16 @@ if (typeof window !== "undefined") {
   if (!Range.prototype.getClientRects) Range.prototype.getClientRects = emptyList;
   if (!Range.prototype.getBoundingClientRect) Range.prototype.getBoundingClientRect = emptyRect;
 
+  // WebView2 has these; without them the parse-ahead plugin crashes and the loader
+  // falls back to a different code path than the app runs.
+  if (!("requestIdleCallback" in window)) {
+    const w = window as unknown as Record<string, unknown>;
+    w.requestIdleCallback = (callback: IdleRequestCallback) =>
+      setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 10 }), 1) as unknown as number;
+    w.cancelIdleCallback = (handle: number) => clearTimeout(handle);
+    Object.assign(globalThis, { requestIdleCallback: w.requestIdleCallback, cancelIdleCallback: w.cancelIdleCallback });
+  }
+
   if (!("ResizeObserver" in window)) {
     (window as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
       observe() {}

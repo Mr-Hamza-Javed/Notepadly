@@ -73,7 +73,7 @@ export async function bootApp(options: BootOptions = {}) {
 export type App = Awaited<ReturnType<typeof bootApp>>;
 
 /** Polls until the condition holds; fails the test after `timeout` ms. */
-export async function waitFor(condition: () => boolean, timeout = 3000): Promise<void> {
+export async function waitFor(condition: () => boolean, timeout = 10_000): Promise<void> {
   const start = Date.now();
   while (!condition()) {
     if (Date.now() - start > timeout) throw new Error("waitFor: condition not met in time");

@@ -14,7 +14,7 @@ vi.mock("@tauri-apps/plugin-opener", async () => (await import("../test/fakeTaur
 const BIG = "C:\\data\\big.log";
 const OTHER = "C:\\data\\other.txt";
 const line = "abcdefghij".repeat(9) + "\n"; // 91 bytes
-const big = line.repeat(40_000); // ~3.6 MB
+const big = line.repeat(25_000); // ~2.3 MB, above the 2 MiB idle-load limit
 
 let app: App;
 
@@ -193,5 +193,36 @@ describe("drafts", () => {
     expect(app.tabByName("other.txt").dirty).toBe(true);
     await app.loader.pollExternalChanges();
     expect(app.tabByName("other.txt").externalChange).toBe("modified");
+  });
+
+  it("falls back to the file on disk, clean, when a tab's draft has gone missing", async () => {
+    backend.write(OTHER, "disk v1");
+    await app.actions.openPaths([OTHER]);
+    app.type(" + mine");
+    await app.actions.closeWindow();
+    backend.drafts.clear();
+
+    app = await bootApp({ keepDisk: true });
+    const tab = app.tabByName("other.txt");
+    await app.actions.activate(tab.id);
+    expect(app.text(tab.id)).toBe("disk v1");
+    expect(app.tabByName("other.txt").dirty).toBe(false);
+  });
+
+  it("opens an empty, flagged tab and says so when a restored file cannot be read", async () => {
+    backend.write(OTHER, "disk v1");
+    backend.write(BIG, "active on restart");
+    await app.actions.openPaths([OTHER]);
+    await app.actions.openPaths([BIG]);
+    await app.actions.closeWindow();
+
+    app = await bootApp({ keepDisk: true });
+    const tab = app.tabByName("other.txt");
+    backend.failNext.set("file_read_chunk", "Access is denied. (os error 5)");
+    await app.actions.activate(tab.id);
+    expect(app.text(tab.id)).toBe("");
+    expect(app.tabByName("other.txt").externalChange).toBe("modified");
+    expect(app.message()).toMatchObject({ title: "Could not open file" });
+    expect(app.message()?.body).toContain("Access is denied");
   });
 });

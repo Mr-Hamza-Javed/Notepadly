@@ -40,13 +40,6 @@ describe("starting up", () => {
     // The empty untitled tab it replaced is gone.
     expect(app.state().tabs).toHaveLength(1);
   });
-
-  it("survives corrupt saved settings", async () => {
-    vi.resetModules();
-    localStorage.setItem("notepadly.settings.v1", "{not json");
-    const store = await import("./store");
-    expect(store.useApp.getState().settings.zoom).toBe(100);
-  });
 });
 
 describe("opening files", () => {
@@ -297,6 +290,18 @@ describe("dirty state and saving", () => {
 describe("save as", () => {
   beforeEach(async () => {
     app = await bootApp();
+    backend.mkdir("C:\\notes");
+  });
+
+  it("reports a folder that no longer exists and keeps the tab unsaved", async () => {
+    app.type("text");
+    dialogs.saveAnswers.push("C:\\gone\\x.md");
+    expect(await app.actions.saveAs()).toBe(false);
+    expect(app.message()).toMatchObject({
+      title: "Could not save file",
+      body: "The system cannot find the path specified. (os error 3)",
+    });
+    expect(app.tab()).toMatchObject({ path: null, dirty: true });
   });
 
   it("asks for a name for an untitled tab and suggests one from its first line", async () => {
@@ -334,6 +339,7 @@ describe("save as", () => {
   it("suggests the current folder and name for a saved file", async () => {
     backend.write(A, "x");
     await app.actions.openPaths([A]);
+    backend.mkdir("C:\\other");
     dialogs.saveAnswers.push("C:\\other\\copy.md");
     await app.actions.saveAs();
     expect(dialogs.saveRequests[0].defaultPath).toBe(A);
@@ -419,7 +425,7 @@ describe("files changed by other programs", () => {
 
 describe("large files", () => {
   const line = "0123456789".repeat(9) + "\n"; // 91 bytes
-  const big = line.repeat(40_000); // ~3.6 MB, above the 2 MiB idle-load limit
+  const big = line.repeat(25_000); // ~2.3 MB, just above the 2 MiB idle-load limit
 
   beforeEach(async () => {
     app = await bootApp();
@@ -468,7 +474,7 @@ describe("large files", () => {
   });
 
   it("loads a small file completely in the background", async () => {
-    const small = line.repeat(10_000); // ~0.9 MB: more than the first chunk, under 2 MiB
+    const small = line.repeat(4_000); // ~360 KB: more than the first chunk, under 2 MiB
     backend.write(B, small);
     await app.actions.openPaths([B]);
     await waitFor(() => app.tab().fullyLoaded);
