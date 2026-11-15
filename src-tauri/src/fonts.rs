@@ -1,6 +1,7 @@
 //! System font families from the registry. No font parsing, so no font-kit.
 
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+use winreg::types::FromRegValue;
 use winreg::RegKey;
 
 const FONTS_KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts";
@@ -29,10 +30,24 @@ pub fn system_fonts() -> Vec<String> {
     let mut names = Vec::new();
     for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
         if let Ok(key) = RegKey::predef(hive).open_subkey(FONTS_KEY) {
-            names.extend(key.enum_values().flatten().map(|(name, _)| name));
+            names.extend(
+                key.enum_values()
+                    .flatten()
+                    .filter(|(_, file)| {
+                        !is_bitmap_font(&String::from_reg_value(file).unwrap_or_default())
+                    })
+                    .map(|(name, _)| name),
+            );
         }
     }
     families(names)
+}
+
+/// `.fon` files are bitmap or vector fonts a webview cannot use. Their value
+/// names often lack a "(TrueType)"-style suffix ("Courier 10,12,15"), so the
+/// file is the only reliable sign.
+fn is_bitmap_font(file: &str) -> bool {
+    file.trim().to_ascii_lowercase().ends_with(".fon")
 }
 
 fn families(value_names: impl IntoIterator<Item = String>) -> Vec<String> {
@@ -146,5 +161,16 @@ mod tests {
         let fonts = system_fonts();
         assert!(fonts.iter().any(|f| f == "Segoe UI"), "{fonts:?}");
         assert!(!fonts.iter().any(|f| f.contains("(TrueType)")));
+        // Windows ships "Courier 10,12,15" and "MS Sans Serif 8,10,..." as .fon files.
+        assert!(!fonts.iter().any(|f| f.contains(",")), "{fonts:?}");
+    }
+
+    #[test]
+    fn bitmap_font_files_are_recognised() {
+        assert!(is_bitmap_font("COURE.FON"));
+        assert!(is_bitmap_font("sserife.fon "));
+        assert!(!is_bitmap_font("segoeui.ttf"));
+        assert!(!is_bitmap_font("C:\\Fonts\\Inter.otf"));
+        assert!(!is_bitmap_font(""));
     }
 }
