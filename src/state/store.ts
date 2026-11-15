@@ -147,6 +147,10 @@ export function patchTab(id: string, patch: Partial<TabMeta>): void {
 }
 
 export function showMessage(title: string, body: string): void {
+  // A "save changes?" dialog that the message replaces must still be answered,
+  // or whoever is waiting on it (closing a tab or the window) waits forever.
+  const { dialog } = useApp.getState();
+  if (dialog?.kind === "confirm-close") dialog.resolve("cancel");
   useApp.setState({ dialog: { kind: "message", title, body } });
 }
 

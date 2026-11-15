@@ -271,20 +271,25 @@ async function openHere(input: string[]): Promise<void> {
   if (paths.length === 0) return;
   const pristine = getActiveTab();
   const stats = await Promise.all(paths.map((p) => ipc.stat(p).catch(() => null)));
+  /** Lines for the error message, and the paths to drop from Recent. */
   const failed: string[] = [];
+  const failedPaths: string[] = [];
   let target: string | null = null;
+  let targetPath = "";
   const created: string[] = [];
 
   paths.forEach((path, index) => {
     const existing = findOpen(path);
     if (existing) {
       target = existing.id;
+      targetPath = path;
       addRecent(path);
       return;
     }
     const stamp = stats[index];
     if (!stamp) {
       failed.push(path);
+      failedPaths.push(path);
       return;
     }
     const tab: TabMeta = {
@@ -305,6 +310,7 @@ async function openHere(input: string[]): Promise<void> {
     addTab(tab);
     created.push(tab.id);
     target = tab.id;
+    targetPath = path;
     addRecent(path);
   });
 
@@ -316,13 +322,16 @@ async function openHere(input: string[]): Promise<void> {
       await activate(targetId);
       if (created.length > 0 && isPristine(pristine) && pristine.id !== targetId) removeFromList(pristine.id);
     } catch (error) {
-      if (created.includes(targetId)) removeFromList(targetId);
-      failed.push(`${fileNameOf(paths[paths.length - 1])}: ${errorText(error)}`);
+      if (created.includes(targetId)) {
+        removeFromList(targetId);
+        failedPaths.push(targetPath);
+      }
+      failed.push(`${fileNameOf(targetPath)}: ${errorText(error)}`);
     }
   }
 
   if (failed.length > 0) {
-    useApp.setState((s) => ({ recent: s.recent.filter((r) => !failed.some((f) => pathsEqual(f, r))) }));
+    useApp.setState((s) => ({ recent: s.recent.filter((r) => !failedPaths.some((f) => pathsEqual(f, r))) }));
     showMessage("Could not open file", failed.join("\n"));
   }
 }
