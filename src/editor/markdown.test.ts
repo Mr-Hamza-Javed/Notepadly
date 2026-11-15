@@ -84,7 +84,8 @@ describe("markdown parser", () => {
       fragments = TreeFragment.addTree(tree, fragments);
       expect(tree.toString(), `edit ${i} at ${from}`).toBe(plainMarkdownParser.parse(text).toString());
     }
-  });
+    // 240 full parses of a large document: slow under coverage instrumentation.
+  }, 60_000);
 });
 
 /** Source text of every node with this name, in document order. */
@@ -168,12 +169,14 @@ describe("markdown extensions: edge cases", () => {
     expect(texts("> > > deep", "Blockquote")).toHaveLength(3);
   });
 
-  it("keeps inline scanning bounded on a very long line full of openers", () => {
-    const line = "$a ==b %%c [[d [^e #f ".repeat(20_000);
-    const started = performance.now();
+  it("never lets an unclosed opener on a very long line reach further than 4000 characters", () => {
+    // An opener near the start, its closer far beyond the scan limit.
+    const line = "$a " + "x ".repeat(5_000) + "b$ [[c " + "y ".repeat(5_000) + "]] %%d " + "z ".repeat(5_000) + "%%";
     const tree = plainMarkdownParser.parse(line);
     expect(tree.length).toBe(line.length);
-    expect(performance.now() - started).toBeLessThan(5000);
+    for (const name of ["InlineMath", "WikiLink", "InlineComment"]) expect(texts(line, name), name).toEqual([]);
+    // Within the limit the same constructs are still found.
+    expect(texts("$a " + "x ".repeat(100) + "b$", "InlineMath")).toHaveLength(1);
   });
 
   // BUGS.md L2 and L3: false tags and highlights.

@@ -271,6 +271,8 @@ describe("paths: Windows details", () => {
   it("handles roots, bare names and trailing separators", () => {
     expect(dirOf("C:\\a.md")).toBe("C:");
     expect(dirOf("a.md")).toBeNull();
+    // A separator in first place leaves no folder name, not an empty one.
+    expect(dirOf("\\a.md")).toBeNull();
     expect(fileNameOf("C:\\folder\\")).toBe("");
     expect(fileNameOf("plain.txt")).toBe("plain.txt");
   });

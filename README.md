@@ -170,7 +170,7 @@ Every pull request runs these checks automatically, each shown separately on the
 
 | Check | What it runs |
 | --- | --- |
-| Typecheck and build | `npm run build` (TypeScript + Vite) |
+| Typecheck and build | `npm run build` (TypeScript + Vite), then `npm run typecheck:test` (the tests) |
 | Unit tests | `npm test` (Vitest) |
 | Rust format | `cargo fmt --check` |
 | Rust lint (clippy) | `cargo clippy -- -D warnings` |
@@ -180,9 +180,12 @@ Run them locally before pushing:
 
 ```bash
 npm run build
+npm run typecheck:test
 npm test
 cd src-tauri && cargo fmt --check && cargo clippy --lib --all-targets -- -D warnings && cargo test --lib
 ```
+
+How the tests are laid out, and how to write new ones: [docs/TESTING.md](docs/TESTING.md).
 
 ## Releasing a new version
 

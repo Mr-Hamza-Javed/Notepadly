@@ -30,6 +30,8 @@ jobs:
       - run: npm ci
       - name: TypeScript typecheck and Vite build
         run: npm run build
+      - name: Typecheck tests
+        run: npm run typecheck:test
 
   unit-tests:
     name: Unit tests

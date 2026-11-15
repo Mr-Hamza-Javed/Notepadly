@@ -197,6 +197,8 @@ describe("inline markers", () => {
     const view = preview("#tag %%note%% ==hi==\n\nend");
     expect(view.contentDOM.querySelector(".cm-md-tag")?.textContent).toBe("#tag");
     expect(view.contentDOM.querySelector(".cm-md-comment")?.textContent).toBe("%%note%%");
+    // The == markers are hidden while the cursor is elsewhere.
+    expect(view.contentDOM.querySelector(".cm-md-highlight")?.textContent).toBe("hi");
   });
 
   it("renders task checkboxes and toggles them in the document", () => {
@@ -242,7 +244,8 @@ describe("maths and diagrams", () => {
     }
     expect(dom.classList.contains("cm-md-render-error")).toBe(true);
     expect(dom.classList.contains("cm-md-pending")).toBe(false);
-    expect(dom.textContent?.length).toBeGreaterThan(0);
+    expect(dom.textContent).not.toBe("");
+    expect(dom.textContent).not.toBe("Rendering diagram…");
   }, 20_000);
 });
 

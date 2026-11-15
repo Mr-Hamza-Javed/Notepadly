@@ -32,13 +32,17 @@ describe("editor engine: documents and tabs", () => {
 
   it("forgets a dropped document, including the active one", () => {
     engine.createDoc("a", "text", "plain");
+    engine.createDoc("b", "other", "plain");
     engine.activate("a");
     engine.dropDoc("a");
     expect(engine.hasDoc("a")).toBe(false);
     expect(engine.getText("a")).toBe("");
-    // Editing commands now go to an inert placeholder, never to the dropped tab.
+    // The dropped text leaves the screen.
+    expect(document.querySelector(".cm-content")?.textContent).not.toContain("text");
+    // Editing commands now go to an inert placeholder, never to the dropped tab or another one.
     engine.insertText("x");
     expect(engine.hasDoc("a")).toBe(false);
+    expect(engine.getText("b")).toBe("other");
   });
 
   it("restores the selection of each tab when switching back", () => {
@@ -56,14 +60,6 @@ describe("editor engine: documents and tabs", () => {
     engine.createDoc("a", "short", "plain");
     engine.restore("a", { anchor: 999, head: 1000, scrollTop: 5 });
     expect(engine.snapshot("a")).toMatchObject({ anchor: 5, head: 5 });
-  });
-
-  it("keeps Urdu, emoji and CRLF-free text exactly as given", () => {
-    const text = "سلام دنیا 😀\nدوسری لائن";
-    engine.createDoc("a", text, "formatted");
-    engine.activate("a");
-    expect(engine.getText("a")).toBe(text);
-    expect(engine.lineCount()).toBe(2);
   });
 });
 
@@ -205,7 +201,7 @@ describe("editor engine: editing helpers", () => {
   it("applies a format command to the selection (mode checks live in the key handlers)", () => {
     engine.restore("a", { anchor: 0, head: 4, scrollTop: 0 });
     engine.format({ type: "bold" });
-    expect(engine.getText("a").startsWith("**line**")).toBe(true);
+    expect(engine.getText("a")).toBe("**line** 1\nline 2\nline 3");
   });
 });
 

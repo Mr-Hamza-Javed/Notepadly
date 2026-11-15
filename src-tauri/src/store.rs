@@ -180,7 +180,7 @@ mod tests {
             assert!(draft_path(base, device).is_err(), "{device}");
         }
         // Names that merely start like a device are fine.
-        for ok in ["CONSOLE", "nul_1", "COM", "LPT10", "t-con"] {
+        for ok in ["CONSOLE", "nul_1", "COM", "LPT10", "COMX", "lpt_", "t-con"] {
             assert!(draft_path(base, ok).is_ok(), "{ok}");
         }
         assert!(

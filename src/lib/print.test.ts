@@ -159,6 +159,6 @@ describe("printing a tab", () => {
     app.engine.insertText("x");
     await app.actions.print();
     expect(print).not.toHaveBeenCalled();
-    expect(app.message()?.title).toMatch(/Could not/);
+    expect(app.message()?.title).toBe("Could not print");
   });
 });

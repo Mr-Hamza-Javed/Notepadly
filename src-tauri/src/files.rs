@@ -867,6 +867,9 @@ mod tests {
         assert_eq!(first_eol(b"a\rb", Encoding::Utf8, true), Some(Eol::Cr));
         assert_eq!(first_eol(b"abc", Encoding::Utf8, true), None);
         assert_eq!(first_eol(&utf16("a\nb", BE), BE, true), Some(Eol::Lf));
+        // A CR that ends a cut-off window may be the first half of a CRLF.
+        assert_eq!(first_eol(b"a\r", Encoding::Utf8, false), Some(Eol::Crlf));
+        assert_eq!(first_eol(b"a\r", Encoding::Utf8, true), Some(Eol::Cr));
     }
 
     #[test]
