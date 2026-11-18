@@ -180,10 +180,20 @@ describe("markdown extensions: edge cases", () => {
   });
 
   // BUGS.md L2 and L3: false tags and highlights.
-  it.skip("L2: colour codes are not tags", () => {
+  it("L2: colour codes are not tags", () => {
     expect(texts("color: #fff and #1a2b3c", "Tag")).toEqual([]);
+    expect(texts("#FAFAFA #ccc #12345678", "Tag")).toEqual([]);
+    // Words that happen to be hex stay tags.
+    expect(texts("#cafe #bad #todo", "Tag")).toEqual(["#cafe", "#bad", "#todo"]);
   });
-  it.skip("L3: comparison operators are not highlight markers", () => {
+  it("L3: comparison operators are not highlight markers", () => {
     expect(texts("if a==b or c==d", "Highlight")).toEqual([]);
+    expect(texts("a ==marked== b and x==y", "Highlight")).toEqual(["==marked=="]);
+  });
+
+  // BUGS.md L1: shell variables are not maths.
+  it("L1: a dollar followed by a letter does not close maths", () => {
+    expect(texts("Use $HOME/$USER for paths", "InlineMath")).toEqual([]);
+    expect(texts("$x$, $y$ and $a+b$.", "InlineMath")).toEqual(["$x$", "$y$", "$a+b$"]);
   });
 });

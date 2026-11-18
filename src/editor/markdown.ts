@@ -59,10 +59,15 @@ function findOnLine(cx: InlineContext, from: number, close: string): number {
   return -1;
 }
 
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+
 function parseHighlight(cx: InlineContext, next: number, pos: number): number {
   if (next !== CH_EQUALS || cx.char(pos + 1) !== CH_EQUALS || cx.char(pos + 2) === CH_EQUALS) return -1;
   const before = cx.slice(pos - 1, pos);
   const after = cx.slice(pos + 2, pos + 3);
+  // `a==b` is a comparison, not a marker: like `_`, a `==` between two word characters
+  // can neither open nor close a highlight.
+  if (WORD_CHAR.test(before) && WORD_CHAR.test(after)) return -1;
   return cx.addDelimiter(HighlightDelim, pos, pos + 2, !/\s|^$/.test(after), !/\s|^$/.test(before));
 }
 
@@ -103,10 +108,10 @@ function parseInlineMath(cx: InlineContext, next: number, pos: number): number {
       if (cx.char(i + 1) !== CH_DOLLAR) continue;
     } else {
       const prev = cx.char(i - 1);
-      const after = cx.char(i + 1);
       if (prev === CH_SPACE) continue;
-      // "$5 and $6" style prices: a closing dollar is never followed by a digit.
-      if (after >= 48 && after <= 57) continue;
+      // "$5 and $6" style prices and "$HOME/$USER" style variables: a closing dollar is
+      // never followed by a letter or digit.
+      if (WORD_CHAR.test(cx.slice(i + 1, i + 2))) continue;
     }
     return cx.addElement(
       cx.elt("InlineMath", pos, i + markLen, [
@@ -131,12 +136,23 @@ function parseInlineComment(cx: InlineContext, next: number, pos: number): numbe
 }
 
 const TAG_BODY = /^[\p{L}\p{N}_/-]+/u;
+const HEX_COLOUR = /^(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+/**
+ * `#fff`, `#1a2b3c`: a CSS colour, not a tag. Hex codes with a digit are colours; all-letter
+ * ones only when they use at most two different letters (`#fff`, `#fafafa`, `#ccc`), so
+ * words such as `#cafe` or `#bad` stay tags.
+ */
+function isColourCode(body: string): boolean {
+  if (!HEX_COLOUR.test(body)) return false;
+  return /\d/.test(body) || new Set(body.toLowerCase()).size <= 2;
+}
 
 function parseTag(cx: InlineContext, next: number, pos: number): number {
   if (next !== CH_HASH) return -1;
   if (pos > cx.offset && !/[\s([{,;:]/.test(cx.slice(pos - 1, pos))) return -1;
   const body = TAG_BODY.exec(cx.slice(pos + 1, Math.min(cx.end, pos + 129)));
-  if (!body || /^\d+$/.test(body[0])) return -1;
+  if (!body || /^\d+$/.test(body[0]) || isColourCode(body[0])) return -1;
   return cx.addElement(cx.elt("Tag", pos, pos + 1 + body[0].length));
 }
 
