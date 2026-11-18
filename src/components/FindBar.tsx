@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { engine } from "../editor";
 import type { FindResult } from "../editor/api";
+import { findCountLabel, setFindStepHandler } from "../lib/findBar";
 import { actions } from "../state/actions";
 import { useApp } from "../state/store";
 import { G, Glyph } from "./icons";
@@ -72,6 +73,14 @@ const FindCard = memo(function FindCard() {
     flush();
     if (query.current.search) setResult(engine.findPrev());
   };
+  // F3 / Shift+F3 from anywhere go through the bar, so its counter follows them.
+  const stepRef = useRef({ next, prev });
+  stepRef.current = { next, prev };
+  useEffect(() => {
+    setFindStepHandler((dir) => (dir === 1 ? stepRef.current.next() : stepRef.current.prev()));
+    return () => setFindStepHandler(null);
+  }, []);
+
   const close = () => {
     window.clearTimeout(timer.current);
     actions.closeFind();
@@ -89,8 +98,7 @@ const FindCard = memo(function FindCard() {
     }
   };
 
-  let count = "";
-  if (search) count = result.total === 0 ? "No results" : `${result.current} of ${result.total}`;
+  const count = search ? findCountLabel(result) : "";
   const noQuery = !search;
 
   return (

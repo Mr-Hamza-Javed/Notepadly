@@ -202,14 +202,16 @@ export class FindController {
     this.select(view, match);
     if (!countValid) {
       this.recount(view, session);
-    } else if (session.total < FIND_COUNT_LIMIT) {
-      if (dir === 1) session.current = wrapped ? 1 : session.current + 1;
-      else session.current = wrapped ? session.total : session.current - 1;
+    } else if (dir === 1) {
+      // Counting on from a known match stays exact even past the counting bound.
+      session.current = wrapped ? 1 : session.current + 1;
+    } else if (!wrapped) {
+      session.current -= 1;
     } else {
-      // Past the counting bound an exact index is unknown, so report it as not computed.
-      session.current = 0;
+      // Wrapping back to the last match: its index is only known when every match was counted.
+      session.current = session.total < FIND_COUNT_LIMIT ? session.total : 0;
     }
-    if (countValid) session.at = { from: match.from, to: match.to };
+    if (countValid) session.at = session.current > 0 ? { from: match.from, to: match.to } : null;
     return { total: session.total, current: session.current };
   }
 

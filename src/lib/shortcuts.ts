@@ -1,5 +1,6 @@
 // Global keyboard handling, in the capture phase so it runs before the editor.
 import { engine } from "../editor";
+import { findStep } from "./findBar";
 import { actions } from "../state/actions";
 import { getActiveTab, useApp } from "../state/store";
 
@@ -51,8 +52,13 @@ export function isSuppressedDefault({ key, ctrl, shift, alt }: Chord, production
   return k === "+" || k === "=" || k === "-" || k === "_" || k === "0";
 }
 
-/** Commands an input or textarea must keep for itself. */
-const NATIVE_IN_INPUT = new Set<Command>(["undo", "redo", "selectAll", "docEnd", "docEndSelect"]);
+/**
+ * Commands an input or textarea must keep for itself, or that edit the document and
+ * so must not fire while typing in the Find box (Ctrl+B, Ctrl+I, Ctrl+K, F5).
+ */
+const NATIVE_IN_INPUT = new Set<Command>([
+  "undo", "redo", "selectAll", "docEnd", "docEndSelect", "bold", "italic", "link", "dateTime",
+]);
 const REPEATABLE = new Set<Command>(["undo", "redo", "findNext", "findPrev", "zoomIn", "zoomOut", "nextTab", "prevTab"]);
 
 function isNativeInput(target: EventTarget | null): boolean {
@@ -120,12 +126,12 @@ function run(command: Command): boolean {
     case "find": actions.openFind(false); return true;
     case "replace": actions.openFind(true); return true;
     case "findNext":
-      if (find.open) engine.findNext();
-      else actions.openFind(false);
+      if (!find.open) actions.openFind(false);
+      else if (!findStep(1)) engine.findNext();
       return true;
     case "findPrev":
-      if (find.open) engine.findPrev();
-      else actions.openFind(false);
+      if (!find.open) actions.openFind(false);
+      else if (!findStep(-1)) engine.findPrev();
       return true;
     case "goTo": actions.showDialog({ kind: "goto" }); return true;
     case "selectAll": selectAllLoaded(); return true;

@@ -1,4 +1,5 @@
 import { engine } from "../editor";
+import { findStep } from "../lib/findBar";
 import { actions } from "../state/actions";
 import { useApp } from "../state/store";
 import type { MenuEntry } from "./Menu";
@@ -59,8 +60,8 @@ function editMenu(): MenuEntry[] {
     { id: "bing", label: "Search with Bing", shortcut: "Ctrl+E", disabled: noSel, onSelect: () => actions.searchWeb() },
     SEP,
     { id: "find", label: "Find", shortcut: "Ctrl+F", disabled: empty, onSelect: () => actions.openFind(false) },
-    { id: "next", label: "Find next", shortcut: "F3", disabled: empty, onSelect: findAgain(() => engine.findNext()) },
-    { id: "prev", label: "Find previous", shortcut: "Shift+F3", disabled: empty, onSelect: findAgain(() => engine.findPrev()) },
+    { id: "next", label: "Find next", shortcut: "F3", disabled: empty, onSelect: findAgain(() => findStep(1) || engine.findNext()) },
+    { id: "prev", label: "Find previous", shortcut: "Shift+F3", disabled: empty, onSelect: findAgain(() => findStep(-1) || engine.findPrev()) },
     { id: "replace", label: "Replace", shortcut: "Ctrl+H", disabled: empty, onSelect: () => actions.openFind(true) },
     { id: "goto", label: "Go to", shortcut: "Ctrl+G", onSelect: () => actions.showDialog({ kind: "goto" }) },
     SEP,
