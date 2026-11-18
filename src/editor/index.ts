@@ -608,22 +608,25 @@ class Engine implements EditorEngine {
     if (this.view) redo(this.view);
   }
 
-  cut(): void {
+  async cut(): Promise<void> {
+    const view = this.view;
     const text = this.selectionText();
-    if (!text) return;
-    void navigator.clipboard.writeText(text);
-    this.deleteSelection();
+    if (!view || !text) return;
+    const before = view.state;
+    // The text is only removed once it is safely on the clipboard.
+    await navigator.clipboard.writeText(text);
+    // The write is async: cut what was copied, not whatever is selected by now.
+    if (this.view === view && view.state === before) this.deleteSelection();
   }
 
-  copy(): void {
+  async copy(): Promise<void> {
     const text = this.selectionText();
-    if (text) void navigator.clipboard.writeText(text);
+    if (text) await navigator.clipboard.writeText(text);
   }
 
-  paste(): void {
-    void navigator.clipboard.readText().then((text) => {
-      if (text) this.insertText(text);
-    });
+  async paste(): Promise<void> {
+    const text = await navigator.clipboard.readText();
+    if (text) this.insertText(text);
   }
 
   deleteSelection(): void {

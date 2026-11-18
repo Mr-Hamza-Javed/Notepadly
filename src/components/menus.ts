@@ -52,9 +52,9 @@ function editMenu(): MenuEntry[] {
   return [
     { id: "undo", label: "Undo", shortcut: "Ctrl+Z", disabled: !cursor.canUndo, onSelect: () => engine.undo() },
     SEP,
-    { id: "cut", label: "Cut", shortcut: "Ctrl+X", disabled: noSel, onSelect: () => engine.cut() },
-    { id: "copy", label: "Copy", shortcut: "Ctrl+C", disabled: noSel, onSelect: () => engine.copy() },
-    { id: "paste", label: "Paste", shortcut: "Ctrl+V", onSelect: () => engine.paste() },
+    { id: "cut", label: "Cut", shortcut: "Ctrl+X", disabled: noSel, onSelect: () => void actions.clipboard("cut") },
+    { id: "copy", label: "Copy", shortcut: "Ctrl+C", disabled: noSel, onSelect: () => void actions.clipboard("copy") },
+    { id: "paste", label: "Paste", shortcut: "Ctrl+V", onSelect: () => void actions.clipboard("paste") },
     { id: "del", label: "Delete", shortcut: "Del", disabled: noSel, onSelect: () => engine.deleteSelection() },
     SEP,
     { id: "bing", label: "Search with Bing", shortcut: "Ctrl+E", disabled: noSel, onSelect: () => actions.searchWeb() },

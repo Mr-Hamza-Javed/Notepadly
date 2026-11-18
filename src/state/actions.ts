@@ -783,6 +783,9 @@ export const actions = {
   ensureFullyLoaded,
 
   insertDateTime: () => engine.insertText(formatDateTime(new Date())),
+  /** Edit > Cut / Copy / Paste. A clipboard failure is reported, and Cut then keeps the text. */
+  clipboard: (op: "cut" | "copy" | "paste"): Promise<void> =>
+    engine[op]().catch(reportError(op === "paste" ? "Could not paste" : "Could not copy to the clipboard")),
   searchWeb: () => {
     const selection = engine.selectionText().trim();
     if (!selection) return;

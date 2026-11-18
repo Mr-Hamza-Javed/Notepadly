@@ -106,9 +106,11 @@ export interface EditorEngine {
   format(cmd: FormatCommand): void;
   undo(): void;
   redo(): void;
-  cut(): void;
-  copy(): void;
-  paste(): void;
+  /** Rejects, leaving the text in place, when the clipboard cannot be written. */
+  cut(): Promise<void>;
+  copy(): Promise<void>;
+  /** Rejects when the clipboard cannot be read. */
+  paste(): Promise<void>;
   deleteSelection(): void;
   selectAll(): void;
   insertText(text: string): void;
