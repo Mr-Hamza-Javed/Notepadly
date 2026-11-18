@@ -631,6 +631,21 @@ describe("tabs", () => {
     await app.actions.newTab();
   });
 
+  it("C8: typing while a tab loads never goes into the previous tab", async () => {
+    backend.write(A, "AAA file");
+    backend.write(B, "BBB file");
+    await app.actions.openPaths([A, B]);
+    const a = app.tabByName("a.md");
+    expect(app.engine.hasDoc(a.id)).toBe(false);
+    const switching = app.actions.activate(a.id);
+    app.engine.insertText("TYPED");
+    await switching;
+    expect(app.text(app.tabByName("b.txt").id)).toBe("BBB file");
+    expect(app.tabByName("b.txt").dirty).toBe(false);
+    expect(app.text(a.id)).toBe("AAA file");
+    expect(app.tabByName("a.md").dirty).toBe(false);
+  });
+
   it("cycles through tabs with wrap-around", async () => {
     const ids = app.state().tabs.map((t) => t.id);
     expect(app.state().activeId).toBe(ids[2]);

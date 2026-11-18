@@ -99,6 +99,8 @@ export interface EditorEngine {
   wakeDoc(tabId: string, text: string, mode: FormatMode): boolean;
   hasDoc(tabId: string): boolean;
   activate(tabId: string): void;
+  /** Shows an empty, read-only placeholder instead of the active tab until the next activate. */
+  park(): void;
 
   getText(tabId: string): string;
   /** Text of line 1, without materialising the document. */

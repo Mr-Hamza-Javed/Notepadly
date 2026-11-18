@@ -230,14 +230,34 @@ function closeDialog(): void {
 // ---- Activation --------------------------------------------------------------
 
 let activationToken = 0;
+let activation: Promise<void> = Promise.resolve();
 
-async function activate(id: string): Promise<void> {
+/** Switches tabs. `whenActivated` resolves once the editor shows the tab. */
+function activate(id: string): Promise<void> {
+  let done: () => void = () => {};
+  activation = new Promise<void>((resolve) => {
+    done = resolve;
+  });
+  const run = doActivate(id);
+  run.then(done, done);
+  return run;
+}
+
+/** Settles when the latest tab switch has put its document in the editor (or given up). */
+const whenActivated = (): Promise<void> => activation;
+
+async function doActivate(id: string): Promise<void> {
   const s = state();
   if (!getTab(id)) return;
   if (s.activeId !== id) loader.touchTab(s.activeId);
   useApp.setState({ activeId: id, view: "editor" });
   const token = ++activationToken;
-  if (!engine.hasDoc(id)) await loader.materialiseOrFlag(id);
+  if (!engine.hasDoc(id)) {
+    // The tab strip already shows this tab: typing must not reach the previous one
+    // while it loads (BUGS.md C8).
+    engine.park();
+    await loader.materialiseOrFlag(id);
+  }
   if (token !== activationToken || !engine.hasDoc(id)) return;
   engine.activate(id);
   engine.focus();
@@ -782,6 +802,7 @@ export const actions = {
     engine.focus();
   },
   ensureFullyLoaded,
+  whenActivated,
 
   insertDateTime: () => engine.insertText(formatDateTime(new Date())),
   searchWeb: () => {

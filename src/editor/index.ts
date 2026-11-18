@@ -161,7 +161,7 @@ class Engine implements EditorEngine {
     previewContext.baseDir = () => (this.activeId ? host.baseDir(this.activeId) : null);
     previewContext.openLink = (href) => host.openLink(href);
 
-    const view = new EditorView({ parent, state: this.createState("", "plain") });
+    const view = new EditorView({ parent, state: this.placeholderState() });
     this.view = view;
     this.applyCssVariables();
 
@@ -224,6 +224,14 @@ class Engine implements EditorEngine {
       ),
       keymap.of([...historyKeymap, ...defaultKeymap.filter((binding) => binding.key !== "Mod-i")]),
     ];
+  }
+
+  /** What the view shows when no tab's document is active: empty, and closed to typing. */
+  private placeholderState(): EditorState {
+    return EditorState.create({
+      doc: "",
+      extensions: [this.stateExtensions("plain"), EditorState.readOnly.of(true), EditorView.editable.of(false)],
+    });
   }
 
   private createState(text: string, mode: FormatMode): EditorState {
@@ -520,7 +528,7 @@ class Engine implements EditorEngine {
   dropDoc(tabId: string): void {
     if (tabId === this.activeId) {
       this.activeId = null;
-      this.view?.setState(this.createState("", "plain"));
+      this.view?.setState(this.placeholderState());
     }
     this.docs.delete(tabId);
     this.sleeping.delete(tabId);
@@ -530,17 +538,31 @@ class Engine implements EditorEngine {
     return this.docs.has(tabId);
   }
 
+  /** Puts the active document away and shows the placeholder, e.g. while the next tab loads. */
+  park(): void {
+    const view = this.view;
+    if (!view || !this.stashActive()) return;
+    this.activeId = null;
+    view.setState(this.placeholderState());
+  }
+
+  /** Stores the view's state back into the active record. False when nothing is active. */
+  private stashActive(): boolean {
+    const view = this.view;
+    const previous = this.activeDoc();
+    if (!view || !previous) return false;
+    this.finder.clear();
+    previous.state = view.state;
+    previous.scrollEffect = view.scrollSnapshot();
+    previous.scrollTop = view.scrollDOM.scrollTop;
+    return true;
+  }
+
   activate(tabId: string): void {
     const doc = this.docs.get(tabId);
     const view = this.view;
     if (!doc || !view || tabId === this.activeId) return;
-    const previous = this.activeDoc();
-    if (previous) {
-      previous.state = view.state;
-      previous.scrollEffect = view.scrollSnapshot();
-      previous.scrollTop = view.scrollDOM.scrollTop;
-    }
-    this.finder.clear();
+    if (!this.stashActive()) this.finder.clear();
     this.activeId = tabId;
     doc.state = this.withConfig(doc.state, doc);
     view.setState(doc.state);
