@@ -413,13 +413,33 @@ describe("files changed by other programs", () => {
 
   // BUGS.md H7: a file that is deleted and recreated (git checkout, OneDrive)
   // leaves a clean tab marked unsaved.
-  it.skip("H7: a deleted-then-restored file leaves an unedited tab clean", async () => {
+  it("H7: a deleted-then-restored file leaves an unedited tab clean", async () => {
     backend.delete(A);
     await app.loader.pollExternalChanges();
     backend.write(A, "original");
     await app.loader.pollExternalChanges();
     await settle(20);
     expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+  });
+
+  it("H7: a clean tab whose file comes back with new content reloads it", async () => {
+    backend.delete(A);
+    await app.loader.pollExternalChanges();
+    backend.write(A, "checked out");
+    await app.loader.pollExternalChanges();
+    await waitFor(() => app.text() === "checked out");
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+  });
+
+  it("H7: text typed while the file was gone stays unsaved when it comes back", async () => {
+    backend.delete(A);
+    await app.loader.pollExternalChanges();
+    app.type(" mine");
+    backend.write(A, "original");
+    await app.loader.pollExternalChanges();
+    await settle(20);
+    expect(app.tab().dirty).toBe(true);
+    expect(app.text()).toBe("original mine");
   });
 });
 

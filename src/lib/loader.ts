@@ -59,6 +59,11 @@ interface TabRuntime {
   hasDraft: boolean;
   /** Which file state the stored draft belongs to: the session must match it. */
   draftMeta: DraftMeta | null;
+  /**
+   * Set when a clean tab was flagged deleted: the editSeq at that moment. If the
+   * file comes back before the user edits, the tab is clean again (BUGS.md H7).
+   */
+  cleanDelete: number | null;
 }
 
 const runtimes = new Map<string, TabRuntime>();
@@ -83,6 +88,7 @@ function rtOf(id: string): TabRuntime {
       dismissed: null,
       hasDraft: false,
       draftMeta: null,
+      cleanDelete: null,
     };
     runtimes.set(id, rt);
   }
@@ -322,6 +328,7 @@ async function applyFromDisk(
     hibernated: false,
   });
   rt.forceDirty = false;
+  rt.cleanDelete = null;
   rt.dismissed = null;
   rt.scanStarted = false;
   rt.ioSeq++;
@@ -469,6 +476,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string): Promise<
     engine.markSaved(id);
     rt.forceDirty = false;
   }
+  rt.cleanDelete = null;
   rt.dismissed = null;
   const shared = {
     path: targetPath,
@@ -531,6 +539,7 @@ export async function keepMine(id: string): Promise<void> {
   patchTab(id, { externalChange: null });
   if (kind === "deleted") {
     rt.dismissed = "deleted";
+    rt.cleanDelete = null;
     if (tab.fullyLoaded) patchTab(id, { stamp: null });
     return;
   }
@@ -582,12 +591,25 @@ async function checkTab(tab: TabMeta): Promise<void> {
   const current = getTab(tab.id);
   if (!current || current.path !== tab.path) return;
   const hasDoc = engine.hasDoc(tab.id);
+  if (disk && current.externalChange === "deleted" && rt.cleanDelete === rt.editSeq) {
+    // The file came back (git checkout, OneDrive, save by delete + rename) and the
+    // user typed nothing meanwhile: the deletion was the only reason for the dirty mark.
+    rt.cleanDelete = null;
+    rt.forceDirty = false;
+    patchTab(tab.id, { dirty: false });
+    markDraftChanged(tab.id);
+    if (stampsEqual(disk, current.stamp)) patchTab(tab.id, { externalChange: null });
+    else if (hasDoc) silentReload(tab.id).catch(noop);
+    else patchTab(tab.id, { stamp: disk, externalChange: null });
+    return;
+  }
   switch (decideExternal(current, disk, rt.dismissed, hasDoc)) {
     case "flag-modified":
       rt.dismissed = null;
       patchTab(tab.id, { externalChange: "modified" });
       break;
     case "flag-deleted":
+      rt.cleanDelete = current.dirty ? null : rt.editSeq;
       rt.forceDirty = true;
       patchTab(tab.id, { externalChange: "deleted", dirty: true });
       markDraftChanged(tab.id);
