@@ -53,6 +53,8 @@ export { FIND_COUNT_LIMIT };
 const MAX_LINE_FOR_PREVIEW = 20000;
 const MAX_DOC_FOR_PREVIEW = 20 * 1024 * 1024;
 const NEAR_END_THROTTLE_MS = 120;
+/** Wait after an edit that shortened a degraded document before checking it again. */
+const RECHECK_DELAY_MS = 400;
 /** History trims old events beyond this, which would misalign the depth-indexed versions. */
 const HISTORY_DEPTH = 400;
 
@@ -104,7 +106,7 @@ interface DocRecord {
   /** Stale while the tab is active: use `stateOf`. */
   state: EditorState;
   mode: FormatMode;
-  /** Sticky until the text is replaced: the document is too large for live preview. */
+  /** The document is too large, or has a line too long, for live preview. */
   degraded: boolean;
   /** Version id for each undo depth; dirty means the current id is not the saved one. */
   versions: number[];
@@ -117,6 +119,16 @@ interface DocRecord {
 }
 
 let versionCounter = 0;
+
+/** Whether a document still needs the plain fallback; walks lines without joining the text. */
+function needsDegrade(doc: EditorState["doc"]): boolean {
+  if (doc.length > MAX_DOC_FOR_PREVIEW) return true;
+  if (doc.length <= MAX_LINE_FOR_PREVIEW) return false;
+  for (let iter = doc.iterLines(); !iter.next().done; ) {
+    if (iter.value.length > MAX_LINE_FOR_PREVIEW) return true;
+  }
+  return false;
+}
 
 function hasLongLine(text: string): boolean {
   let start = 0;
@@ -166,6 +178,7 @@ class Engine implements EditorEngine {
   private lastContext: FormatContext | null = null;
   private lastNearEnd = 0;
   private nearEndTimer = 0;
+  private recheckTimer = 0;
   private disposers: (() => void)[] = [];
 
   // ---------- Lifecycle ----------
@@ -199,6 +212,8 @@ class Engine implements EditorEngine {
     this.cursorFrame = 0;
     clearTimeout(this.nearEndTimer);
     this.nearEndTimer = 0;
+    clearTimeout(this.recheckTimer);
+    this.recheckTimer = 0;
     for (const dispose of this.disposers) dispose();
     this.disposers = [];
     this.view?.destroy();
@@ -350,7 +365,16 @@ class Engine implements EditorEngine {
   }
 
   private checkDegrade(doc: DocRecord, update: ViewUpdate): void {
-    if (doc.degraded || doc.mode !== "formatted") return;
+    if (doc.mode !== "formatted") return;
+    if (doc.degraded) {
+      // Deleting the long line (or undoing its paste) brings live preview back.
+      let removed = false;
+      update.changes.iterChangedRanges((fromA, toA) => {
+        if (toA > fromA) removed = true;
+      });
+      if (removed) this.scheduleRecheck(doc);
+      return;
+    }
     const { state } = update;
     let degrade = state.doc.length > MAX_DOC_FOR_PREVIEW;
     if (!degrade) {
@@ -368,6 +392,20 @@ class Engine implements EditorEngine {
         this.view.dispatch({ effects: modeCompartment.reconfigure(modeExtensions.syntax) });
       }
     });
+  }
+
+  /** Debounced: a full line scan runs once after a burst of deletions, not per keystroke. */
+  private scheduleRecheck(doc: DocRecord): void {
+    clearTimeout(this.recheckTimer);
+    this.recheckTimer = window.setTimeout(() => {
+      this.recheckTimer = 0;
+      const view = this.view;
+      if (!view || this.activeId !== doc.id || !doc.degraded || doc.mode !== "formatted") return;
+      if (needsDegrade(view.state.doc)) return;
+      doc.degraded = false;
+      view.dispatch({ effects: modeCompartment.reconfigure(modeExtensions.formatted) });
+      this.scheduleCursor();
+    }, RECHECK_DELAY_MS);
   }
 
   private scheduleCursor(): void {
@@ -394,6 +432,7 @@ class Engine implements EditorEngine {
       selected,
       canUndo: undoDepth(state) > 0,
       canRedo: redoDepth(state) > 0,
+      previewLimited: doc.mode === "formatted" && doc.degraded,
     };
     this.host.onCursor(doc.id, info);
     if (doc.mode === "plain") return;
@@ -510,6 +549,8 @@ class Engine implements EditorEngine {
       previous.scrollTop = view.scrollDOM.scrollTop;
     }
     this.finder.clear();
+    clearTimeout(this.recheckTimer);
+    this.recheckTimer = 0;
     this.activeId = tabId;
     doc.state = this.withConfig(doc.state, doc);
     view.setState(doc.state);
@@ -522,6 +563,8 @@ class Engine implements EditorEngine {
       doc.scrollTop = null;
     }
     this.notifyActivated(doc);
+    // A deletion just before the last tab switch may have removed the long line.
+    if (doc.degraded && doc.mode === "formatted") this.scheduleRecheck(doc);
   }
 
   /** Callers may pass an oversized value (Ctrl+End sends 1e9), so it is clamped to the valid range. */

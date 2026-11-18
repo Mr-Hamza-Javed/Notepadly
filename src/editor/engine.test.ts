@@ -379,3 +379,46 @@ describe("editor engine: Ctrl+click on links in every mode", () => {
     expect(urlAt("plain words", 3)).toBeNull();
   });
 });
+
+// BUGS.md H6: one long line turned live preview off for good.
+describe("editor engine: live preview comes back after a long line is gone", () => {
+  const editorClass = () => document.querySelector(".cm-editor")?.className ?? "";
+
+  it("turns preview off for a pasted long line, says so, and back on after Undo", async () => {
+    const { log } = mountEngine();
+    engine.createDoc("a", "# Title\n", "formatted");
+    engine.activate("a");
+    engine.insertText("x".repeat(20_001));
+    await nextFrame();
+    expect(editorClass()).toContain("cm-mode-syntax");
+    expect(log.cursor.at(-1)?.[1].previewLimited).toBe(true);
+
+    engine.undo();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await nextFrame();
+    expect(editorClass()).toContain("cm-mode-formatted");
+    expect(log.cursor.at(-1)?.[1].previewLimited).toBe(false);
+  });
+
+  it("stays off while another long line remains", async () => {
+    mountEngine();
+    const long = "y".repeat(20_001);
+    engine.createDoc("a", `${long}\n${long}`, "formatted");
+    engine.activate("a");
+    engine.restore("a", { anchor: 0, head: long.length, scrollTop: 0 });
+    engine.deleteSelection();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(editorClass()).toContain("cm-mode-syntax");
+  });
+
+  it("turns preview on for a file opened with a long line once it is deleted", async () => {
+    mountEngine();
+    engine.createDoc("a", `short\n${"z".repeat(20_001)}`, "formatted");
+    engine.activate("a");
+    expect(editorClass()).toContain("cm-mode-syntax");
+    engine.restore("a", { anchor: 5, head: 20_007, scrollTop: 0 });
+    engine.deleteSelection();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(editorClass()).toContain("cm-mode-formatted");
+  });
+});

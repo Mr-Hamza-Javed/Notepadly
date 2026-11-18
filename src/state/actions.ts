@@ -106,7 +106,8 @@ const sameCursor = (a: CursorInfo, b: CursorInfo) =>
   a.chars === b.chars &&
   a.selected === b.selected &&
   a.canUndo === b.canUndo &&
-  a.canRedo === b.canRedo;
+  a.canRedo === b.canRedo &&
+  !!a.previewLimited === !!b.previewLimited;
 
 const sameFormat = (a: FormatContext, b: FormatContext) =>
   a.block === b.block &&

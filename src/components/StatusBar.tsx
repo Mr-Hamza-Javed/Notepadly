@@ -50,8 +50,12 @@ const CursorCells = memo(function CursorCells() {
   );
 });
 
+const PREVIEW_LIMITED =
+  "Live preview is off: a line is longer than 20,000 characters or the file is over 20 MB.";
+
 const ModeCell = memo(function ModeCell() {
   const mode = useApp((s) => activeTab(s)?.mode ?? "plain");
+  const limited = useApp((s) => !!s.cursor.previewLimited);
 
   if (mode === "plain") {
     return (
@@ -61,19 +65,28 @@ const ModeCell = memo(function ModeCell() {
     );
   }
   const formatted = mode === "formatted";
+  // A very long line or a huge file turns live preview off; say so instead of claiming "Formatted".
+  const reason = formatted && limited ? PREVIEW_LIMITED : undefined;
   return (
     <div className="sb-cell sb-mode div">
       <button
         type="button"
         className="sb-btn"
-        aria-label={formatted ? "Formatted, switch to Markdown syntax" : "Markdown syntax, switch to Formatted"}
+        title={reason}
+        aria-label={
+          reason
+            ? `${reason} Switch to Markdown syntax`
+            : formatted
+              ? "Formatted, switch to Markdown syntax"
+              : "Markdown syntax, switch to Formatted"
+        }
         onClick={() => {
           actions.toggleSyntax();
           focusEditorSoon();
         }}
       >
         {formatted ? <Glyph cp={G.font} size={14} /> : <span className="sb-md">M↓</span>}
-        {formatted ? "Formatted" : "Markdown syntax"}
+        {formatted ? (reason ? "Formatted (preview off)" : "Formatted") : "Markdown syntax"}
       </button>
     </div>
   );
