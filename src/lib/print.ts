@@ -3,7 +3,15 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { engine } from "../editor";
 import { plainMarkdownParser } from "../editor/markdown";
 import { ensureFullyLoaded } from "./loader";
-import { dirOf, fileNameOf, fontStack, fontWeightOf, headerFooterBoxes, resolveRelative } from "../state/logic";
+import {
+  dirOf,
+  fileNameOf,
+  fileUrlToPath,
+  fontStack,
+  fontWeightOf,
+  headerFooterBoxes,
+  resolveRelative,
+} from "../state/logic";
 import { getTab, useApp } from "../state/store";
 import type { TabMeta } from "../state/types";
 
@@ -28,6 +36,10 @@ const COMMON_ATTRS = ["align", "title"];
 
 function safeImageSrc(src: string, baseDir: string | null): string | null {
   if (/^(https?:|data:image\/)/i.test(src)) return src;
+  if (/^file:/i.test(src)) {
+    const path = fileUrlToPath(src.split(/[?#]/)[0]);
+    return path ? convertFileSrc(path) : null;
+  }
   if (/^[a-zA-Z][a-zA-Z0-9+.-]+:/.test(src) && !/^[a-zA-Z]:[\\/]/.test(src)) return null;
   let decoded = src;
   try {

@@ -288,6 +288,9 @@ describe("link and image targets", () => {
     expect(resolveImageSrc("D:\\abs.png")).toBe("D:\\abs.png");
     expect(resolveImageSrc("https://x.y/i.png")).toBe("https://x.y/i.png");
     expect(resolveImageSrc("data:image/png;base64,AA")).toBe("data:image/png;base64,AA");
+    // BUGS.md L14: http and file:// images.
+    expect(resolveImageSrc("http://x.y/i.png")).toBe("http://x.y/i.png");
+    expect(resolveImageSrc("file:///D:/pics/a%20b.png")).toBe("D:\\pics\\a b.png");
     previewContext.baseDir = () => null;
     expect(resolveImageSrc("rel.png")).toBe("rel.png");
   });

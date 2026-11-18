@@ -65,6 +65,10 @@ describe("print sanitising: a document can never run code", () => {
 
   it("keeps https and data images and drops other schemes", () => {
     expect(html('<img src="https://x.y/a.png">')).toBe('<img src="https://x.y/a.png">');
+    // BUGS.md L14: http and file:// images.
+    expect(html('<img src="http://x.y/a.png">')).toBe('<img src="http://x.y/a.png">');
+    expect(html('<img src="file:///D:/p/a%20b.png">')).toContain(encodeURIComponent("D:\\p\\a b.png"));
+    expect(html('<img src="file:///etc/x.png">')).toBe("<img>");
     expect(html('<img src="data:image/png;base64,AAAA">')).toBe('<img src="data:image/png;base64,AAAA">');
     expect(html('<img src="data:text/html,<b>x</b>">')).toBe("<img>");
     expect(html('<img src="javascript:x">')).toBe("<img>");
