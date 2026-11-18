@@ -89,6 +89,14 @@ export interface EditorEngine {
   /** Replaces all text and clears undo history; marks the tab clean. */
   resetDoc(tabId: string, text: string): void;
   dropDoc(tabId: string): void;
+  /** Drops the text of a clean tab to save memory, but keeps its undo history. */
+  hibernate(tabId: string): void;
+  /**
+   * Creates the document of a hibernated tab again. `text` must be the text it
+   * had when it went to sleep, possibly with more of the file after it. Returns
+   * false (and starts a fresh history) when the history could not be restored.
+   */
+  wakeDoc(tabId: string, text: string, mode: FormatMode): boolean;
   hasDoc(tabId: string): boolean;
   activate(tabId: string): void;
 

@@ -66,6 +66,8 @@ interface TabRuntime {
   cleanDelete: number | null;
   /** The file could not be read, so the editor does not hold its text: never save over it. */
   unreadable: boolean;
+  /** The file state a hibernated tab's kept undo history belongs to. */
+  sleep: { stamp: FileStamp | null; encoding: Encoding } | null;
 }
 
 const runtimes = new Map<string, TabRuntime>();
@@ -92,6 +94,7 @@ function rtOf(id: string): TabRuntime {
       draftMeta: null,
       cleanDelete: null,
       unreadable: false,
+      sleep: null,
     };
     runtimes.set(id, rt);
   }
@@ -316,8 +319,13 @@ async function applyFromDisk(
     patchTab(id, { externalChange: "modified" });
     return;
   }
+  const sleep = rt.sleep;
+  rt.sleep = null;
   if (engine.hasDoc(id)) engine.resetDoc(id, read.text);
-  else engine.createDoc(id, read.text, tab.mode);
+  else if (sleep && stampsEqual(sleep.stamp, read.stamp) && sleep.encoding === read.encoding) {
+    // Unchanged on disk, so the text read again starts with the text it had: keep its undo.
+    engine.wakeDoc(id, read.text, tab.mode);
+  } else engine.createDoc(id, read.text, tab.mode);
   restoreView(id, snap);
   patchTab(id, {
     stamp: read.stamp,
@@ -689,7 +697,8 @@ export function hibernateSweep(now = Date.now()): void {
     if (now - rt.lastActive < HIBERNATE_AFTER_MS) continue;
     rt.snap = engine.snapshot(tab.id);
     rt.gen++;
-    engine.dropDoc(tab.id);
+    rt.sleep = { stamp: tab.stamp, encoding: tab.encoding };
+    engine.hibernate(tab.id);
     patchTab(tab.id, { hibernated: true });
   }
 }

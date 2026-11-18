@@ -445,7 +445,7 @@ async function resolveDirtyTab(id: string): Promise<boolean> {
 
 function removeFromList(id: string): void {
   useApp.setState((s) => ({ tabs: s.tabs.filter((t) => t.id !== id) }));
-  if (engine.hasDoc(id)) engine.dropDoc(id);
+  engine.dropDoc(id); // also forgets the undo history of a hibernated tab
   loader.disposeTab(id);
   const pending = titleTimers.get(id);
   if (pending !== undefined) clearTimeout(pending);

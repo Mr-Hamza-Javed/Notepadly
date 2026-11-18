@@ -2,6 +2,7 @@
 import {
   defaultKeymap,
   history,
+  historyField,
   historyKeymap,
   isolateHistory,
   redo,
@@ -87,6 +88,16 @@ interface DocRecord {
   configSerial: number;
 }
 
+/** What a hibernated tab keeps so its undo history survives (BUGS.md M12). */
+interface SleepRecord {
+  /** The history field's value: undo events as changes against a doc of `length`, no text. */
+  history: unknown;
+  length: number;
+  versions: number[];
+  depth: number;
+  savedVersion: number;
+}
+
 let versionCounter = 0;
 
 function hasLongLine(text: string): boolean {
@@ -130,6 +141,7 @@ class Engine implements EditorEngine {
   };
   private configSerial = 0;
   private readonly docs = new Map<string, DocRecord>();
+  private readonly sleeping = new Map<string, SleepRecord>();
   private activeId: string | null = null;
   private readonly finder = new FindController(() => this.view);
 
@@ -177,6 +189,7 @@ class Engine implements EditorEngine {
     this.host = null;
     this.activeId = null;
     this.docs.clear();
+    this.sleeping.clear();
   }
 
   // ---------- State construction ----------
@@ -214,9 +227,11 @@ class Engine implements EditorEngine {
   }
 
   private createState(text: string, mode: FormatMode): EditorState {
-    return EditorState.create({
-      doc: text,
-      extensions: [
+    return EditorState.create({ doc: text, extensions: this.stateExtensions(mode) });
+  }
+
+  private stateExtensions(mode: FormatMode): Extension {
+    return [
         editorRootClass,
         history({ minDepth: HISTORY_DEPTH, newGroupDelay: 500 }),
         lineDirections,
@@ -227,8 +242,7 @@ class Engine implements EditorEngine {
         findExtension,
         this.keymapExtension(),
         EditorView.updateListener.of((update) => this.onUpdate(update)),
-      ],
-    });
+    ];
   }
 
   private effectiveMode(doc: DocRecord): FormatMode {
@@ -422,7 +436,51 @@ class Engine implements EditorEngine {
   // ---------- Documents ----------
 
   createDoc(tabId: string, text: string, mode: FormatMode): void {
+    this.sleeping.delete(tabId);
     this.docs.set(tabId, this.newRecord(tabId, text, mode));
+  }
+
+  hibernate(tabId: string): void {
+    const doc = this.docs.get(tabId);
+    if (!doc) return;
+    const state = this.stateOf(doc);
+    this.dropDoc(tabId);
+    this.sleeping.set(tabId, {
+      history: state.field(historyField, false) ?? null,
+      length: state.doc.length,
+      versions: doc.versions,
+      depth: doc.depth,
+      savedVersion: doc.savedVersion,
+    });
+  }
+
+  wakeDoc(tabId: string, text: string, mode: FormatMode): boolean {
+    const sleep = this.sleeping.get(tabId);
+    this.createDoc(tabId, text, mode);
+    if (!sleep || sleep.history === null || text.length < sleep.length) return false;
+    const doc = this.docs.get(tabId) as DocRecord;
+    try {
+      // The same mechanism EditorState.fromJSON uses to seed a field.
+      let state = EditorState.create({
+        doc: text.slice(0, sleep.length),
+        extensions: [historyField.init(() => sleep.history), this.stateExtensions(this.effectiveMode(doc))],
+      });
+      if (text.length > sleep.length) {
+        // Text loaded past the old end maps the history like a lazily appended chunk.
+        state = state.update({
+          changes: { from: sleep.length, insert: text.slice(sleep.length) },
+          annotations: [Transaction.addToHistory.of(false), loadingText.of(true)],
+        }).state;
+      }
+      doc.state = state;
+    } catch {
+      return false;
+    }
+    doc.versions = sleep.versions;
+    doc.depth = sleep.depth;
+    doc.savedVersion = sleep.savedVersion;
+    doc.dirty = doc.versions[doc.depth] !== doc.savedVersion;
+    return true;
   }
 
   appendText(tabId: string, text: string): void {
@@ -465,6 +523,7 @@ class Engine implements EditorEngine {
       this.view?.setState(this.createState("", "plain"));
     }
     this.docs.delete(tabId);
+    this.sleeping.delete(tabId);
   }
 
   hasDoc(tabId: string): boolean {

@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/plugin-opener", async () => (await import("../test/fakeTaur
 
 const BIG = "C:\\data\\big.log";
 const OTHER = "C:\\data\\other.txt";
+const BIG2 = "C:\\data\\big2.log";
 const line = "abcdefghij".repeat(9) + "\n"; // 91 bytes
 const big = line.repeat(25_000); // ~2.3 MB, above the 2 MiB idle-load limit
 
@@ -118,7 +119,7 @@ describe("hibernating inactive tabs", () => {
   });
 
   // BUGS.md M12: hibernation wipes the undo history.
-  it.skip("M12: undo still works after a tab was hibernated and woken", async () => {
+  it("M12: undo still works after a tab was hibernated and woken", async () => {
     const bigTab = app.tabByName("big.log");
     await app.actions.activate(bigTab.id);
     app.type("x");
@@ -128,6 +129,46 @@ describe("hibernating inactive tabs", () => {
     await app.actions.activate(bigTab.id);
     app.engine.undo();
     expect(app.text(bigTab.id).endsWith("x")).toBe(false);
+    expect(app.tabByName("big.log").dirty).toBe(true);
+    app.engine.redo();
+    expect(app.text(bigTab.id)).toBe(big + "x");
+    expect(app.tabByName("big.log").dirty).toBe(false);
+  });
+
+  it("M12: keeps undo for a partly loaded tab", async () => {
+    backend.write(BIG2, big);
+    await app.actions.openPaths([BIG2]);
+    const id = app.tab().id;
+    app.loader.onNearEnd(id);
+    await waitFor(() => app.tab(id).loadedOffset > 1024 * 1024);
+    app.engine.restore(id, { anchor: 0, head: 0, scrollTop: 0 });
+    app.engine.insertText("TOP\n");
+    await app.actions.save();
+    expect(app.tab(id).fullyLoaded).toBe(false);
+    await app.actions.activate(app.tabByName("other.txt").id);
+    app.loader.hibernateSweep(Date.now() + 61_000);
+    expect(app.engine.hasDoc(id)).toBe(false);
+    await app.actions.activate(id);
+    expect(app.text(id).startsWith("TOP\n")).toBe(true);
+    app.engine.undo();
+    expect(app.text(id).startsWith("TOP")).toBe(false);
+    expect(app.text(id)).toBe(big.slice(0, app.text(id).length));
+  });
+
+  it("M12: starts a fresh undo history when the file changed while the tab slept", async () => {
+    const bigTab = app.tabByName("big.log");
+    await app.actions.activate(bigTab.id);
+    app.type("x");
+    await app.actions.save();
+    await app.actions.activate(app.tabByName("other.txt").id);
+    app.loader.hibernateSweep(Date.now() + 61_000);
+    backend.write(BIG, "rewritten");
+    await app.loader.pollExternalChanges();
+    await app.actions.activate(bigTab.id);
+    expect(app.text(bigTab.id)).toBe("rewritten");
+    app.engine.undo();
+    expect(app.text(bigTab.id)).toBe("rewritten");
+    expect(app.tabByName("big.log").dirty).toBe(false);
   });
 });
 
