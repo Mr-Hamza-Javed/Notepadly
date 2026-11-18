@@ -2,7 +2,7 @@
 import { bootApp, type App } from "../test/appHarness";
 import { backend } from "../test/fakeTauri";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { printableMarkdown, sanitizeHtml } from "./print";
+import { preparePrint, printableMarkdown, sanitizeHtml } from "./print";
 
 vi.mock("@tauri-apps/api/core", async () => (await import("../test/fakeTauri")).tauriMocks.core());
 vi.mock("@tauri-apps/api/window", async () => (await import("../test/fakeTauri")).tauriMocks.window());
@@ -108,6 +108,37 @@ describe("what gets printed", () => {
   });
 });
 
+// BUGS.md H9 (rest): maths, Mermaid, callouts, highlights, wikilinks and tags printed raw.
+describe("Notepadly syntax on paper", () => {
+  it("turns the editor's own syntax into placeholders, and highlights into <mark>", () => {
+    const { markdown, parts } = preparePrint(
+      "Energy $E=mc^2$ is ==very== key, see [[Page|the page]] #physics\n\n$$\nx^2\n$$\n\n> [!warning]\n> Careful",
+    );
+    expect(markdown).not.toContain("$");
+    expect(markdown).toContain("<mark>very</mark>");
+    expect(markdown).not.toContain("[[");
+    expect(markdown).not.toContain("#physics");
+    expect(markdown).not.toContain("[!warning]");
+    expect(parts).toEqual([
+      { kind: "math", src: "E=mc^2", display: false },
+      { kind: "wikilink", text: "the page" },
+      { kind: "tag", text: "#physics" },
+      { kind: "math", src: "x^2", display: true },
+      { kind: "callout", type: "warning", titled: false },
+    ]);
+  });
+
+  it("takes Mermaid diagrams and embeds, and leaves code alone", () => {
+    const text = "```mermaid\ngraph TD; A-->B\n```\n\n![[pic.png|200]]\n\n```\n$x$ ==y== #z\n```";
+    const { markdown, parts } = preparePrint(text);
+    expect(parts).toEqual([
+      { kind: "mermaid", src: "graph TD; A-->B" },
+      { kind: "embed", target: "pic.png", alias: "200" },
+    ]);
+    expect(markdown).toContain("```\n$x$ ==y== #z\n```");
+  });
+});
+
 describe("printing a tab", () => {
   let app: App;
   const print = vi.fn();
@@ -133,6 +164,44 @@ describe("printing a tab", () => {
     expect(root.innerHTML).not.toContain("secret");
     expect(root.innerHTML).not.toContain("onerror");
   });
+
+  it("renders maths, highlights, wikilinks, tags and callouts like the screen", async () => {
+    backend.write(
+      "C:\\p\\rich.md",
+      "Energy $E=mc^2$ is ==key==, see [[Page|the page]] #physics\n\n$$\nx^2\n$$\n\n> [!warning]\n> Careful\n\n![[pic.png|200]]",
+    );
+    await app.actions.openPaths(["C:\\p\\rich.md"]);
+    await app.actions.print();
+    const root = document.getElementById("notepadly-print-root")!;
+    expect(root.textContent).not.toContain("$");
+    expect(root.querySelector(".np-math .katex")).not.toBeNull();
+    expect(root.querySelector(".np-math-block .katex-display")).not.toBeNull();
+    // A display formula replaces its paragraph instead of nesting a block in it.
+    expect(root.querySelector("p .np-math-block")).toBeNull();
+    expect(root.querySelector("mark")?.textContent).toBe("key");
+    expect(root.querySelector(".np-wikilink")?.textContent).toBe("the page");
+    expect(root.querySelector(".np-tag")?.textContent).toBe("#physics");
+    const callout = root.querySelector("blockquote.np-callout-warning");
+    expect(callout?.querySelector(".np-callout-title")?.textContent).toBe("Warning");
+    expect(callout?.textContent).not.toContain("[!warning]");
+    const image = root.querySelector("img");
+    expect(image?.getAttribute("src")).toContain(encodeURIComponent("C:\\p\\pic.png"));
+    expect(image?.getAttribute("width")).toBe("200");
+    expect(root.textContent).not.toContain("\uE000");
+  });
+
+  it("renders a Mermaid diagram, or its source when it cannot be drawn", async () => {
+    backend.write("C:\\p\\chart.md", "```mermaid\ngraph TD; A-->B\n```");
+    await app.actions.openPaths(["C:\\p\\chart.md"]);
+    await app.actions.print();
+    const root = document.getElementById("notepadly-print-root")!;
+    // jsdom cannot lay out SVG, so either outcome is acceptable here; the raw fence is not.
+    const drawn = root.querySelector(".np-mermaid svg");
+    const source = root.querySelector("pre code");
+    expect(drawn ?? source).not.toBeNull();
+    if (source) expect(source.textContent).toBe("graph TD; A-->B");
+    expect(root.textContent).not.toContain("```");
+  }, 30_000);
 
   it("prints plain text exactly, without interpreting markdown or HTML", async () => {
     backend.write("C:\\p\\raw.txt", "# not a heading\n<b>tag</b>");
