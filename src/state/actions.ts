@@ -82,22 +82,29 @@ function readFirstLine(id: string): string | null {
   return firstLineOf(engine.getText(id));
 }
 
+function updateTitle(id: string): void {
+  titleTimers.delete(id);
+  const tab = getTab(id);
+  if (!tab || tab.path !== null || !engine.hasDoc(id)) return;
+  const line = readFirstLine(id);
+  if (line === null) return;
+  patchTab(id, { title: deriveTitle(line) });
+  loader.scheduleSessionWrite();
+}
+
 function scheduleTitle(id: string): void {
   if (getTab(id)?.path !== null) return;
   const pending = titleTimers.get(id);
   if (pending !== undefined) clearTimeout(pending);
-  titleTimers.set(
-    id,
-    setTimeout(() => {
-      titleTimers.delete(id);
-      const tab = getTab(id);
-      if (!tab || tab.path !== null || !engine.hasDoc(id)) return;
-      const line = readFirstLine(id);
-      if (line === null) return;
-      patchTab(id, { title: deriveTitle(line) });
-      loader.scheduleSessionWrite();
-    }, TITLE_DEBOUNCE_MS),
-  );
+  titleTimers.set(id, setTimeout(() => updateTitle(id), TITLE_DEBOUNCE_MS));
+}
+
+/** Runs pending title updates now, so a session stored right away has the right names (BUGS.md T2). */
+function flushTitles(): void {
+  for (const [id, timer] of [...titleTimers]) {
+    clearTimeout(timer);
+    updateTitle(id);
+  }
 }
 
 const sameCursor = (a: CursorInfo, b: CursorInfo) =>
@@ -495,6 +502,7 @@ async function prepareWindowClose(): Promise<boolean> {
   closeInProgress = true;
   try {
     flushPersistedPrefs();
+    flushTitles();
     if (isMainWindow && state().settings.startup === "continue") {
       try {
         await loader.flushPersistence();

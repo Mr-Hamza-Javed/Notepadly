@@ -772,6 +772,16 @@ describe("closing the window and restoring the session", () => {
     expect(backend.text(A)).toBe("on disk");
   });
 
+  it("T2: an untitled tab closed right after typing comes back with its name", async () => {
+    app = await bootApp();
+    app.type("Shopping list");
+    await app.actions.closeWindow();
+
+    app = await bootApp({ keepDisk: true });
+    expect(app.tab().title).toBe("Shopping list");
+    expect(app.text()).toBe("Shopping list");
+  });
+
   it("restores clean file tabs lazily, reading the file only when activated", async () => {
     app = await bootApp();
     backend.write(A, "a");
