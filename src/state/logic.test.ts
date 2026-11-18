@@ -121,8 +121,16 @@ describe("modes and titles", () => {
   });
 
   it("formats Time/Date like Notepad", () => {
-    expect(formatDateTime(new Date(2026, 10, 10, 0, 5))).toBe("12:05 AM 11/10/2026");
-    expect(formatDateTime(new Date(2026, 0, 2, 13, 30))).toBe("1:30 PM 1/2/2026");
+    expect(formatDateTime(new Date(2026, 10, 10, 0, 5), "en-US")).toBe("12:05 AM 11/10/2026");
+    expect(formatDateTime(new Date(2026, 0, 2, 13, 30), "en-US")).toBe("1:30 PM 1/2/2026");
+  });
+
+  // BUGS.md L4: F5 used the US format everywhere.
+  it("formats Time/Date in the user's own format", () => {
+    const d = new Date(2026, 10, 10, 15, 5);
+    expect(formatDateTime(d, "en-GB")).toBe("15:05 10/11/2026");
+    expect(formatDateTime(d, "de-DE")).toBe("15:05 10.11.2026");
+    expect(formatDateTime(d, "en-US")).toBe("3:05 PM 11/10/2026");
   });
 });
 
@@ -442,8 +450,8 @@ describe("modes, titles and names", () => {
   });
 
   it("formats noon and midnight on the 12-hour clock", () => {
-    expect(formatDateTime(new Date(2026, 11, 31, 12, 0))).toBe("12:00 PM 12/31/2026");
-    expect(formatDateTime(new Date(2026, 0, 1, 23, 59))).toBe("11:59 PM 1/1/2026");
+    expect(formatDateTime(new Date(2026, 11, 31, 12, 0), "en-US")).toBe("12:00 PM 12/31/2026");
+    expect(formatDateTime(new Date(2026, 0, 1, 23, 59), "en-US")).toBe("11:59 PM 1/1/2026");
   });
 });
 

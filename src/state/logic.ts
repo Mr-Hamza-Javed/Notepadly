@@ -280,12 +280,16 @@ export function saveFilters(mode: FormatMode) {
 }
 export const openFilters = () => [FILTER_ALL, FILTER_MD, FILTER_TXT];
 
-/** Local `h:mm tt M/d/yyyy`, e.g. `10:30 AM 11/10/2026`. */
-export function formatDateTime(d: Date): string {
-  const hours = d.getHours();
-  const h12 = hours % 12 === 0 ? 12 : hours % 12;
-  const minutes = String(d.getMinutes()).padStart(2, "0");
-  return `${h12}:${minutes} ${hours < 12 ? "AM" : "PM"} ${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+/**
+ * Short time and date in the user's format, as Notepad's F5 does: `10:30 AM 11/10/2026`
+ * in the US, `10:30 10/11/2026` in the UK, `10:30 10.11.2026` in Germany. `locale`
+ * defaults to the WebView's locale.
+ */
+export function formatDateTime(d: Date, locale?: string): string {
+  const time = d.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  const date = d.toLocaleDateString(locale, { year: "numeric", month: "numeric", day: "numeric" });
+  // ICU puts a narrow no-break space before AM/PM; a plain space is what people type.
+  return `${time} ${date}`.replace(/[  ]/g, " ");
 }
 
 export function pushRecent(list: string[], path: string): string[] {

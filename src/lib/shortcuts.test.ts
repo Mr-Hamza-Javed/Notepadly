@@ -201,7 +201,8 @@ describe("keyboard handling in the window", () => {
 
   it("F5 inserts the time and date at the cursor", () => {
     press("F5");
-    expect(app.text()).toMatch(/^\d{1,2}:\d{2} (AM|PM) \d{1,2}\/\d{1,2}\/\d{4}$/);
+    // The format follows the locale (BUGS.md L4): time, then the date with a four-digit year.
+    expect(app.text()).toMatch(/^\d{1,2}[:.]\d{2}\b.*\d{4}/);
   });
 
   it("Ctrl+B is ignored in plain-text tabs", () => {
