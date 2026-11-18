@@ -30,7 +30,7 @@ import {
   saveFilters,
   suggestedFileName,
   tabFromSession,
-  withDefaultExtension,
+  chosenSavePath,
   wrapIndex,
 } from "./logic";
 import {
@@ -389,7 +389,7 @@ async function saveAs(tabId?: string): Promise<boolean> {
     filters: saveFilters(tab.mode),
   });
   if (!chosen) return false;
-  const path = withDefaultExtension(chosen, tab.mode);
+  const path = chosenSavePath(chosen);
   const movesFile = !pathsEqual(path, tab.path);
   if (movesFile) {
     try {

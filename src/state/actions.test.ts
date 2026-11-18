@@ -322,11 +322,27 @@ describe("save as", () => {
     expect(backend.count("file_save")).toBe(0);
   });
 
-  it("adds the default extension when the name has none", async () => {
+  // BUGS.md C1: the dialog adds the filter's extension itself; with "All files"
+  // a name without one is what the user wants, and LICENSE.md must stay untouched.
+  it("saves a name without an extension as chosen and leaves name.md alone", async () => {
+    backend.write("C:\\notes\\LICENSE.md", "IMPORTANT EXISTING CONTENT");
+    app.type("hello");
+    dialogs.saveAnswers.push("C:\\notes\\LICENSE");
+    expect(await app.actions.saveAs()).toBe(true);
+    expect(backend.text("C:\\notes\\LICENSE")).toBe("hello");
+    expect(backend.text("C:\\notes\\LICENSE.md")).toBe("IMPORTANT EXISTING CONTENT");
+    expect(app.tab()).toMatchObject({ path: "C:\\notes\\LICENSE", title: "LICENSE", mode: "plain" });
+  });
+
+  // BUGS.md T4: Windows writes "notes." as "notes"; the tab must name that file.
+  it("drops a trailing dot from the chosen name", async () => {
     app.type("x");
-    dialogs.saveAnswers.push("C:\\notes\\noext");
-    await app.actions.saveAs();
-    expect(backend.exists("C:\\notes\\noext.md")).toBe(true);
+    dialogs.saveAnswers.push("C:\\notes\\notes.");
+    expect(await app.actions.saveAs()).toBe(true);
+    expect(backend.exists("C:\\notes\\notes")).toBe(true);
+    expect(app.tab()).toMatchObject({ path: "C:\\notes\\notes", title: "notes" });
+    await app.actions.openPaths(["C:\\notes\\notes"]);
+    expect(app.state().tabs).toHaveLength(1);
   });
 
   it("switches to plain mode when saved under a non-markdown name", async () => {

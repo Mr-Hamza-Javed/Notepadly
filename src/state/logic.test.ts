@@ -29,7 +29,7 @@ import {
   stampsEqual,
   suggestedFileName,
   tabFromSession,
-  withDefaultExtension,
+  chosenSavePath,
   wrapIndex,
   DEFAULT_PAGE_SETUP,
   DEFAULT_SETTINGS,
@@ -390,10 +390,31 @@ describe("modes, titles and names", () => {
     expect(suggestedFileName({ path: null, title: "tab\there\u0001", mode: "plain" })).toBe("tabhere.txt");
   });
 
-  it("adds the mode's extension only when the name has none", () => {
-    expect(withDefaultExtension("C:\\x\\notes", "formatted")).toBe("C:\\x\\notes.md");
-    expect(withDefaultExtension("C:\\x\\notes", "plain")).toBe("C:\\x\\notes.txt");
-    expect(withDefaultExtension("C:\\x\\notes.log", "formatted")).toBe("C:\\x\\notes.log");
+  // BUGS.md T3: Windows reserves device names with any extension.
+  it("does not suggest a Windows device name", () => {
+    expect(suggestedFileName({ path: null, title: "con", mode: "formatted" })).toBe("con_.md");
+    expect(suggestedFileName({ path: null, title: "NUL", mode: "plain" })).toBe("NUL_.txt");
+    expect(suggestedFileName({ path: null, title: "com1", mode: "plain" })).toBe("com1_.txt");
+    expect(suggestedFileName({ path: null, title: "lpt9.notes", mode: "plain" })).toBe("lpt9_.notes.txt");
+    expect(suggestedFileName({ path: null, title: "aux .x", mode: "plain" })).toBe("aux_ .x.txt");
+    expect(suggestedFileName({ path: null, title: "console", mode: "plain" })).toBe("console.txt");
+    expect(suggestedFileName({ path: null, title: "com10", mode: "plain" })).toBe("com10.txt");
+  });
+
+  // BUGS.md C1: the dialog adds the selected filter's extension and checks for
+  // overwriting that exact name, so the chosen path is used as it is.
+  it("keeps the chosen Save As path without adding an extension", () => {
+    expect(chosenSavePath("C:\\x\\LICENSE")).toBe("C:\\x\\LICENSE");
+    expect(chosenSavePath("C:\\x\\.gitignore")).toBe("C:\\x\\.gitignore");
+    expect(chosenSavePath("C:\\x\\notes.log")).toBe("C:\\x\\notes.log");
+  });
+
+  // BUGS.md T4: Windows drops trailing dots and spaces from a file name.
+  it("drops trailing dots and spaces from the chosen name, as Windows does", () => {
+    expect(chosenSavePath("C:\\x\\notes.")).toBe("C:\\x\\notes");
+    expect(chosenSavePath("C:\\x\\notes. . ")).toBe("C:\\x\\notes");
+    expect(chosenSavePath("C:\\x.y\\a.md.")).toBe("C:\\x.y\\a.md");
+    expect(chosenSavePath("C:\\x\\...")).toBe("C:\\x\\...");
   });
 
   it("offers the filter matching the mode first", () => {
