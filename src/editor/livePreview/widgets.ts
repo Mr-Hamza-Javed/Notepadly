@@ -32,8 +32,10 @@ export function renderCellHtml(source: string): string {
       /&lt;(\/?)(sub|sup|kbd|u|ins|mark|b|strong|i|em|s|del|strike|small)&gt;/gi,
       (_m, slash: string, tag: string) => `<${slash}${tag.toLowerCase()}>`,
     )
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+    // Emphasis needs flanking markers: no space just inside them, so `2 * 3 * 4` stays text.
+    .replace(/\*\*(?!\s)([^*]*[^*\s])\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*(?!\s)([^*]*[^*\s])\*/g, "$1<em>$2</em>")
+    .replace(/(^|[^\w_])_(?!\s)([^_]*[^_\s])_(?![\w_])/g, "$1<em>$2</em>")
     .replace(/~~([^~]+)~~/g, "<s>$1</s>")
     .replace(/==([^=]+)==/g, "<mark>$1</mark>")
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a data-href="$2">$1</a>');

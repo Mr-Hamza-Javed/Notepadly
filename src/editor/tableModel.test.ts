@@ -121,8 +121,10 @@ describe("cell rendering", () => {
   });
 
   // BUGS.md L8: arithmetic in a cell turns italic.
-  it.skip("L8: 2 * 3 * 4 stays plain text", () => {
+  it("L8: 2 * 3 * 4 stays plain text", () => {
     expect(renderCellHtml("2 * 3 * 4")).toBe("2 * 3 * 4");
+    expect(renderCellHtml("a ** b ** c")).toBe("a ** b ** c");
+    expect(renderCellHtml("*x* and _y_ and snake_case_name")).toBe("<em>x</em> and <em>y</em> and snake_case_name");
   });
 
   it("never lets a cell inject attributes or scripts", () => {
