@@ -96,18 +96,18 @@ This report covers **functionality**: broken features, wrong results, data loss 
 
 ## HIGH: main features broken or wrong results
 
-### H1. Ctrl+B / Ctrl+I / the Bold button in a table cell make `****text` ✅
+### H1. Ctrl+B / Ctrl+I / the Bold button in a table cell make `****text` ✅ — fixed (1887e02)
 - Select "apple" in a cell, press Ctrl+B → the document has `| ****apple | 2 |`.
 - **Cause:** the global handler in `src/lib/shortcuts.ts:144` runs first (capture phase) and applies bold at the editor's hidden selection (start of the cell). The table's own Ctrl+B code (`widgets.ts:451`) never runs.
 - **Fix:** let the table widget handle these keys when focus is in a cell.
 
-### H2. Left/Right arrow gets stuck at rendered tables, maths blocks and Mermaid diagrams ✅
+### H2. Left/Right arrow gets stuck at rendered tables, maths blocks and Mermaid diagrams ✅ — fixed (1887e02)
 - **What happens:** from the start of the line below a table, press Left. The cursor walks through the hidden source one character at a time and cannot be seen.
 - **Test:** crossing a small 2-row table took **58** Left presses. A big diagram takes hundreds.
 - **Cause:** `src/editor/livePreview/block.ts` gives no `EditorView.atomicRanges` for its replaced blocks.
 - **Fix:** mark block widgets as atomic ranges. Also add a way to enter a table or maths block from the keyboard (only a mouse click works today).
 
-### H3. With a table at the very top of the document, Up arrow then typing scatters the text ✅
+### H3. With a table at the very top of the document, Up arrow then typing scatters the text ✅ — fixed (1887e02)
 - In the header cell press Up, type "abc". "a" landed below the table (and became a new table row), "b" at the end of the document, "c" was lost.
 - **Cause:** `src/editor/livePreview/widgets.ts:393`: `anchor = Math.max(0, start - 1)`; position 0 is inside the table.
 - **Fix:** when the table starts the document, insert an empty line first and put the cursor there.
@@ -117,7 +117,7 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - **Cause:** `src/editor/commands.ts:312` (`suffix`) adds no empty line after the table in this case.
 - **Fix:** always add `\n` when the next line is not empty.
 
-### H5. Table commands corrupt a table inside a blockquote or callout ✅
+### H5. Table commands corrupt a table inside a blockquote or callout ✅ — fixed (f551dc0)
 - In a `> | a | b |` table, "Insert row below" → every row becomes `| > | a | b |` and the table leaves the quote.
 - **Cause:** `src/editor/commands.ts:221` (`locateTable`) parses from the line start, including `> `.
 - **Also:** tables, Mermaid, block maths and `---` inside a list, quote or callout are not rendered at all (`block.ts:143` looks at top-level blocks only), yet the toolbar shows "Edit table" as enabled.
@@ -152,7 +152,7 @@ This report covers **functionality**: broken features, wrong results, data loss 
 3. With 10,000 or more matches: "1 of 10000", then **"0 of 10000"** after Next. It should say "10000+".
 - **Cause:** `src/editor/find.ts:197`; `src/lib/shortcuts.ts:123` does not pass the result to the find bar; `FindBar.tsx:93` ignores `FIND_COUNT_LIMIT`.
 
-### H11. Find matches inside tables, block maths and Mermaid cannot be seen ✅
+### H11. Find matches inside tables, block maths and Mermaid cannot be seen ✅ — fixed (1887e02)
 - Search "pear" in a table: the counter says "1 of 1" but nothing is highlighted, so Find seems to do nothing. Replace still works, blind.
 - **Cause:** these blocks are replaced by widgets; highlight marks inside them are not drawn.
 - **Fix:** open the source or highlight the cell when the match is inside a widget.
@@ -183,13 +183,13 @@ This report covers **functionality**: broken features, wrong results, data loss 
 
 ## MEDIUM
 
-### M1. Ctrl+A in a table cell selects the whole document ✅
+### M1. Ctrl+A in a table cell selects the whole document ✅ — fixed (1887e02)
 Focus stays in the cell, the cell text is not selected, the status bar shows "68 of 68 characters". Cause: `src/lib/shortcuts.ts:131`; a table cell is not treated as a native input.
 
-### M2. F5, Ctrl+K and Edit > Paste in a table cell insert at the start of the cell ✅
+### M2. F5, Ctrl+K and Edit > Paste in a table cell insert at the start of the cell ✅ — fixed (1887e02)
 The caret was at the end of the cell; F5 gave `| 11:50 AM 11/10/2026apple |` (tested). By the code, Ctrl+K and Edit > Paste insert at the same place, and Edit > Copy/Cut do not see the cell's selection (they stay disabled).
 
-### M3. After Ctrl+M the Tab key leaves the editor ✅
+### M3. After Ctrl+M the Tab key leaves the editor ✅ — fixed (05bdd86)
 Press Ctrl+M by mistake and Tab moves focus to the status bar; typing goes nowhere. Nothing shows that a mode changed. Cause: `src/editor/index.ts:212` keeps CodeMirror's `toggleTabFocusMode` from the default keymap. `Ctrl+/`, `Alt+Arrow`, `Ctrl+[` / `]` and `Ctrl+Shift+K` are also active but hidden.
 
 ### M4. Heading and Bold produce wrong Markdown on several lines ✅
@@ -197,7 +197,7 @@ Press Ctrl+M by mistake and Tab moves focus to the status bar; typing goes nowhe
 - Select two paragraphs, Bold → `**one\n\ntwo**`, which is not bold.
 - Cause: `src/editor/commands.ts:108` and `:44`.
 
-### M5. Moving down out of the last table row marks the document unsaved ✅
+### M5. Moving down out of the last table row marks the document unsaved ✅ — fixed (1887e02)
 With a table at the end of the document, Down arrow or Escape adds a newline and the tab becomes dirty. Cause: `widgets.ts:387`.
 
 ### M6. Save As onto the path of another open tab gives two tabs for one file ✅
@@ -279,9 +279,9 @@ When another program has locked the file, the tab opens empty (partial, offset 0
 | L5 | "characters" counts UTF-16 units (an emoji is 2). The total of a partly loaded unsaved file is stale | 📖 |
 | L6 | The font list has false families ("Montserrat Extra"); "Inter" is always listed even when not installed | 📖 |
 | L7 | After 400 undo steps, undoing back to the saved state no longer clears the unsaved dot (`index.ts:57`) | 📖 |
-| L8 | In table cells `2 * 3 * 4` turns italic; `_x_`, maths, images and wikilinks are not rendered | 📖 |
-| L9 | In a table without padding (`\|a\|b\|`), a `\` typed at the end of a cell merges it with the next cell | 📖 |
-| L10 | Table commands delete the extra cells of a row that has more cells than the header | 📖 |
+| L8 — fixed in part (7d40ede; rest is TAB-2) | In table cells `2 * 3 * 4` turns italic; `_x_`, maths, images and wikilinks are not rendered | 📖 |
+| L9 — fixed (1887e02) | In a table without padding (`\|a\|b\|`), a `\` typed at the end of a cell merges it with the next cell | 📖 |
+| L10 — fixed (f551dc0) | Table commands delete the extra cells of a row that has more cells than the header | 📖 |
 | L11 | An unclosed `$$` or `%%` restyles up to 5,000 lines; unclosed front matter up to 1,000 lines | 📖 |
 | L12 | Block maths, comment blocks and footnote definitions work at top level only, not inside a list, quote or callout | 📖 |
 | L13 | Ctrl+click on links works in Formatted mode only, not in Markdown syntax or Plain | 📖 |
@@ -363,6 +363,18 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 | H10 (first part) | Find Next/Previous report the real index after the cursor was moved. Parts 2 (F3 does not update the bar) and 3 ("10000+") are still open | `96a6e76` |
 | H9 (part) | `%%comments%%` and front matter are left out of printing. Maths, Mermaid, callouts, highlights, wikilinks and tags still print raw | `ccacdde` |
 | L6 (part) | "Montserrat Extra Bold" no longer lists a false "Montserrat Extra"; bitmap `.fon` fonts ("Courier 10,12,15", "MS Sans Serif 8,10,12,14,18,24") are left out. "Inter" is still always listed | `ea5c821`, `fec7557` |
+| L8 (part) | Emphasis in table cells needs flanking markers, so `2 * 3 * 4` stays plain; `_x_` is italic. Maths, images and wikilinks in cells are still not rendered (TAB-2) | `7d40ede` |
+| H5 | Table commands and Tab keep a table's `> ` quote/callout prefix on every row. Nested tables are still shown as source, not rendered (L12) | `f551dc0` |
+| L10 | Table commands keep the extra cells of rows longer than the header | `f551dc0` |
+| H1 | A table cell mirrors its caret into the editor selection, so Ctrl+B/I and the toolbar wrap the selected cell text | `1887e02` |
+| M2 | F5, Ctrl+K and Edit > Paste insert at the cell caret (escaped so they cannot split the row); Copy/Cut see the cell selection | `1887e02` |
+| M1 | Ctrl+A / Edit > Select All in a cell selects the cell's text | `1887e02` |
+| H2 | Rendered blocks are atomic ranges; an arrow key that lands on a table's edge enters the table. Maths/Mermaid still open only by double-click or the edit button | `1887e02` |
+| H3 | Up in the header of a table at the top of the document stays in the cell | `1887e02` |
+| M5 | Down in the last row of a table at the end stays in the cell; Escape adds the line outside the undo history, so the tab stays clean | `1887e02` |
+| H11 | A Find match in a table cell is marked in the cell; one in block maths/Mermaid opens its source. Only the current match is shown in a cell (TAB-1) | `1887e02` |
+| L9 | A backslash at the end of an unpadded cell gets a space before the pipe | `1887e02` |
+| M3 | Ctrl+M (tab focus mode) removed from the editor keymap | `05bdd86` |
 
 ### Fixed on this branch (new)
 
@@ -375,7 +387,7 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 
 | # | Test |
 | --- | --- |
-| H5 | `src/editor/commands.test.ts` "H5: adding a row to a table inside a blockquote keeps it in the quote" |
+| H5 — fixed, test un-skipped (f551dc0) | `src/editor/commands.test.ts` "H5: adding a row to a table inside a blockquote keeps it in the quote" |
 | H7 | `src/state/actions.test.ts` "H7: a deleted-then-restored file leaves an unedited tab clean" |
 | H14 | `src-tauri/src/files.rs` `mixed_line_endings_are_kept_on_save` (`#[ignore]`) |
 | H16 | `src/state/actions.test.ts` "H16: a restored tab whose file is gone is not an empty unsaved document" |
@@ -384,7 +396,7 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 | M12 | `src/lib/loader.test.ts` "M12: undo still works after a tab was hibernated and woken" |
 | M15 | `src-tauri/src/files.rs` `utf16_without_bom_is_detected` (`#[ignore]`) |
 | L2, L3 | `src/editor/markdown.test.ts` "L2: colour codes are not tags", "L3: comparison operators are not highlight markers" |
-| L8 | `src/editor/tableModel.test.ts` "L8: 2 * 3 * 4 stays plain text" |
+| L8 — fixed, test un-skipped (7d40ede) | `src/editor/tableModel.test.ts` "L8: 2 * 3 * 4 stays plain text" |
 
 ### New, not fixed
 
@@ -436,3 +448,23 @@ These are not bugs in existing code: Windows Notepad does these things and Notep
   - Use the drag position on screen to tell a drop outside every window (new window) from a drop on another window's tab bar (move).
   - Make sure the moved tab's draft and session entry belong to the new window, so nothing is lost or duplicated on restart.
 - **Related:** M18, C5 and H12. Test the move with a dirty tab, a partly loaded big file and an untitled tab.
+
+### New (tables)
+
+#### TAB-1. Only the current Find match is shown inside a table cell 📖
+- **What happens:** search a word that appears in several table cells. The current match is marked in its cell, but the other matches in tables get no yellow highlight (matches in normal text do).
+- **Cause:** `src/editor/livePreview/widgets.ts` `TableController.showSelection` marks the editor selection only; the `cm-find-match` marks of `src/editor/find.ts` are drawn by CodeMirror and cannot reach the widget's cells.
+- **Fix:** pass the find query to the table widgets and mark every match in the rendered cells.
+
+#### TAB-2. Maths, images and wikilinks are not rendered in table cells (rest of L8) 📖
+- `src/editor/livePreview/widgets.ts` `renderCellHtml` handles bold/italic/strike/highlight/code/links only.
+
+#### TAB-3. Emphasis rules run inside a link target in a table cell 📖
+- **Steps:** a cell `[x](https://a.b/_c_/d)` or `[x](https://a.b/*c*)`.
+- **Actual:** the URL in `data-href` gets `<em>` tags, so the link is broken. **Expected:** the target is left as written.
+- **Cause:** `renderCellHtml` (`src/editor/livePreview/widgets.ts`) replaces emphasis before links; links should be swapped out first, like code spans.
+
+#### TAB-4. Escape in a table at the end of a partly loaded file adds a newline in the middle of the file 📖
+- **Steps:** open a big file that loads in parts, where the loaded part ends inside a table; click a cell of the last row and press Escape before the rest loads.
+- **Cause:** `TableController.leave` (`src/editor/livePreview/widgets.ts`) adds a `\n` at the end of the document (outside the undo history, so the tab stays clean); the loader then appends the next chunk after it. The extra newline is saved with the next real edit.
+- **Fix:** skip the newline (stay in the cell) while the tab is not fully loaded.
