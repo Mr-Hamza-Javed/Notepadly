@@ -45,19 +45,35 @@ export function parseAlign(cell: string): Align {
 export interface TableRowModel {
   /** Offset of the row within the table source. */
   offset: number;
+  /** The whole line, including any prefix. Cell spans are relative to it. */
   text: string;
+  /** Blockquote/callout markers and indentation before the row (`> `), or "". */
+  prefix: string;
   cells: CellSpan[];
 }
 
-/** Rows in source order; index 1 is the delimiter row. */
+const ROW_PREFIX = /^(?:[ \t]*>)*[ \t]*/;
+
+/** Rows in source order; index 1 is the delimiter row. A table inside a quote keeps its `> ` as a prefix. */
 export function parseTable(source: string): TableRowModel[] {
   const rows: TableRowModel[] = [];
   let offset = 0;
   for (const text of source.split("\n")) {
-    rows.push({ offset, text, cells: splitRow(text) });
+    const prefix = ROW_PREFIX.exec(text)![0];
+    const cells = splitRow(text.slice(prefix.length)).map((cell) => ({
+      from: cell.from + prefix.length,
+      to: cell.to + prefix.length,
+    }));
+    rows.push({ offset, text, prefix, cells });
     offset += text.length + 1;
   }
   return rows;
+}
+
+/** Writes a row line: the prefix (with a space after a bare `>`), then the cells. */
+export function joinRow(prefix: string, values: string[]): string {
+  const gap = prefix.endsWith(">") ? " " : "";
+  return `${prefix}${gap}| ${values.join(" | ")} |`;
 }
 
 export function cellText(row: TableRowModel, index: number): string {

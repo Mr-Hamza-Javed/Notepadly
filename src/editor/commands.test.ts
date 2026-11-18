@@ -348,6 +348,36 @@ describe("tables", () => {
     expect(view.state.doc.toString()).toBe("| a \\| b | سلام |\n| --- | --- |\n| 😀 | x |\n|  |  |");
   });
 
+  // Regression for BUGS.md H5: table commands parsed the "> " prefix as part of the row.
+  it("H5: adding a row to a table inside a blockquote keeps it in the quote", () => {
+    const text = "> | a | b |\n> | --- | --- |\n> | 1 | 2 |";
+    const view = markdownViewAt(text, text.indexOf("1"));
+    applyFormat(view, { type: "table-edit", op: "row-below" });
+    expect(view.state.doc.toString()).toBe(`${text}\n> |  |  |`);
+    expect(view.state.doc.lineAt(view.state.selection.main.head).text).toBe("> |  |  |");
+  });
+
+  it("edits columns of a table in a callout and Tab adds a quoted row", () => {
+    const text = "> [!note]\n> | a | b |\n> | --- | --- |\n> | 1 | 2 |";
+    const view = markdownViewAt(text, text.indexOf("2"));
+    applyFormat(view, { type: "table-edit", op: "del-col" });
+    expect(view.state.doc.toString()).toBe("> [!note]\n> | a |\n> | --- |\n> | 1 |");
+    const tab = markdownViewAt(text, text.indexOf("2"));
+    handleTab(tab);
+    expect(tab.state.doc.toString()).toBe(`${text}\n> |   |   |`);
+    expect(tab.state.selection.main.head).toBe(tab.state.doc.length - "|   |   |".length + 2);
+  });
+
+  // Regression for BUGS.md L10: cells past the header's width were dropped.
+  it("L10: table commands keep the extra cells of a long row", () => {
+    const text = "| a | b |\n| --- | --- |\n| 1 | 2 | 3 |";
+    const view = markdownViewAt(text, text.indexOf("a"));
+    applyFormat(view, { type: "table-edit", op: "row-below" });
+    expect(view.state.doc.toString()).toBe("| a | b |\n| --- | --- |\n|  |  |\n| 1 | 2 | 3 |");
+    applyFormat(view, { type: "table-edit", op: "col-left" });
+    expect(view.state.doc.line(4).text).toBe("|  | 1 | 2 | 3 |");
+  });
+
   it("table edit commands do nothing outside a table", () => {
     const view = markdownViewAt("just text", 3);
     applyFormat(view, { type: "table-edit", op: "del-table" });
@@ -356,14 +386,6 @@ describe("tables", () => {
 });
 
 describe("known open bugs (see BUGS.md)", () => {
-  // BUGS.md H5: table commands parse the "> " prefix as part of the row.
-  it.skip("H5: adding a row to a table inside a blockquote keeps it in the quote", () => {
-    const text = "> | a | b |\n> | --- | --- |\n> | 1 | 2 |";
-    const view = markdownViewAt(text, text.indexOf("1"));
-    applyFormat(view, { type: "table-edit", op: "row-below" });
-    expect(view.state.doc.toString()).toBe(`${text}\n> |  |  |`);
-  });
-
   // BUGS.md M4 (second part): bold across a paragraph break is not bold markdown.
   it.skip("M4: bolding two paragraphs bolds each one", () => {
     expect(format("|one\n\ntwo|", { type: "bold" })).toBe("**|one**\n\n**two|**");

@@ -11,7 +11,7 @@ import {
 import type { Command, EditorView } from "@codemirror/view";
 import type { SyntaxNode } from "@lezer/common";
 import type { BlockKind, FormatCommand, FormatContext, ListKind } from "./api";
-import { cellText, parseTable, type TableRowModel } from "./tableModel";
+import { cellText, joinRow, parseTable, type TableRowModel } from "./tableModel";
 
 const LIST_LINE = /^(\s*)([-+*]|\d+[.)])(\s+)(\[[ xX]\]\s+)?/;
 const QUOTE_LIST_LINE = /^(\s*(?:>\s?)*)(\s*)([-+*]|\d+[.)])(\s+)(\[[ xX]\]\s+)?(.*)$/;
@@ -270,8 +270,8 @@ function moveToCell(view: EditorView, location: TableLocation, rowIndex: number,
   });
 }
 
-function emptyRow(columns: number): string {
-  return `|${"   |".repeat(columns)}`;
+function emptyRow(columns: number, prefix = ""): string {
+  return `${prefix}${prefix.endsWith(">") ? " " : ""}|${"   |".repeat(columns)}`;
 }
 
 function tableTab(view: EditorView, dir: 1 | -1): boolean {
@@ -295,8 +295,8 @@ function tableTab(view: EditorView, dir: 1 | -1): boolean {
   if (row === 1) row += dir;
   if (row < 0) return true;
   if (row >= rows.length) {
-    const insert = `\n${emptyRow(columns)}`;
-    const anchor = location.to + 3;
+    const insert = `\n${emptyRow(columns, rows[rows.length - 1].prefix)}`;
+    const anchor = location.to + insert.length - 4 * columns + 1;
     view.dispatch({
       changes: { from: location.to, insert },
       selection: { anchor },
@@ -348,7 +348,12 @@ function editTable(view: EditorView, op: Extract<FormatCommand, { type: "table-e
   if (!location) return;
   const { rows, from, to } = location;
   const columns = rows[0].cells.length;
-  let grid = rows.map((row) => Array.from({ length: columns }, (_v, c) => cellText(row, c)));
+  // Rows longer than the header keep their extra cells (BUGS.md L10).
+  let grid = rows.map((row) =>
+    Array.from({ length: Math.max(columns, row.cells.length) }, (_v, c) => cellText(row, c)),
+  );
+  // Each row keeps its own quote/indent prefix (BUGS.md H5); new rows copy their neighbour's.
+  const prefixes = rows.map((row) => row.prefix);
   let rowIndex = location.rowIndex;
   let column = location.column;
 
@@ -366,18 +371,21 @@ function editTable(view: EditorView, op: Extract<FormatCommand, { type: "table-e
     case "row-above": {
       const at = Math.max(2, rowIndex);
       grid.splice(at, 0, Array(columns).fill(""));
+      prefixes.splice(at, 0, prefixes[Math.min(at, prefixes.length - 1)]);
       rowIndex = at;
       break;
     }
     case "row-below": {
       const at = Math.max(2, rowIndex + 1);
       grid.splice(at, 0, Array(columns).fill(""));
+      prefixes.splice(at, 0, prefixes[at - 1]);
       rowIndex = at;
       break;
     }
     case "del-row":
       if (rowIndex < 2) return;
       grid.splice(rowIndex, 1);
+      prefixes.splice(rowIndex, 1);
       rowIndex = Math.min(rowIndex, grid.length - 1);
       break;
     case "col-left":
@@ -398,11 +406,12 @@ function editTable(view: EditorView, op: Extract<FormatCommand, { type: "table-e
       break;
   }
 
-  const lines = grid.map((row) => `| ${row.join(" | ")} |`);
+  const lines = grid.map((row, r) => joinRow(prefixes[r], row));
   const text = lines.join("\n");
   let anchor = from;
-  for (let r = 0; r < rowIndex && r < lines.length; r++) anchor += lines[r].length + 1;
-  anchor += 2;
+  const targetIndex = Math.min(rowIndex, lines.length - 1);
+  for (let r = 0; r < targetIndex; r++) anchor += lines[r].length + 1;
+  anchor += lines[targetIndex].indexOf("|") + 2;
   const targetRow = grid[Math.min(rowIndex, grid.length - 1)];
   for (let c = 0; c < column && c < targetRow.length; c++) anchor += targetRow[c].length + 3;
 
