@@ -122,6 +122,12 @@ async function openExternal(url: string): Promise<void> {
   await openUrl(url);
 }
 
+/** PDFs, images and other non-text files a document links to; `classifyHref` decides which. */
+async function openWithDefaultApp(path: string): Promise<void> {
+  const { openPath } = await import("@tauri-apps/plugin-opener");
+  await openPath(path);
+}
+
 export const editorHost: EditorHost = {
   onDirtyChange: (id, dirty) => {
     loader.noteDirty(id, dirty);
@@ -146,6 +152,7 @@ export const editorHost: EditorHost = {
     const target = classifyHref(href, base);
     if (target.kind === "web") openExternal(target.url).catch(reportError("Could not open link"));
     else if (target.kind === "file") void actions.openPaths([target.path]);
+    else if (target.kind === "external") openWithDefaultApp(target.path).catch(reportError("Could not open link"));
   },
   baseDir: (id) => {
     const path = getTab(id)?.path;

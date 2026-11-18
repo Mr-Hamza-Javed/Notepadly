@@ -301,12 +301,15 @@ export class FakeDialogs {
   openAnswers: (string[] | null)[] = [];
   saveRequests: { defaultPath?: string }[] = [];
   openedUrls: string[] = [];
+  /** Files handed to the default app (`openPath`). */
+  openedPaths: string[] = [];
 
   reset(): void {
     this.saveAnswers = [];
     this.openAnswers = [];
     this.saveRequests = [];
     this.openedUrls = [];
+    this.openedPaths = [];
   }
 }
 
@@ -362,6 +365,9 @@ export const tauriMocks = {
   opener: () => ({
     openUrl: async (url: string) => {
       dialogs.openedUrls.push(url);
+    },
+    openPath: async (path: string) => {
+      dialogs.openedPaths.push(path);
     },
   }),
 };
