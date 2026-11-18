@@ -42,8 +42,8 @@ import {
 } from "./commands";
 import { FIND_COUNT_LIMIT, FindController, findExtension } from "./find";
 import { blockPreview, rebuildBlocks } from "./livePreview/block";
-import { previewContext } from "./livePreview/context";
-import { inlinePreview } from "./livePreview/inline";
+import { previewContext, resolveHref } from "./livePreview/context";
+import { ctrlClick, inlinePreview } from "./livePreview/inline";
 import { markdownSupport, parseAhead } from "./markdown";
 import { editorRootClass, lineDirections, tokenClasses, watchTheme } from "./theme";
 import "./editor.css";
@@ -64,10 +64,39 @@ const attributesCompartment = new Compartment();
 
 const modeClass = (name: string) => EditorView.editorAttributes.of({ class: `cm-mode-${name}` });
 
+const URL_IN_TEXT = /\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
+
+/** The web address under `offset` in a line of plain text, without trailing punctuation. */
+export function urlAt(lineText: string, offset: number): string | null {
+  for (const match of lineText.matchAll(URL_IN_TEXT)) {
+    const url = match[0].replace(/[.,;:!?)\]}'"]+$/, "");
+    const from = match.index ?? 0;
+    if (offset >= from && offset <= from + url.length) return url;
+  }
+  return null;
+}
+
+/** Plain text has no syntax tree: Ctrl+click opens a bare web address (BUGS.md L13). */
+const plainLinkClick = EditorView.domEventHandlers({
+  mousedown(event, view) {
+    if (!event.ctrlKey || event.button !== 0) return false;
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (pos === null) return false;
+    const line = view.state.doc.lineAt(pos);
+    if (line.length > 20000) return false;
+    const url = urlAt(line.text, pos - line.from);
+    if (!url) return false;
+    event.preventDefault();
+    previewContext.openLink(resolveHref(url));
+    return true;
+  },
+});
+
 const modeExtensions: Record<FormatMode, Extension> = {
   formatted: [modeClass("formatted"), markdownSupport, parseAhead, tokenClasses, blockPreview, inlinePreview],
-  syntax: [modeClass("syntax"), markdownSupport, parseAhead, tokenClasses],
-  plain: [modeClass("plain")],
+  // Ctrl+click on links works in every mode, not only Formatted (BUGS.md L13).
+  syntax: [modeClass("syntax"), markdownSupport, parseAhead, tokenClasses, ctrlClick],
+  plain: [modeClass("plain"), plainLinkClick],
 };
 
 interface DocRecord {

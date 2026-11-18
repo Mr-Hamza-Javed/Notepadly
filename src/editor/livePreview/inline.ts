@@ -638,7 +638,8 @@ function jumpToFootnote(view: EditorView, pos: number): boolean {
   return true;
 }
 
-const ctrlClick = EditorView.domEventHandlers({
+/** Ctrl+click opens links and jumps to footnotes; also used in Markdown syntax mode (BUGS.md L13). */
+export const ctrlClick = EditorView.domEventHandlers({
   mousedown(event, view) {
     if (!event.ctrlKey || event.button !== 0) return false;
     const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
