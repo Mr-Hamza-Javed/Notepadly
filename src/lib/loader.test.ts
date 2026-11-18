@@ -225,4 +225,42 @@ describe("drafts", () => {
     expect(app.message()).toMatchObject({ title: "Could not open file" });
     expect(app.message()?.body).toContain("Access is denied");
   });
+
+  it("M22: text typed into a tab whose file could not be read is not saved over the file", async () => {
+    backend.write(OTHER, "disk v1");
+    backend.write(BIG, "active on restart");
+    await app.actions.openPaths([OTHER]);
+    await app.actions.openPaths([BIG]);
+    await app.actions.closeWindow();
+
+    app = await bootApp({ keepDisk: true });
+    const tab = app.tabByName("other.txt");
+    backend.failNext.set("file_read_chunk", "The process cannot access the file. (os error 32)");
+    await app.actions.activate(tab.id);
+    app.actions.closeDialog();
+    app.type("typed ");
+    expect(await app.actions.save()).toBe(false);
+    expect(backend.text(OTHER)).toBe("disk v1");
+    expect(app.message()?.body).toMatch(/could not be read/);
+  });
+
+  it("M22: a clean tab whose file could not be read loads it once it can be read", async () => {
+    backend.write(OTHER, "disk v1");
+    backend.write(BIG, "active on restart");
+    await app.actions.openPaths([OTHER]);
+    await app.actions.openPaths([BIG]);
+    await app.actions.closeWindow();
+
+    app = await bootApp({ keepDisk: true });
+    const tab = app.tabByName("other.txt");
+    backend.failNext.set("file_read_chunk", "The process cannot access the file. (os error 32)");
+    await app.actions.activate(tab.id);
+    await app.loader.pollExternalChanges();
+    await waitFor(() => app.text(tab.id) === "disk v1");
+    expect(app.tabByName("other.txt")).toMatchObject({ dirty: false, externalChange: null, fullyLoaded: true });
+    // And it saves normally again.
+    app.type(" + more");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(OTHER)).toBe("disk v1 + more");
+  });
 });

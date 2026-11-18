@@ -871,7 +871,7 @@ describe("closing the window and restoring the session", () => {
 
   // BUGS.md H16: a file deleted while the app was closed comes back as an
   // empty, unsaved tab; saving it writes an empty file.
-  it.skip("H16: a restored tab whose file is gone is not an empty unsaved document", async () => {
+  it("H16: a restored tab whose file is gone is not an empty unsaved document", async () => {
     app = await bootApp();
     backend.write(A, "content");
     await app.actions.openPaths([A]);
@@ -879,5 +879,14 @@ describe("closing the window and restoring the session", () => {
     backend.delete(A);
     app = await bootApp({ keepDisk: true });
     expect(app.tab().dirty).toBe(false);
+    expect(app.tab().externalChange).toBe("deleted");
+    // Saving the empty tab does not create an empty file.
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.exists(A)).toBe(false);
+    // When the file comes back, the tab shows it.
+    backend.write(A, "content again");
+    await app.loader.pollExternalChanges();
+    await waitFor(() => app.text() === "content again");
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
   });
 });

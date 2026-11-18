@@ -64,6 +64,8 @@ interface TabRuntime {
    * file comes back before the user edits, the tab is clean again (BUGS.md H7).
    */
   cleanDelete: number | null;
+  /** The file could not be read, so the editor does not hold its text: never save over it. */
+  unreadable: boolean;
 }
 
 const runtimes = new Map<string, TabRuntime>();
@@ -89,6 +91,7 @@ function rtOf(id: string): TabRuntime {
       hasDraft: false,
       draftMeta: null,
       cleanDelete: null,
+      unreadable: false,
     };
     runtimes.set(id, rt);
   }
@@ -329,6 +332,7 @@ async function applyFromDisk(
   });
   rt.forceDirty = false;
   rt.cleanDelete = null;
+  rt.unreadable = false;
   rt.dismissed = null;
   rt.scanStarted = false;
   rt.ioSeq++;
@@ -408,12 +412,27 @@ export async function materialiseOrFlag(id: string): Promise<void> {
     const tab = getTab(id);
     if (!tab || engine.hasDoc(id)) return;
     const disk = tab.path ? await ipc.stat(tab.path).catch(() => undefined) : undefined;
+    if (!getTab(id) || engine.hasDoc(id)) return;
     engine.createDoc(id, "", tab.mode);
+    const rt = rtOf(id);
     if (disk === null) {
-      rtOf(id).forceDirty = true;
-      patchTab(id, { hibernated: false, dirty: true, externalChange: "deleted", fullyLoaded: true, stamp: null });
+      // Nothing was loaded, so there is no text to lose: the tab stays clean and
+      // the bar says the file is gone. Saving an empty tab must not create an
+      // empty file (BUGS.md H16); typing something and saving recreates it.
+      rt.forceDirty = false;
+      patchTab(id, { hibernated: false, dirty: false, externalChange: "deleted", fullyLoaded: true, stamp: null });
+      markDraftChanged(id);
     } else {
-      patchTab(id, { hibernated: false, externalChange: "modified", loadedOffset: 0, fullyLoaded: false });
+      // The empty editor does not show the file, so it must not be saved over it
+      // (BUGS.md M22). With no stamp, polling retries the read for a clean tab.
+      rt.unreadable = true;
+      patchTab(id, {
+        hibernated: false,
+        externalChange: "modified",
+        loadedOffset: 0,
+        fullyLoaded: false,
+        stamp: null,
+      });
       showMessage("Could not open file", `${tab.title} could not be read.\n${String(error)}`);
     }
   }
@@ -441,6 +460,13 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string): Promise<
   }
   const tab = getTab(id);
   if (!tab) return { ok: false, stale: false, message: "The tab was closed." };
+  if (rt.unreadable) {
+    return {
+      ok: false,
+      stale: false,
+      message: "This file could not be read, so this tab does not show its text. Reload it before saving.",
+    };
+  }
   const samePath = pathsEqual(tab.path, targetPath);
   const partial = !tab.fullyLoaded;
   if (partial && (!samePath || !tab.stamp)) {
