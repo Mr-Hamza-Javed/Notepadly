@@ -221,6 +221,33 @@ export function pushRecent(list: string[], path: string): string[] {
   return [path, ...list.filter((p) => !pathsEqual(p, path))].slice(0, MAX_RECENT);
 }
 
+/**
+ * H12: several windows share one settings record. A window writes only the keys
+ * it changed itself since its last write, on top of what another window stored.
+ */
+export function mergeSettings(stored: Settings, written: Settings, mine: Settings): Settings {
+  const merged = { ...stored } as Record<keyof Settings, unknown>;
+  for (const key of Object.keys(mine) as (keyof Settings)[]) {
+    if (mine[key] !== written[key]) merged[key] = mine[key];
+  }
+  return merged as unknown as Settings;
+}
+
+/**
+ * The Recent list version of mergeSettings: the paths this window moved up or
+ * added go in front, the ones it removed go away, the rest keep the stored order.
+ */
+export function mergeRecent(stored: string[], written: string[], mine: string[]): string[] {
+  const indexIn = (list: string[], path: string) => list.findIndex((p) => pathsEqual(p, path));
+  const removed = written.filter((p) => indexIn(mine, p) < 0);
+  const front = mine.filter((p, i) => {
+    const before = indexIn(written, p);
+    return before < 0 || i < before;
+  });
+  const rest = stored.filter((p) => indexIn(front, p) < 0 && indexIn(removed, p) < 0);
+  return [...front, ...rest].slice(0, MAX_RECENT);
+}
+
 // ---- Tabs -----------------------------------------------------------------
 
 export function moveItem<T>(list: T[], from: number, to: number): T[] {

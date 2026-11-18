@@ -129,3 +129,55 @@ describe("store: tab updates", () => {
     for (const id of ids) expect(id).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
   });
 });
+
+describe("store: sharing preferences between windows (H12)", () => {
+  // Store modules from earlier tests still listen for storage events; let their
+  // pending writes run out first so they do not answer for this test's window.
+  beforeEach(() => new Promise((resolve) => setTimeout(resolve, 450)));
+
+  /** What another window does: write the key, then the browser tells this one. */
+  function otherWindowWrites(key: string, value: unknown) {
+    localStorage.setItem(key, JSON.stringify(value));
+    window.dispatchEvent(new StorageEvent("storage", { key }));
+  }
+
+  it("takes in settings and Recent changed in another window", async () => {
+    const { useApp, onSharedSettings } = await freshStore();
+    const seen: string[] = [];
+    onSharedSettings((before, after) => seen.push(`${before.theme}->${after.theme}`));
+    otherWindowWrites(KEY_SETTINGS, { ...useApp.getState().settings, theme: "dark", fontSizePt: 14 });
+    otherWindowWrites(KEY_RECENT, ["C:\\other.md"]);
+    expect(useApp.getState().settings).toMatchObject({ theme: "dark", fontSizePt: 14 });
+    expect(useApp.getState().dark).toBe(true);
+    expect(useApp.getState().recent).toEqual(["C:\\other.md"]);
+    expect(seen).toEqual(["system->dark"]);
+  });
+
+  it("does not write back what it took in from another window", async () => {
+    const { useApp } = await freshStore();
+    localStorage.setItem(KEY_SETTINGS, JSON.stringify({ ...useApp.getState().settings, zoom: 130 }));
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    window.dispatchEvent(new StorageEvent("storage", { key: KEY_SETTINGS }));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(useApp.getState().settings.zoom).toBe(130);
+    expect(setItem).not.toHaveBeenCalled();
+  });
+
+  it("a later change in an older window keeps the other window's change", async () => {
+    const { useApp, flushPersistedPrefs } = await freshStore();
+    // The other window changed the theme; this one has not heard of it yet.
+    localStorage.setItem(KEY_SETTINGS, JSON.stringify({ ...useApp.getState().settings, theme: "dark" }));
+    useApp.setState((s) => ({ settings: { ...s.settings, fontSizePt: 16 } }));
+    flushPersistedPrefs();
+    expect(JSON.parse(localStorage.getItem(KEY_SETTINGS)!)).toMatchObject({ theme: "dark", fontSizePt: 16 });
+    expect(useApp.getState().settings).toMatchObject({ theme: "dark", fontSizePt: 16 });
+  });
+
+  it("a file opened in an older window joins the Recent list instead of replacing it", async () => {
+    const { useApp, flushPersistedPrefs } = await freshStore({ [KEY_RECENT]: JSON.stringify(["C:\\a.md", "C:\\b.md"]) });
+    localStorage.setItem(KEY_RECENT, JSON.stringify(["C:\\c.md", "C:\\a.md", "C:\\b.md"]));
+    useApp.setState({ recent: ["C:\\d.md", "C:\\a.md", "C:\\b.md"] });
+    flushPersistedPrefs();
+    expect(JSON.parse(localStorage.getItem(KEY_RECENT)!)).toEqual(["C:\\d.md", "C:\\c.md", "C:\\a.md", "C:\\b.md"]);
+  });
+});

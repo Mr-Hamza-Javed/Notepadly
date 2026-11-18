@@ -15,6 +15,8 @@ import {
   headerFooterBoxes,
   isMarkdownPath,
   loadedOffsetAfterPartialSave,
+  mergeRecent,
+  mergeSettings,
   modeAfterSave,
   moveItem,
   neighbourAfterClose,
@@ -592,5 +594,21 @@ describe("print header and footer codes", () => {
 
   it("is empty for an empty spec", () => {
     expect(headerFooterBoxes("", ctx)).toEqual({ left: "none", center: "none", right: "none" });
+  });
+});
+
+describe("merging preferences from several windows (H12)", () => {
+  it("mergeSettings keeps the stored value of every key this window did not change", () => {
+    const base = sanitizeSettings({});
+    const stored = { ...base, theme: "dark" as const };
+    const mine = { ...base, zoom: 150 };
+    expect(mergeSettings(stored, base, mine)).toEqual({ ...base, theme: "dark", zoom: 150 });
+  });
+
+  it("mergeRecent puts this window's new and re-opened files first and drops what it removed", () => {
+    expect(mergeRecent(["x", "a", "b"], ["a", "b"], ["b", "a"])).toEqual(["b", "x", "a"]);
+    expect(mergeRecent(["x", "a", "b"], ["a", "b"], ["a"])).toEqual(["x", "a"]);
+    expect(mergeRecent(["x", "a"], ["a"], [])).toEqual(["x"]);
+    expect(mergeRecent(["C:\\A.md"], [], ["c:\\a.md"])).toEqual(["c:\\a.md"]);
   });
 });

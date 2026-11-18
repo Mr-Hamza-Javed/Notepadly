@@ -39,6 +39,7 @@ import {
   getTab,
   makeUntitledTab,
   newTabId,
+  onSharedSettings,
   patchTab,
   showMessage,
   useApp,
@@ -560,6 +561,11 @@ function applyFormattingSetting(formatting: boolean): void {
 
 function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void {
   useApp.setState((s) => ({ settings: { ...s.settings, [key]: value } }));
+  applySetting(key, value, true);
+}
+
+/** Makes a changed setting take effect. `own` is false for a change made in another window. */
+function applySetting<K extends keyof Settings>(key: K, value: Settings[K], own: boolean): void {
   switch (key) {
     case "wordWrap":
     case "spellcheck":
@@ -577,16 +583,23 @@ function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void 
       applyFormattingSetting(value as boolean);
       break;
     case "recentFiles":
-      if (!value) useApp.setState({ recent: [] });
+      if (own && !value) useApp.setState({ recent: [] });
       break;
     case "startup":
       loader.setPersistence(isMainWindow && value === "continue");
       break;
     case "autoUpdate":
-      ipc.updateConfigure(value as boolean).catch(() => {});
+      if (own) ipc.updateConfigure(value as boolean).catch(() => {});
       break;
   }
 }
+
+/** H12: settings changed in another window take effect here too. */
+onSharedSettings((before, after) => {
+  for (const key of Object.keys(after) as (keyof Settings)[]) {
+    if (before[key] !== after[key]) applySetting(key, after[key], false);
+  }
+});
 
 async function ensureFullyLoaded(id: string): Promise<void> {
   try {

@@ -7,6 +7,8 @@ import {
   UNTITLED,
   computeDark,
   defaultModeFor,
+  mergeRecent,
+  mergeSettings,
   sanitizePageSetup,
   sanitizeRecent,
   sanitizeSettings,
@@ -102,20 +104,79 @@ darkQuery?.addEventListener("change", applyTheme);
 // ---- Debounced localStorage writes ----------------------------------------
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
-let written: Pick<AppState, "settings" | "recent" | "pageSetup"> = useApp.getState();
+type SharedPrefs = Pick<AppState, "settings" | "recent" | "pageSetup">;
+let written: SharedPrefs = useApp.getState();
+/** Set while values written by another window are taken in, so they are not written back. */
+let adopting = false;
 
+/**
+ * Other windows share these keys (H12). Each write merges this window's own
+ * changes into what is stored now, so it never wipes out another window's change.
+ */
 export function flushPersistedPrefs(): void {
   if (persistTimer !== null) clearTimeout(persistTimer);
   persistTimer = null;
-  const { settings, recent, pageSetup } = useApp.getState();
-  if (settings !== written.settings) writeJson(KEY_SETTINGS, settings);
-  if (recent !== written.recent) writeJson(KEY_RECENT, recent);
+  let { settings, recent, pageSetup } = useApp.getState();
+  if (settings !== written.settings) {
+    settings = mergeSettings(sanitizeSettings(readJson(KEY_SETTINGS) ?? written.settings), written.settings, settings);
+    writeJson(KEY_SETTINGS, settings);
+  }
+  if (recent !== written.recent) {
+    recent = mergeRecent(sanitizeRecent(readJson(KEY_RECENT) ?? written.recent), written.recent, recent);
+    writeJson(KEY_RECENT, recent);
+  }
   if (pageSetup !== written.pageSetup) writeJson(KEY_PAGE_SETUP, pageSetup);
   written = { settings, recent, pageSetup };
+  adoptPrefs(written);
+  written = pickShared(useApp.getState());
+}
+
+type PrefsListener = (previous: Settings, next: Settings) => void;
+const prefsListeners: PrefsListener[] = [];
+
+/** Runs when settings changed by another window were taken in; actions.ts applies them. */
+export function onSharedSettings(listener: PrefsListener): void {
+  prefsListeners.push(listener);
+}
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const pickShared = ({ settings, recent, pageSetup }: AppState): SharedPrefs => ({ settings, recent, pageSetup });
+
+function adoptPrefs(next: SharedPrefs): void {
+  const state = useApp.getState();
+  const patch: Partial<SharedPrefs> = {};
+  if (!same(next.settings, state.settings)) patch.settings = next.settings;
+  if (!same(next.recent, state.recent)) patch.recent = next.recent;
+  if (!same(next.pageSetup, state.pageSetup)) patch.pageSetup = next.pageSetup;
+  if (Object.keys(patch).length === 0) return;
+  adopting = true;
+  try {
+    useApp.setState(patch);
+  } finally {
+    adopting = false;
+  }
+  if (patch.settings) for (const listener of prefsListeners) listener(state.settings, next.settings);
+}
+
+/** Another window wrote the shared preferences: take them in (H12). */
+function onStorage(event: StorageEvent): void {
+  if (event.key !== null && event.key !== KEY_SETTINGS && event.key !== KEY_RECENT && event.key !== KEY_PAGE_SETUP) {
+    return;
+  }
+  // This window's own unsaved changes go on top of what the other window stored.
+  if (persistTimer !== null) flushPersistedPrefs();
+  written = {
+    settings: sanitizeSettings(readJson(KEY_SETTINGS) ?? written.settings),
+    recent: sanitizeRecent(readJson(KEY_RECENT) ?? written.recent),
+    pageSetup: sanitizePageSetup(readJson(KEY_PAGE_SETUP) ?? written.pageSetup),
+  };
+  adoptPrefs(written);
+  written = pickShared(useApp.getState());
 }
 
 useApp.subscribe((state, previous) => {
   if (state.settings.theme !== previous.settings.theme) applyTheme();
+  if (adopting) return;
   const changed =
     state.settings !== previous.settings ||
     state.recent !== previous.recent ||
@@ -125,6 +186,7 @@ useApp.subscribe((state, previous) => {
 
 if (typeof window !== "undefined" && window.addEventListener) {
   window.addEventListener("pagehide", flushPersistedPrefs);
+  window.addEventListener("storage", onStorage);
 }
 
 // ---- Non-hook accessors ---------------------------------------------------

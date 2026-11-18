@@ -682,6 +682,16 @@ describe("settings", () => {
     expect(JSON.parse(localStorage.getItem("notepadly.settings.v1")!).wordWrap).toBe(false);
   });
 
+  it("H12: a setting changed in another window takes effect in this one", async () => {
+    const setConfig = vi.spyOn(app.engine, "setConfig");
+    const settings = { ...app.state().settings, formatting: false, wordWrap: false };
+    localStorage.setItem("notepadly.settings.v1", JSON.stringify(settings));
+    window.dispatchEvent(new StorageEvent("storage", { key: "notepadly.settings.v1" }));
+    expect(app.state().settings).toMatchObject({ formatting: false, wordWrap: false });
+    expect(app.tabByName("a.md").mode).toBe("plain");
+    expect(setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ wordWrap: false }));
+  });
+
   it("tells the backend when automatic updates are switched", async () => {
     app.actions.setSetting("autoUpdate", false);
     await settle();
