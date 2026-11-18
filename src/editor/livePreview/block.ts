@@ -15,7 +15,7 @@ import {
 } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { isDarkTheme } from "../theme";
-import { HorizontalRuleWidget, MathWidget, MermaidWidget, TableWidget } from "./widgets";
+import { HorizontalRuleWidget, MathWidget, MermaidWidget, TableWidget, tableFocus } from "./widgets";
 
 /** Characters scanned on each side of the reported viewport. */
 const SCAN_PADDING = 4000;
@@ -275,6 +275,16 @@ export const blockField = StateField.define<BlockValue>({
       }
     }
     if (span) next = scan(next, tr.state, span);
+    if (tr.isUserEvent("select.search")) {
+      // A Find match inside rendered maths or a diagram opens its source so the match shows (BUGS.md H11).
+      const main = tr.state.selection.main;
+      next.blocks.between(main.from, main.to, (from, to, deco) => {
+        if (deco.spec.reveal === "explicit" && from <= main.from && to >= main.to) {
+          next = { ...next, editing: from };
+          opened = true;
+        }
+      });
+    }
     if (!opened && (tr.selection || tr.docChanged)) next = closeEditing(next, tr.state);
     if (span || tr.selection || opened || next.editing !== value.editing) next = applyReveal(next, tr.state);
     return next;
@@ -317,4 +327,10 @@ const viewportReporter = ViewPlugin.fromClass(
   },
 );
 
-export const blockPreview = [blockField, viewportReporter];
+/**
+ * The cursor jumps over a rendered block in one step instead of walking its hidden source
+ * (BUGS.md H2). An arrow key that lands on a table's edge enters the table (`tableFocus`).
+ */
+const atomicBlocks = EditorView.atomicRanges.of((view) => view.state.field(blockField).shown);
+
+export const blockPreview = [blockField, viewportReporter, atomicBlocks, tableFocus];

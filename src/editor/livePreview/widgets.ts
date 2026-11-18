@@ -1,9 +1,11 @@
 // DOM widgets for the live preview. Heavy renderers show a sized placeholder, then swap.
 import { redo, undo } from "@codemirror/commands";
-import { EditorView, WidgetType } from "@codemirror/view";
+import { Transaction } from "@codemirror/state";
+import { EditorView, ViewPlugin, WidgetType, type ViewUpdate } from "@codemirror/view";
+import { applyFormat } from "../commands";
 import { openBlockSource } from "./block";
 import { cachedMath, cachedMermaid, renderMath, renderMermaid, type RenderedHtml } from "../lazy";
-import { cellText, parseAlign, parseTable } from "../tableModel";
+import { cellText, joinRow, parseAlign, parseTable } from "../tableModel";
 import { previewContext, resolveHref, resolveImageSrc } from "./context";
 
 function element(tag: string, className: string, text?: string): HTMLElement {
@@ -159,10 +161,20 @@ interface CellRef {
   col: number;
 }
 
+/** Where focus lands in a cell: a source range inside the cell's text, or one of its ends. */
+type CellTarget = "start" | "end" | { anchor: number; head: number };
+
+/** Every table widget on screen, so engine commands and selection changes can reach them. */
+const liveTables = new Set<TableController>();
+
 /**
  * A rendered table whose cells are edited in place, like Obsidian. The table never turns
  * back into markdown source: each keystroke in a cell rewrites only that cell's text in the
  * document, and `updateDOM` refreshes the other cells without touching the one being edited.
+ *
+ * While a cell is edited, the editor's selection mirrors the caret in the cell, so commands
+ * that work on the editor selection (Bold, Paste, F5, Copy, the table commands) act on the
+ * cell (BUGS.md H1, M2).
  */
 class TableController {
   readonly wrap = element("div", "cm-md-table");
@@ -171,13 +183,24 @@ class TableController {
   private active: CellRef | null = null;
   private pendingFocus: (CellRef & { atEnd: boolean }) | null = null;
   private rebuilding = false;
+  /** A cell that shows an editor selection while not focused (a Find match, BUGS.md H11). */
+  private marked: CellRef | null = null;
+  private readonly onSelectionChange = () => {
+    if (this.active && this.wrap.isConnected) this.syncSelection();
+  };
 
-  constructor(private readonly view: EditorView) {
+  constructor(readonly view: EditorView) {
     this.wrap.addEventListener("mousedown", (event) => this.onMouseDown(event));
     this.wrap.addEventListener("focusin", (event) => this.onFocusIn(event));
     this.wrap.addEventListener("focusout", (event) => this.onFocusOut(event));
     this.wrap.addEventListener("input", (event) => this.onInput(event));
     this.wrap.addEventListener("keydown", (event) => this.onKeyDown(event));
+    liveTables.add(this);
+  }
+
+  destroy(): void {
+    liveTables.delete(this);
+    document.removeEventListener("selectionchange", this.onSelectionChange);
   }
 
   render(source: string): void {
@@ -198,6 +221,11 @@ class TableController {
         if (escapeCellText(cell.textContent ?? "").trim() !== text) {
           cell.textContent = text;
           caretTo(cell, true);
+          // A command changed the text (Bold, Paste, Undo): put the caret where the editor's
+          // selection is. Positions are only valid once CodeMirror finished this update.
+          queueMicrotask(() => {
+            if (this.isActive(ref) && this.wrap.isConnected) this.caretFromEditor(cell, ref);
+          });
         }
       } else if (cell.dataset.src !== text) {
         cell.dataset.src = text;
@@ -236,12 +264,13 @@ class TableController {
     table.appendChild(body);
     this.wrap.replaceChildren(table);
     this.active = null;
+    this.marked = null;
     this.rebuilding = false;
     if (restore) {
       // rebuild runs inside CodeMirror's update (updateDOM); focusing dispatches, so wait.
       queueMicrotask(() => {
         const cell = this.cellAt(Math.min(restore.row, rows.length - 1), Math.min(restore.col, columns - 1));
-        if (cell && cell.isConnected) this.focusCell(cell, restore.atEnd);
+        if (cell && cell.isConnected) this.focusCell(cell, restore.atEnd ? "end" : "start");
       });
     }
   }
@@ -271,14 +300,140 @@ class TableController {
     return parseTable(this.source)[0].cells.length;
   }
 
-  private focusCell(cell: HTMLElement, atEnd: boolean): void {
+  /** Focuses a cell and places the caret; a range is in source offsets within the cell's text. */
+  focusCell(cell: HTMLElement, target: CellTarget): void {
     cell.focus({ preventScroll: false });
-    caretTo(cell, atEnd);
+    if (typeof target === "string") {
+      caretTo(cell, target === "end");
+    } else {
+      const text = cell.textContent ?? "";
+      const length = this.cellRange(this.refOf(cell)).length;
+      selectText(cell, sourceToDom(text, target.anchor, length), sourceToDom(text, target.head, length));
+    }
+    this.syncSelection();
   }
 
   /** Start of the table in the current document. */
-  private tableStart(): number {
+  tableStart(): number {
     return this.view.posAtDOM(this.wrap);
+  }
+
+  /** Document range of the table. */
+  range(): { from: number; to: number } {
+    const from = this.tableStart();
+    return { from, to: from + this.source.length };
+  }
+
+  /** Document position of a cell's text and its length. A missing cell sits at the end of its row. */
+  private cellRange(ref: CellRef): { from: number; length: number } {
+    const row = parseTable(this.source)[ref.row];
+    const base = this.tableStart() + row.offset;
+    const span = row.cells[ref.col];
+    return span ? { from: base + span.from, length: span.to - span.from } : { from: base + row.text.length, length: 0 };
+  }
+
+  /** The cell at a document position, or the nearest one on its row (the header for the delimiter row). */
+  private cellFor(from: number): HTMLElement | null {
+    const start = this.tableStart();
+    const rows = parseTable(this.source);
+    for (let r = rows.length - 1; r >= 0; r--) {
+      if (start + rows[r].offset > from) continue;
+      const row = rows[r === 1 ? 0 : r];
+      const base = start + row.offset;
+      let col = 0;
+      for (let c = 0; c < row.cells.length; c++) {
+        if (base + row.cells[c].from <= from) col = c;
+      }
+      return this.cellAt(r === 1 ? 0 : r, Math.min(col, this.columns() - 1));
+    }
+    return null;
+  }
+
+  /** Mirrors the caret or selection in the active cell into the editor's selection. */
+  private syncSelection(): void {
+    const ref = this.active;
+    const cell = ref ? this.cellAt(ref.row, ref.col) : null;
+    if (!ref || !cell || !this.wrap.isConnected) return;
+    const selected = cellSelection(cell);
+    if (!selected) return;
+    const { from, length } = this.cellRange(ref);
+    const text = cell.textContent ?? "";
+    const anchor = from + domToSource(text, selected.anchor, length);
+    const head = from + domToSource(text, selected.head, length);
+    const main = this.view.state.selection.main;
+    if (main.anchor === anchor && main.head === head && this.view.state.selection.ranges.length === 1) return;
+    this.view.dispatch({ selection: { anchor, head } });
+  }
+
+  /** Puts the cell's caret where the editor's selection is, or at its end if that is elsewhere. */
+  private caretFromEditor(cell: HTMLElement, ref: CellRef): void {
+    const { from, length } = this.cellRange(ref);
+    const main = this.view.state.selection.main;
+    const text = cell.textContent ?? "";
+    if (main.from < from || main.to > from + length) {
+      caretTo(cell, true);
+    } else {
+      selectText(cell, sourceToDom(text, main.anchor - from, length), sourceToDom(text, main.head - from, length));
+    }
+    this.syncSelection();
+  }
+
+  /** Is focus in one of this table's cells? */
+  hasFocus(): boolean {
+    return this.active !== null && this.wrap.contains(document.activeElement);
+  }
+
+  /** Selects the whole text of the focused cell (Ctrl+A, BUGS.md M1). */
+  selectActiveCell(): boolean {
+    const cell = this.active ? this.cellAt(this.active.row, this.active.col) : null;
+    if (!cell || !this.hasFocus()) return false;
+    selectText(cell, 0, (cell.textContent ?? "").length);
+    this.syncSelection();
+    return true;
+  }
+
+  /** Moves focus into the cell at a document position (the editor's cursor went into the table). */
+  focusAt(anchor: number, head: number): void {
+    const cell = this.cellFor(Math.min(anchor, head));
+    if (!cell) return;
+    const { from, length } = this.cellRange(this.refOf(cell));
+    const clamp = (pos: number) => Math.min(length, Math.max(0, pos - from));
+    this.focusCell(cell, { anchor: clamp(anchor), head: clamp(head) });
+  }
+
+  /** Enters the table from the keyboard: from above into the first cell, from below into the last row. */
+  enter(fromAbove: boolean, toLastCell: boolean): void {
+    const order = this.bodyRows();
+    const row = fromAbove ? 0 : order[order.length - 1];
+    const col = !fromAbove && toLastCell ? this.columns() - 1 : 0;
+    const cell = this.cellAt(row, col);
+    if (cell) this.focusCell(cell, fromAbove ? "start" : toLastCell ? "end" : "start");
+  }
+
+  /** Shows a selection the editor has in this table while no cell is focused, like a Find match. */
+  showSelection(from: number, to: number): void {
+    if (this.hasFocus()) return;
+    const { from: start, to: end } = this.range();
+    let next: CellRef | null = null;
+    if (from !== to && from >= start && to <= end) {
+      const cell = this.cellFor(from);
+      const ref = cell ? this.refOf(cell) : null;
+      const range = ref ? this.cellRange(ref) : null;
+      if (ref && range && from >= range.from && to <= range.from + range.length) next = ref;
+    }
+    const previous = this.marked;
+    if (previous && (!next || previous.row !== next.row || previous.col !== next.col)) {
+      const cell = this.cellAt(previous.row, previous.col);
+      if (cell) cell.innerHTML = renderCellHtml(cell.dataset.src ?? "");
+    }
+    this.marked = next;
+    if (!next) return;
+    const cell = this.cellAt(next.row, next.col)!;
+    const range = this.cellRange(next);
+    const text = this.view.state.sliceDoc(range.from, range.from + range.length);
+    const mark = element("mark", "cm-md-cell-selection", text.slice(from - range.from, to - range.from));
+    cell.replaceChildren(text.slice(0, from - range.from), mark, text.slice(to - range.from));
+    mark.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }
 
   private onMouseDown(event: MouseEvent): void {
@@ -298,21 +453,18 @@ class TableController {
     const ref = this.refOf(cell);
     if (this.isActive(ref)) return;
     this.active = ref;
+    if (this.marked && this.marked.row === ref.row && this.marked.col === ref.col) this.marked = null;
     cell.classList.add("is-editing");
+    document.addEventListener("selectionchange", this.onSelectionChange);
     // Show this cell's markdown while it is edited, like Obsidian.
     const text = cellText(parseTable(this.source)[ref.row], ref.col);
     if (cell.textContent !== text || cell.childElementCount > 0) {
       cell.textContent = text;
       caretTo(cell, true);
     }
-    // Park the editor selection in the table so toolbar table commands apply to it.
-    const row = parseTable(this.source)[ref.row];
-    const span = row.cells[ref.col];
-    const offset = row.offset + (span ? span.from : 0);
+    // Park the editor selection in the cell, so toolbar and menu commands apply to it.
     queueMicrotask(() => {
-      if (!this.wrap.isConnected || !this.isActive(ref)) return;
-      const pos = this.tableStart() + offset;
-      this.view.dispatch({ selection: { anchor: Math.min(pos, this.view.state.doc.length) } });
+      if (this.wrap.isConnected && this.isActive(ref)) this.syncSelection();
     });
   }
 
@@ -322,7 +474,10 @@ class TableController {
     if (!cell) return;
     cell.classList.remove("is-editing");
     const ref = this.refOf(cell);
-    if (this.isActive(ref)) this.active = null;
+    if (this.isActive(ref)) {
+      this.active = null;
+      document.removeEventListener("selectionchange", this.onSelectionChange);
+    }
     const text = cellText(parseTable(this.source)[ref.row], ref.col);
     cell.dataset.src = text;
     cell.innerHTML = renderCellHtml(text);
@@ -332,6 +487,7 @@ class TableController {
     const cell = (event.target as HTMLElement).closest<HTMLElement>("th,td");
     if (!cell) return;
     this.writeCell(this.refOf(cell), escapeCellText(cell.textContent ?? "").trim());
+    if (this.isActive(this.refOf(cell))) this.syncSelection();
   }
 
   private writeCell(ref: CellRef, text: string): void {
@@ -353,8 +509,10 @@ class TableController {
       return;
     }
     if (span) {
+      // A backslash right before the closing pipe would escape it and merge two cells (BUGS.md L9).
+      const pad = text.endsWith("\\") && row.text[span.to] === "|" ? " " : "";
       this.view.dispatch({
-        changes: { from: start + row.offset + span.from, to: start + row.offset + span.to, insert: text },
+        changes: { from: start + row.offset + span.from, to: start + row.offset + span.to, insert: text + pad },
         userEvent: "input.type",
       });
       return;
@@ -362,7 +520,11 @@ class TableController {
     // The row has fewer cells than the header: rewrite the whole row.
     const values = Array.from({ length: this.columns() }, (_v, c) => (c === ref.col ? text : cellText(row, c)));
     this.view.dispatch({
-      changes: { from: start + row.offset, to: start + row.offset + row.text.length, insert: formatRow(values) },
+      changes: {
+        from: start + row.offset,
+        to: start + row.offset + row.text.length,
+        insert: formatRow(values, row.prefix),
+      },
       userEvent: "input.type",
     });
   }
@@ -373,28 +535,33 @@ class TableController {
     const end = this.tableStart() + last.offset + last.text.length;
     this.pendingFocus = { row: rows.length, col: focusCol, atEnd: true };
     this.view.dispatch({
-      changes: { from: end, insert: "\n" + formatRow(Array.from({ length: this.columns() }, () => "")) },
+      changes: { from: end, insert: "\n" + formatRow(Array.from({ length: this.columns() }, () => ""), last.prefix) },
       userEvent: "input",
     });
   }
 
-  /** Puts the editor cursor just before or after the table and focuses the editor. */
-  private leave(after: boolean): void {
-    const start = this.tableStart();
-    const end = start + this.source.length;
+  /**
+   * Puts the editor cursor on the line just before or after the table and focuses the editor.
+   * With no line there, arrow keys stay in the cell, like on the first or last line of a
+   * document (BUGS.md H3, M5). Escape at the end of the document adds a line to land on, kept
+   * out of the undo history so the tab does not turn unsaved.
+   */
+  private leave(after: boolean, escape = false): void {
+    const { from: start, to: end } = this.range();
     const doc = this.view.state.doc;
-    let anchor: number;
-    if (after) {
-      if (end >= doc.length) {
-        this.view.dispatch({ changes: { from: doc.length, insert: "\n" }, selection: { anchor: doc.length + 1 } });
-        this.view.focus();
-        return;
-      }
-      anchor = end + 1;
-    } else {
-      anchor = Math.max(0, start - 1);
+    if (after && end >= doc.length) {
+      if (!escape) return;
+      this.view.dispatch({
+        changes: { from: doc.length, insert: "\n" },
+        selection: { anchor: doc.length + 1 },
+        annotations: Transaction.addToHistory.of(false),
+        scrollIntoView: true,
+      });
+      this.view.focus();
+      return;
     }
-    this.view.dispatch({ selection: { anchor }, scrollIntoView: true });
+    if (!after && start === 0) return;
+    this.view.dispatch({ selection: { anchor: after ? end + 1 : start - 1 }, scrollIntoView: true });
     this.view.focus();
   }
 
@@ -414,7 +581,7 @@ class TableController {
     if (index < 0) return this.leave(false);
     if (index >= order.length) return this.leave(true);
     const cell = this.cellAt(order[index], col);
-    if (cell) this.focusCell(cell, atEnd);
+    if (cell) this.focusCell(cell, atEnd ? "end" : "start");
   }
 
   private onKeyDown(event: KeyboardEvent): void {
@@ -432,12 +599,13 @@ class TableController {
       if (!event.shiftKey && lastCell) this.addRow(0);
       else this.move(ref, 0, event.shiftKey ? -1 : 1, true);
     } else if (event.key === "Enter" && event.shiftKey) {
-      document.execCommand("insertText", false, "<br>");
+      this.syncSelection();
+      this.view.dispatch(this.view.state.replaceSelection("<br>"), { userEvent: "input" });
     } else if (event.key === "Enter") {
       if (isLastRow) this.addRow(ref.col);
       else this.move(ref, 1, 0, true);
     } else if (event.key === "Escape") {
-      this.leave(true);
+      this.leave(true, true);
     } else if (event.key === "ArrowUp" && !event.shiftKey) {
       this.move(ref, -1, 0, true);
     } else if (event.key === "ArrowDown" && !event.shiftKey) {
@@ -450,10 +618,12 @@ class TableController {
       undo(this.view);
     } else if (mod && !event.altKey && (event.key === "y" || ((event.key === "z" || event.key === "Z") && event.shiftKey))) {
       redo(this.view);
+    } else if (mod && !event.altKey && !event.shiftKey && (event.key === "a" || event.key === "A")) {
+      this.selectActiveCell();
     } else if (mod && !event.altKey && !event.shiftKey && (event.key === "b" || event.key === "i")) {
-      const marker = event.key === "b" ? "**" : "*";
-      const selected = window.getSelection()?.toString() ?? "";
-      document.execCommand("insertText", false, `${marker}${selected}${marker}`);
+      // The same command as the toolbar, on the editor selection that mirrors the cell's.
+      this.syncSelection();
+      applyFormat(this.view, { type: event.key === "b" ? "bold" : "italic" });
     } else {
       handled = false;
     }
@@ -464,8 +634,8 @@ class TableController {
   }
 }
 
-function formatRow(values: string[]): string {
-  return `| ${values.map((value) => value || " ").join(" | ")} |`;
+function formatRow(values: string[], prefix = ""): string {
+  return joinRow(prefix, values.map((value) => value || " "));
 }
 
 function caretTo(cell: HTMLElement, atEnd: boolean): void {
@@ -478,18 +648,131 @@ function caretTo(cell: HTMLElement, atEnd: boolean): void {
   selection.addRange(range);
 }
 
+/** Text offset of a DOM point inside a cell. */
+function textOffset(cell: HTMLElement, node: Node, offset: number): number {
+  const before = document.createRange();
+  before.selectNodeContents(cell);
+  before.setEnd(node, offset);
+  return before.toString().length;
+}
+
+/** The DOM point at a text offset inside a cell. */
+function pointAt(cell: HTMLElement, offset: number): [Node, number] {
+  const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+  let left = offset;
+  let last: Text | null = null;
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    if (left <= node.length) return [node, left];
+    left -= node.length;
+    last = node;
+  }
+  return last ? [last, last.length] : [cell, 0];
+}
+
+function selectText(cell: HTMLElement, anchor: number, head: number): void {
+  const selection = window.getSelection();
+  if (!selection) return;
+  const [anchorNode, anchorOffset] = pointAt(cell, anchor);
+  const [headNode, headOffset] = pointAt(cell, head);
+  selection.removeAllRanges();
+  selection.setBaseAndExtent(anchorNode, anchorOffset, headNode, headOffset);
+}
+
+/** The selection inside a cell as text offsets, or null when it is not in the cell. */
+function cellSelection(cell: HTMLElement): { anchor: number; head: number } | null {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return null;
+  const { anchorNode, anchorOffset, focusNode, focusOffset } = selection;
+  if (!anchorNode || !focusNode || !cell.contains(anchorNode) || !cell.contains(focusNode)) return null;
+  return { anchor: textOffset(cell, anchorNode, anchorOffset), head: textOffset(cell, focusNode, focusOffset) };
+}
+
+/**
+ * Maps a caret offset in a cell being edited to an offset in the cell's markdown. They differ
+ * where the document is ahead of the screen: typed pipes are escaped and the text is trimmed.
+ */
+function domToSource(text: string, offset: number, sourceLength: number): number {
+  return Math.min(escapeCellText(text.slice(0, offset)).trimStart().length, sourceLength);
+}
+
+function sourceToDom(text: string, offset: number, sourceLength: number): number {
+  for (let i = 0; i <= text.length; i++) if (domToSource(text, i, sourceLength) >= offset) return i;
+  return text.length;
+}
+
 function caretInfo(cell: HTMLElement): { atStart: boolean; atEnd: boolean } {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) return { atStart: false, atEnd: false };
   const range = selection.getRangeAt(0);
-  const before = document.createRange();
-  before.selectNodeContents(cell);
-  before.setEnd(range.startContainer, range.startOffset);
-  const offset = before.toString().length;
+  const offset = textOffset(cell, range.startContainer, range.startOffset);
   return { atStart: offset === 0, atEnd: offset === (cell.textContent ?? "").length };
 }
 
 const tableControllers = new WeakMap<HTMLElement, TableController>();
+
+/** The rendered tables of a view. */
+function tablesOf(view: EditorView): TableController[] {
+  return Array.from(liveTables).filter((table) => table.view === view && table.wrap.isConnected);
+}
+
+/** The table whose cell has focus, if any. */
+export function focusedTable(view: EditorView): TableController | null {
+  return tablesOf(view).find((table) => table.hasFocus()) ?? null;
+}
+
+/** The rendered table that contains a document position, if any. */
+export function tableAt(view: EditorView, pos: number): TableController | null {
+  return (
+    tablesOf(view).find((table) => {
+      const { from, to } = table.range();
+      return pos >= from && pos <= to;
+    }) ?? null
+  );
+}
+
+/**
+ * Keeps keyboard focus and the editor selection in step with rendered tables:
+ * - an arrow key that lands the cursor on a table's edge enters the table (BUGS.md H2);
+ * - a cursor put inside a table while the editor has focus (after a dialog or undo) moves
+ *   into the matching cell, so typing never edits hidden table source;
+ * - a selection inside a table with no focused cell, like a Find match, is shown in its cell
+ *   (BUGS.md H11).
+ */
+export const tableFocus = ViewPlugin.fromClass(
+  class {
+    private scheduled = false;
+    constructor(private readonly view: EditorView) {}
+
+    update(update: ViewUpdate): void {
+      if (!update.selectionSet && !update.docChanged && !update.focusChanged) return;
+      const keyboard = update.transactions.some((tr) => tr.isUserEvent("select") && !tr.isUserEvent("select.pointer"));
+      const oldHead = update.startState.selection.main.head;
+      if (this.scheduled) return;
+      this.scheduled = true;
+      // Positions of widgets are only known once this update has drawn them.
+      queueMicrotask(() => {
+        this.scheduled = false;
+        this.reconcile(keyboard, oldHead);
+      });
+    }
+
+    private reconcile(keyboard: boolean, oldHead: number): void {
+      const view = this.view;
+      if (!view.dom.isConnected) return;
+      const main = view.state.selection.main;
+      for (const table of tablesOf(view)) table.showSelection(main.from, main.to);
+      if (!view.hasFocus || focusedTable(view)) return;
+      const table = tableAt(view, main.head);
+      if (!table) return;
+      const { from, to } = table.range();
+      if (main.empty && (main.head === from || main.head === to)) {
+        if (keyboard) table.enter(oldHead < from, oldHead === to + 1);
+      } else if (main.from > from && main.to < to) {
+        table.focusAt(main.anchor, main.head);
+      }
+    }
+  },
+);
 
 export class TableWidget extends SourceWidget {
   constructor(readonly source: string) {
@@ -513,6 +796,9 @@ export class TableWidget extends SourceWidget {
     if (!controller) return false;
     controller.render(this.source);
     return true;
+  }
+  override destroy(dom: HTMLElement): void {
+    tableControllers.get(dom)?.destroy();
   }
 }
 

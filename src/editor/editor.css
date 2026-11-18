@@ -320,6 +320,11 @@
 /* Cells are edited in place; the one being edited shows its markdown. */
 .notepadly-cm .cm-md-table th,
 .notepadly-cm .cm-md-table td { outline: none; cursor: text; white-space: pre-wrap; }
+/* An editor selection in a cell that is not being edited, such as the current Find match. */
+.notepadly-cm .cm-md-table mark.cm-md-cell-selection {
+  background: color-mix(in srgb, #ff8c00 70%, transparent);
+  border-radius: 2px;
+}
 .notepadly-cm .cm-md-table .is-editing {
   box-shadow: inset 0 0 0 2px var(--nl-accent);
 }

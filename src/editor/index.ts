@@ -44,6 +44,7 @@ import { FIND_COUNT_LIMIT, FindController, findExtension } from "./find";
 import { blockPreview, rebuildBlocks } from "./livePreview/block";
 import { previewContext } from "./livePreview/context";
 import { inlinePreview } from "./livePreview/inline";
+import { escapeCellText, focusedTable, tableAt } from "./livePreview/widgets";
 import { markdownSupport, parseAhead } from "./markdown";
 import { editorRootClass, lineDirections, tokenClasses, watchTheme } from "./theme";
 import "./editor.css";
@@ -631,11 +632,20 @@ class Engine implements EditorEngine {
   }
 
   selectAll(): void {
-    if (this.view) selectAll(this.view);
+    if (!this.view) return;
+    // In a table cell, Select All selects the cell's text, as in any text box (BUGS.md M1).
+    if (focusedTable(this.view)?.selectActiveCell()) return;
+    selectAll(this.view);
   }
 
   insertText(text: string): void {
-    this.view?.dispatch(this.view.state.replaceSelection(text), { userEvent: "input", scrollIntoView: true });
+    const view = this.view;
+    if (!view) return;
+    // Text for a table cell (Paste, F5, a link) must not break the row with a newline or pipe.
+    const { from, to } = view.state.selection.main;
+    const table = tableAt(view, from);
+    const insert = table && table === tableAt(view, to) ? escapeCellText(text) : text;
+    view.dispatch(view.state.replaceSelection(insert), { userEvent: "input", scrollIntoView: true });
   }
 
   selectionText(): string {
