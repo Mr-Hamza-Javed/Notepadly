@@ -58,6 +58,9 @@ pub struct AutoUpdate {
     /// Set from the "Update automatically" setting; nothing is checked until the
     /// frontend has said so.
     enabled: AtomicBool,
+    /// The user pressed "Check for updates" since automatic updates were last
+    /// turned off, so a download from that check may still be installed.
+    asked: AtomicBool,
     checking: AtomicBool,
     ready: Mutex<Option<(Update, Vec<u8>)>>,
     status: Mutex<(Phase, Option<String>, Option<String>)>,
@@ -69,6 +72,7 @@ impl AutoUpdate {
     pub fn new(launched_hidden: bool) -> Self {
         Self {
             enabled: AtomicBool::new(false),
+            asked: AtomicBool::new(false),
             checking: AtomicBool::new(false),
             ready: Mutex::new(None),
             status: Mutex::new((Phase::Idle, None, None)),
@@ -78,6 +82,19 @@ impl AutoUpdate {
 
     fn set(&self, phase: Phase, version: Option<String>, message: Option<String>) {
         *self.status.lock().unwrap() = (phase, version, message);
+    }
+
+    /// A downloaded update goes in only while the user still wants it: automatic
+    /// updates are on, or they asked for this one with "Check for updates".
+    fn may_install(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed) || self.asked.load(Ordering::Relaxed)
+    }
+
+    fn configure(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+        if !enabled {
+            self.asked.store(false, Ordering::Relaxed);
+        }
     }
 }
 
@@ -209,7 +226,13 @@ fn no_window_on_screen(app: &AppHandle) -> bool {
 /// saved or stored as a draft: on success the installer replaces the app and this
 /// process exits. `relaunch_hidden` starts the new version back up in the background.
 pub fn install_if_ready(app: &AppHandle, relaunch_hidden: bool) {
-    let Some((update, bytes)) = app.state::<AutoUpdate>().ready.lock().unwrap().take() else {
+    let state = app.state::<AutoUpdate>();
+    // Turned off after the download: keep the bytes (turning it back on installs
+    // them) but do not install.
+    if !state.may_install() {
+        return;
+    }
+    let Some((update, bytes)) = state.ready.lock().unwrap().take() else {
         return;
     };
     let marker = marker_path(app).filter(|_| relaunch_hidden);
@@ -237,9 +260,7 @@ fn write_marker(path: &Path) {
 /// Turns automatic checks on or off ("Update automatically" in Settings).
 #[tauri::command]
 pub fn update_configure(app: AppHandle, enabled: bool) -> Status {
-    app.state::<AutoUpdate>()
-        .enabled
-        .store(enabled, Ordering::Relaxed);
+    app.state::<AutoUpdate>().configure(enabled);
     status_of(&app)
 }
 
@@ -251,6 +272,7 @@ pub fn update_status(app: AppHandle) -> Status {
 /// "Check for updates" in Settings. Runs off the UI thread like the timed checks.
 #[tauri::command]
 pub async fn update_check_now(app: AppHandle) -> Status {
+    app.state::<AutoUpdate>().asked.store(true, Ordering::Relaxed);
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || tauri::async_runtime::block_on(check(&handle)))
         .await
@@ -332,5 +354,23 @@ mod tests {
         assert!(!state.enabled.load(Ordering::Relaxed));
         assert!(state.ready.lock().unwrap().is_none());
         assert_eq!(state.status.lock().unwrap().0, Phase::Idle);
+        assert!(!state.may_install());
+    }
+
+    #[test]
+    fn turning_updates_off_stops_a_downloaded_update_from_installing() {
+        // H13: install_if_ready checks may_install before it takes the download.
+        let state = AutoUpdate::new(false);
+        state.configure(true);
+        assert!(state.may_install());
+        state.configure(false);
+        assert!(!state.may_install());
+        // "Check for updates" pressed with automatic updates off: that download
+        // was asked for, so it may go in, until updates are turned off again.
+        state.asked.store(true, Ordering::Relaxed);
+        assert!(state.may_install());
+        state.configure(true);
+        state.configure(false);
+        assert!(!state.may_install());
     }
 }
