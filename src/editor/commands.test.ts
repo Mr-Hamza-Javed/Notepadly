@@ -365,8 +365,12 @@ describe("known open bugs (see BUGS.md)", () => {
   });
 
   // BUGS.md M4 (second part): bold across a paragraph break is not bold markdown.
-  it.skip("M4: bolding two paragraphs bolds each one", () => {
+  it("M4: bolding two paragraphs bolds each one", () => {
     expect(format("|one\n\ntwo|", { type: "bold" })).toBe("**|one**\n\n**two|**");
+    expect(format("a |one\n  \n\ntwo\nthree| b", { type: "italic" })).toBe("a *|one*\n  \n\n*two\nthree|* b");
+    expect(format("|one\n\n|two", { type: "strike" })).toBe("~~|one~~\n\n|two");
+    // A soft line break inside one paragraph is still wrapped as a whole.
+    expect(format("|one\ntwo|", { type: "bold" })).toBe("**|one\ntwo|**");
   });
 });
 

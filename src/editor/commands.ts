@@ -58,6 +58,35 @@ function selectedLines(state: EditorState, range: SelectionRange): Line[] {
 
 // ---------- Inline toggles ----------
 
+/**
+ * The non-blank stretches of `from..to` between blank lines, trimmed of the
+ * whitespace at their ends. One entry when the range has no blank line.
+ */
+function paragraphSegments(state: EditorState, from: number, to: number): [number, number][] {
+  const first = state.doc.lineAt(from);
+  const last = state.doc.lineAt(to);
+  if (first.number === last.number) return [[from, to]];
+  const segments: [number, number][] = [];
+  let start = -1;
+  let end = -1;
+  for (let n = first.number; n <= last.number; n++) {
+    const line = state.doc.line(n);
+    const lineFrom = Math.max(line.from, from);
+    const lineTo = Math.min(line.to, to);
+    const text = state.sliceDoc(lineFrom, lineTo);
+    if (!text.trim()) {
+      if (line.text.trim() && start >= 0) continue; // only the selected part is blank: not a break
+      if (start >= 0) segments.push([start, end]);
+      start = -1;
+      continue;
+    }
+    if (start < 0) start = lineFrom + (/^\s*/.exec(text)?.[0].length ?? 0);
+    end = lineTo - (/\s*$/.exec(text)?.[0].length ?? 0);
+  }
+  if (start >= 0) segments.push([start, end]);
+  return segments.length ? segments : [[from, to]];
+}
+
 function toggleInline(view: EditorView, marker: string, nodeName: string, markName: string): void {
   const { state } = view;
   const tree = syntaxTree(state);
@@ -86,6 +115,22 @@ function toggleInline(view: EditorView, marker: string, nodeName: string, markNa
           };
           return { changes, range: EditorSelection.range(mapPos(range.anchor), mapPos(range.head)) };
         }
+      }
+      const segments = paragraphSegments(state, range.from, range.to);
+      if (segments.length > 1 || segments[0][0] !== range.from || segments[0][1] !== range.to) {
+        // `**one\n\ntwo**` is not bold: wrap each paragraph on its own, inside its whitespace.
+        const changes = state.changes(
+          segments.flatMap(([from, to]) => [
+            { from, insert: marker },
+            { from: to, insert: marker },
+          ]),
+        );
+        const start = changes.mapPos(range.from, 1);
+        const end = changes.mapPos(range.to, -1);
+        return {
+          changes,
+          range: range.anchor <= range.head ? EditorSelection.range(start, end) : EditorSelection.range(end, start),
+        };
       }
       return {
         changes: [
