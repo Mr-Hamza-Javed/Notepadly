@@ -53,7 +53,7 @@ export { FIND_COUNT_LIMIT };
 const MAX_LINE_FOR_PREVIEW = 20000;
 const MAX_DOC_FOR_PREVIEW = 20 * 1024 * 1024;
 const NEAR_END_THROTTLE_MS = 120;
-/** History trims old events beyond this, which would misalign the depth-indexed versions. */
+/** History keeps at least this many undo steps; trackHistory follows its trimming. */
 const HISTORY_DEPTH = 400;
 
 const loadingText = Annotation.define<boolean>();
@@ -300,14 +300,15 @@ class Engine implements EditorEngine {
       if (doc.versions[depth] === undefined) doc.versions[depth] = ++versionCounter;
       return;
     }
-    if (depth >= HISTORY_DEPTH) {
-      // Old events may have been trimmed, so depths no longer identify versions.
-      // The saved point becomes unreachable, which errs on the side of staying dirty.
-      doc.versions = [];
-      doc.savedVersion = -1;
-    } else {
-      doc.versions.length = Math.min(doc.versions.length, depth + 1);
+    const before = undoDepth(tr.startState);
+    if (depth < before) {
+      // The history dropped its oldest events to stay near HISTORY_DEPTH (it never
+      // does that when joining an event). A new event sits at before + 1, so the
+      // difference is the number of trimmed steps: shift the versions down with them.
+      // A saved point among the trimmed steps can no longer be reached by undo.
+      doc.versions = doc.versions.slice(before + 1 - depth);
     }
+    doc.versions.length = Math.min(doc.versions.length, depth);
     doc.versions[depth] = ++versionCounter;
     doc.depth = depth;
   }
