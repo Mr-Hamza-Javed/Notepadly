@@ -359,8 +359,18 @@ function applyMode(id: string, mode: FormatMode): void {
   loader.scheduleSessionWrite();
 }
 
-async function writeAndReport(id: string, path: string): Promise<boolean> {
-  const result = await loader.writeTab(id, path);
+/** A native message box with custom buttons; resolves to the label pressed. */
+async function askUser(
+  title: string,
+  body: string,
+  buttons: { ok: string; cancel: string } | { yes: string; no: string; cancel: string },
+): Promise<string> {
+  const { message } = await import("@tauri-apps/plugin-dialog");
+  return message(body, { title, kind: "warning", buttons });
+}
+
+async function writeAndReport(id: string, path: string, options: loader.WriteOptions = {}): Promise<boolean> {
+  const result = await loader.writeTab(id, path, options);
   if (result.ok) {
     addRecent(path);
     return true;
@@ -391,16 +401,44 @@ async function saveAs(tabId?: string): Promise<boolean> {
   if (!chosen) return false;
   const path = chosenSavePath(chosen);
   const movesFile = !pathsEqual(path, tab.path);
+  // Another tab showing the file about to be replaced would be left stale.
+  const other = movesFile ? state().tabs.find((t) => t.id !== id && pathsEqual(t.path, path)) : undefined;
+  if (other?.dirty) {
+    showMessage(
+      "Could not save file",
+      `${fileNameOf(path)} is open in another tab with unsaved changes. Save or close that tab first.`,
+    );
+    return false;
+  }
+  let loadedOnly = false;
   if (movesFile) {
     try {
       await loader.ensureFullyLoaded(id);
     } catch (error) {
-      showMessage("Could not save file", errorText(error));
-      return false;
+      if (!(error instanceof loader.LoadBlockedError)) {
+        showMessage("Could not save file", errorText(error));
+        return false;
+      }
+      // The rest of the old file is gone, but the loaded text is still worth keeping.
+      const keep = "Save loaded part";
+      const answer = await askUser(
+        "File changed on disk",
+        `This file was changed by another program while only part of it was loaded, so the rest of it can no longer be read.\n\nSave the loaded part, with your changes, as ${fileNameOf(path)}?`,
+        { ok: keep, cancel: "Cancel" },
+      );
+      if (answer !== keep) return false;
+      loadedOnly = true;
     }
   }
-  if (!(await writeAndReport(id, path))) return false;
+  if (!(await writeAndReport(id, path, { loadedOnly }))) return false;
   if (movesFile) {
+    const replaced = other && getTab(other.id);
+    if (replaced && !replaced.dirty) {
+      if (state().activeId === replaced.id) await activate(id);
+      removeFromList(replaced.id);
+    } else if (replaced) {
+      patchTab(replaced.id, { externalChange: "modified" });
+    }
     const current = getTab(id);
     if (current) applyMode(id, modeAfterSave(current.mode, path, state().settings.formatting));
   }

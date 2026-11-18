@@ -301,12 +301,17 @@ export class FakeDialogs {
   openAnswers: (string[] | null)[] = [];
   saveRequests: { defaultPath?: string }[] = [];
   openedUrls: string[] = [];
+  /** Button labels for the next native message boxes; an empty queue answers "Cancel". */
+  messageAnswers: string[] = [];
+  messages: { title?: string; body: string }[] = [];
 
   reset(): void {
     this.saveAnswers = [];
     this.openAnswers = [];
     this.saveRequests = [];
     this.openedUrls = [];
+    this.messageAnswers = [];
+    this.messages = [];
   }
 }
 
@@ -358,6 +363,10 @@ export const tauriMocks = {
       return dialogs.saveAnswers.shift() ?? null;
     },
     open: async () => dialogs.openAnswers.shift() ?? null,
+    message: async (body: string, options?: { title?: string }) => {
+      dialogs.messages.push({ title: options?.title, body });
+      return dialogs.messageAnswers.shift() ?? "Cancel";
+    },
   }),
   opener: () => ({
     openUrl: async (url: string) => {

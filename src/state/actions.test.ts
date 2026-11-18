@@ -334,6 +334,35 @@ describe("save as", () => {
     expect(app.tab()).toMatchObject({ path: "C:\\notes\\LICENSE", title: "LICENSE", mode: "plain" });
   });
 
+  // BUGS.md M6: Save As onto a file open in another tab left two tabs for one file.
+  it("M6: replaces a clean tab of the file it saves over", async () => {
+    backend.write(B, "old b");
+    await app.actions.openPaths([B]);
+    await app.actions.newTab();
+    app.type("new b");
+    dialogs.saveAnswers.push(B);
+    expect(await app.actions.saveAs()).toBe(true);
+    expect(backend.text(B)).toBe("new b");
+    const tabs = app.state().tabs.filter((t) => t.path === B);
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].id).toBe(app.state().activeId);
+    expect(app.text()).toBe("new b");
+  });
+
+  it("M6: refuses to save over a file whose tab has unsaved changes", async () => {
+    backend.write(B, "old b");
+    await app.actions.openPaths([B]);
+    app.type(" edited");
+    await app.actions.newTab();
+    app.type("other");
+    dialogs.saveAnswers.push(B);
+    expect(await app.actions.saveAs()).toBe(false);
+    expect(app.message()?.body).toContain("b.txt is open in another tab with unsaved changes");
+    expect(backend.text(B)).toBe("old b");
+    expect(app.tab()).toMatchObject({ path: null, dirty: true });
+    expect(app.tabByName("b.txt").dirty).toBe(true);
+  });
+
   // BUGS.md T4: Windows writes "notes." as "notes"; the tab must name that file.
   it("drops a trailing dot from the chosen name", async () => {
     app.type("x");
@@ -481,6 +510,40 @@ describe("large files", () => {
     backend.write(A, "replaced by another program");
     expect(await app.actions.save()).toBe(false);
     expect(backend.text(A)).toBe("replaced by another program");
+  });
+
+  // BUGS.md C3: Save failed with "use Save as", and Save As failed with "Reload it".
+  it("C3: saves the loaded part elsewhere once the disk copy changed, after asking", async () => {
+    const loaded = app.tab().loadedOffset;
+    app.engine.restore(app.tab().id, { anchor: 0, head: 0, scrollTop: 0 });
+    app.engine.insertText("EDIT\n");
+    backend.write(A, "replaced by another program");
+    expect(await app.actions.save()).toBe(false);
+    expect(app.message()?.title).toBe("File changed on disk");
+    app.actions.closeDialog();
+    await app.actions.keepMine(app.tab().id);
+
+    // Cancelled: nothing is written.
+    dialogs.saveAnswers.push("C:\\notes\\copy.md");
+    expect(await app.actions.saveAs()).toBe(false);
+    expect(dialogs.messages[0].title).toBe("File changed on disk");
+    expect(backend.exists("C:\\notes\\copy.md")).toBe(false);
+
+    dialogs.saveAnswers.push("C:\\notes\\copy.md");
+    dialogs.messageAnswers.push("Save loaded part");
+    expect(await app.actions.saveAs()).toBe(true);
+    expect(backend.text("C:\\notes\\copy.md")).toBe("EDIT\n" + big.slice(0, loaded));
+    expect(backend.text(A)).toBe("replaced by another program");
+    expect(app.tab()).toMatchObject({
+      path: "C:\\notes\\copy.md",
+      dirty: false,
+      fullyLoaded: true,
+      externalChange: null,
+      loadedOffset: 5 + loaded,
+    });
+    // The tab is now an ordinary, complete file: Save works again.
+    app.type("!");
+    expect(await app.actions.save()).toBe(true);
   });
 
   it("loads the whole file before writing it somewhere else", async () => {

@@ -416,16 +416,25 @@ export async function materialiseOrFlag(id: string): Promise<void> {
 
 export type WriteResult = { ok: true } | { ok: false; stale: boolean; message: string };
 
+export interface WriteOptions {
+  /**
+   * Writes only the loaded text of a partly loaded tab to another path, and
+   * makes the tab that new, complete file. For a file whose rest can no longer
+   * be read because it changed on disk.
+   */
+  loadedOnly?: boolean;
+}
+
 /** Serialised with loads and reloads, so byte offsets can never be read mid-rewrite. */
-export function writeTab(id: string, targetPath: string): Promise<WriteResult> {
+export function writeTab(id: string, targetPath: string, options: WriteOptions = {}): Promise<WriteResult> {
   const rt = rtOf(id);
-  return enqueue(rt, () => doWrite(id, rt, targetPath));
+  return enqueue(rt, () => doWrite(id, rt, targetPath, options));
 }
 
 /** Waits for any queued save or reload of this tab. */
 export const settleTabIo = (id: string): Promise<void> => rtOf(id).queue;
 
-async function doWrite(id: string, rt: TabRuntime, targetPath: string): Promise<WriteResult> {
+async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: WriteOptions): Promise<WriteResult> {
   await settle(rt.inFlight);
   try {
     await materialise(id);
@@ -435,7 +444,8 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string): Promise<
   const tab = getTab(id);
   if (!tab) return { ok: false, stale: false, message: "The tab was closed." };
   const samePath = pathsEqual(tab.path, targetPath);
-  const partial = !tab.fullyLoaded;
+  const loadedOnly = !!options.loadedOnly && !samePath;
+  const partial = !tab.fullyLoaded && !loadedOnly;
   if (partial && (!samePath || !tab.stamp)) {
     return { ok: false, stale: partial && samePath, message: "Only part of this file is loaded." };
   }
