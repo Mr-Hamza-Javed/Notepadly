@@ -251,3 +251,17 @@ describe("Find inside rendered blocks", () => {
     expect(view.state.field(blockField).shown.size).toBe(1);
   });
 });
+
+describe("engine keys", () => {
+  it("M3: Ctrl+M does not switch Tab to moving focus out of the editor", () => {
+    mountEngine();
+    engine.createDoc("t", "text", "formatted");
+    engine.activate("t");
+    const content = document.querySelector<HTMLElement>(".cm-content")!;
+    const view = EditorView.findFromDOM(document.querySelector(".cm-editor") as HTMLElement)!;
+    view.dispatch({ selection: { anchor: 0 } });
+    key(content, { key: "m", ctrlKey: true });
+    key(content, { key: "Tab" });
+    expect(engine.getText("t")).toBe("\ttext");
+  });
+});

@@ -7,6 +7,7 @@ import {
   redo,
   redoDepth,
   selectAll,
+  toggleTabFocusMode,
   undo,
   undoDepth,
 } from "@codemirror/commands";
@@ -210,7 +211,11 @@ class Engine implements EditorEngine {
           { key: "Mod-i", run: format({ type: "italic" }), preventDefault: true },
         ]),
       ),
-      keymap.of([...historyKeymap, ...defaultKeymap.filter((binding) => binding.key !== "Mod-i")]),
+      // Mod-i is italic; Ctrl+M (tab focus mode) made Tab leave the editor with no sign (BUGS.md M3).
+      keymap.of([
+        ...historyKeymap,
+        ...defaultKeymap.filter((binding) => binding.key !== "Mod-i" && binding.run !== toggleTabFocusMode),
+      ]),
     ];
   }
 
