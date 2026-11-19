@@ -181,6 +181,7 @@ export const editorHost: EditorHost = {
     const path = getTab(id)?.path;
     return path ? dirOf(path) : null;
   },
+  isFullyLoaded: (id) => getTab(id)?.fullyLoaded ?? true,
 };
 
 function reportError(title: string) {
@@ -568,6 +569,8 @@ async function saveAs(tabId?: string): Promise<boolean> {
     }
   }
   if (!(await writeAndReport(id, path, { loadedOnly }))) return false;
+  // Relative images in the document now resolve against the new folder (BUGS.md PREV-7).
+  engine.pathChanged(id);
   if (movesFile) {
     const replaced = other && getTab(other.id);
     if (replaced && !replaced.dirty) {

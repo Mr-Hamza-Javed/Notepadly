@@ -14,8 +14,17 @@ import {
   type Transaction,
 } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
 import { isDarkTheme } from "../theme";
-import { HorizontalRuleWidget, MathWidget, MermaidWidget, TableWidget, tableFocus } from "./widgets";
+import {
+  HorizontalRuleWidget,
+  MathWidget,
+  MermaidWidget,
+  TableWidget,
+  TOP_LEVEL,
+  tableFocus,
+  type Nest,
+} from "./widgets";
 
 /** Characters scanned on each side of the reported viewport. */
 const SCAN_PADDING = 4000;
@@ -89,6 +98,42 @@ function paddedSpan(view: Span, length: number): Span {
   return { from: Math.max(0, view.from - SCAN_PADDING), to: Math.min(length, view.to + SCAN_PADDING) };
 }
 
+/** Containers whose maths, diagrams, tables and rules are rendered too (BUGS.md MD-1). */
+const CONTAINERS = new Set(["BulletList", "OrderedList", "ListItem"]);
+
+/**
+ * Strips the quote markers and list indentation (`prefix`, as written before the block's first
+ * line) from the following lines of a block's content.
+ */
+function stripNest(text: string, prefix: string): string {
+  if (!prefix) return text;
+  const depth = (prefix.match(/>/g) ?? []).length;
+  const indent = prefix.replace(/^.*>[ \t]?/, "").length;
+  const pattern = new RegExp(`^(?:[ \\t]*>[ \\t]?){0,${depth}}[ \\t]{0,${indent}}`);
+  return text
+    .split("\n")
+    .map((line, i) => (i === 0 ? line : line.startsWith(prefix) ? line.slice(prefix.length) : line.replace(pattern, "")))
+    .join("\n");
+}
+
+/** The quote and callout classes and list indent of a nested block, like its lines would get. */
+function nestOf(state: EditorState, node: SyntaxNodeRef, prefix: string): Nest {
+  let depth = 0;
+  let outer: SyntaxNode | null = null;
+  for (let parent = node.node.parent; parent; parent = parent.parent) {
+    if (parent.name === "Blockquote") {
+      depth++;
+      outer = parent;
+    }
+  }
+  const indent = prefix.replace(/^.*>[ \t]?/, "").length;
+  if (!depth) return indent ? { classes: "", indent } : TOP_LEVEL;
+  let classes = `cm-md-quote cm-md-q${Math.min(depth, 4)}`;
+  const callout = CALLOUT_LINE.exec(state.doc.lineAt(outer!.from).text);
+  if (callout) classes += ` cm-md-callout cm-md-callout-${callout[2].toLowerCase()}`;
+  return { classes, indent };
+}
+
 function collectBlocks(state: EditorState, span: Span, toggled: readonly number[]): Range<Decoration>[] {
   const found: Range<Decoration>[] = [];
   const { doc } = state;
@@ -97,23 +142,30 @@ function collectBlocks(state: EditorState, span: Span, toggled: readonly number[
     to: span.to,
     enter: (node) => {
       if (node.name === "Document") return true;
+      if (CONTAINERS.has(node.name)) return true;
       const startLine = doc.lineAt(node.from);
       const endLine = doc.lineAt(node.to);
+      // Inside a list or quote, only blocks that start their line (after `> ` and indentation)
+      // are rendered: replacing the line of `- $$` would hide the list marker.
+      const prefix = doc.sliceString(startLine.from, node.from);
+      const nested = prefix.length > 0;
+      if (nested && !/^[ \t>]*$/.test(prefix) && node.name !== "Blockquote") return false;
+      const nest = nested ? nestOf(state, node, prefix) : TOP_LEVEL;
       const replace = (widget: Decoration["spec"]["widget"], reveal: RevealMode = "explicit") =>
         found.push(Decoration.replace({ widget, block: true, reveal }).range(startLine.from, endLine.to));
 
       switch (node.name) {
         case "Table":
-          replace(new TableWidget(doc.sliceString(startLine.from, endLine.to)), "never");
+          replace(new TableWidget(doc.sliceString(startLine.from, endLine.to), nest), "never");
           break;
         case "HorizontalRule":
-          if (startLine.number === endLine.number) replace(new HorizontalRuleWidget());
+          if (startLine.number === endLine.number) replace(new HorizontalRuleWidget(nest));
           break;
         case "BlockMath": {
           const marks = node.node.getChildren("MathMark");
           if (marks.length === 2) {
-            const text = doc.sliceString(marks[0].to, marks[1].from).trim();
-            replace(new MathWidget(text, true, marks[0].to - startLine.from));
+            const text = stripNest(doc.sliceString(marks[0].to, marks[1].from), prefix).trim();
+            replace(new MathWidget(text, true, marks[0].to - startLine.from, nest));
           }
           break;
         }
@@ -123,9 +175,8 @@ function collectBlocks(state: EditorState, span: Span, toggled: readonly number[
             const body = node.node.getChild("CodeText");
             const fences = node.node.getChildren("CodeMark");
             if (body && fences.length === 2) {
-              replace(
-                new MermaidWidget(doc.sliceString(body.from, body.to), isDarkTheme(), body.from - startLine.from),
-              );
+              const source = stripNest(doc.sliceString(body.from, body.to), prefix);
+              replace(new MermaidWidget(source, isDarkTheme(), body.from - startLine.from, nest));
             }
           }
           break;
@@ -137,9 +188,11 @@ function collectBlocks(state: EditorState, span: Span, toggled: readonly number[
               found.push(
                 Decoration.replace({ revealFrom: 1 }).range(startLine.to, endLine.to),
               );
+              // A folded callout hides its content, blocks included.
+              return false;
             }
           }
-          break;
+          return true;
         }
       }
       return false;
@@ -344,4 +397,71 @@ const viewportReporter = ViewPlugin.fromClass(
  */
 const atomicBlocks = EditorView.atomicRanges.of((view) => view.state.field(blockField).shown);
 
-export const blockPreview = [blockField, viewportReporter, atomicBlocks, tableFocus];
+/** Where the cursor goes in the source of a maths or Mermaid block entered from above or below. */
+function contentEdge(state: EditorState, from: number, to: number, fromAbove: boolean): number | null {
+  let pos: number | null = null;
+  syntaxTree(state).iterate({
+    from,
+    to,
+    enter: (node) => {
+      if (pos !== null) return false;
+      if (node.name === "BlockMath") {
+        const marks = node.node.getChildren("MathMark");
+        if (marks.length !== 2) return false;
+        let at = fromAbove ? marks[0].to : marks[1].from;
+        // Land on the formula's own line, not after the opening `$$` or before the closing one.
+        if (fromAbove && state.sliceDoc(at, at + 1) === "\n" && at + 1 <= marks[1].from) at++;
+        if (!fromAbove && state.sliceDoc(at - 1, at) === "\n" && at - 1 >= marks[0].to) at--;
+        pos = at;
+        return false;
+      }
+      if (node.name === "FencedCode") {
+        const body = node.node.getChild("CodeText");
+        if (body) pos = fromAbove ? body.from : body.to;
+        return false;
+      }
+      return true;
+    },
+  });
+  return pos;
+}
+
+/**
+ * An arrow key that lands the cursor on the edge of a rendered maths block or diagram opens its
+ * source with the cursor in it, like a table is entered from the keyboard (BUGS.md H2).
+ */
+const blockEntry = ViewPlugin.fromClass(
+  class {
+    constructor(private readonly view: EditorView) {}
+
+    update(update: ViewUpdate): void {
+      if (update.docChanged || !update.selectionSet || !update.view.hasFocus) return;
+      const keyboard = update.transactions.some(
+        (tr) => tr.isUserEvent("select") && !tr.isUserEvent("select.pointer") && !tr.isUserEvent("select.search"),
+      );
+      const main = update.state.selection.main;
+      if (!keyboard || !main.empty || update.state.selection.ranges.length > 1) return;
+      const oldHead = update.startState.selection.main.head;
+      const { shown } = update.state.field(blockField);
+      let target: { from: number; to: number } | null = null;
+      shown.between(main.head, main.head, (from, to, deco) => {
+        const widget = deco.spec.widget;
+        if (deco.spec.reveal !== "explicit" || !(widget instanceof MathWidget || widget instanceof MermaidWidget)) return;
+        if (main.head === from || main.head === to) target = { from, to };
+      });
+      if (!target) return;
+      const { from, to } = target;
+      const fromAbove = oldHead < from;
+      const pos = contentEdge(update.state, from, to, fromAbove);
+      if (pos === null) return;
+      // Dispatching is not allowed during an update.
+      queueMicrotask(() => {
+        const view = this.view;
+        if (!view.dom.isConnected || view.state.selection.main.head !== main.head) return;
+        view.dispatch({ effects: openBlockSource.of(from), selection: { anchor: pos }, scrollIntoView: true });
+      });
+    }
+  },
+);
+
+export const blockPreview = [blockField, viewportReporter, atomicBlocks, tableFocus, blockEntry];

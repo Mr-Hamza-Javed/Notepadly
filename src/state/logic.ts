@@ -139,7 +139,8 @@ export function pathsEqual(a: string | null, b: string | null): boolean {
 
 export function resolveRelative(baseDir: string, relative: string): string {
   if (/^[a-zA-Z]:[\\/]/.test(relative) || relative.startsWith("\\\\")) return relative;
-  const parts = baseDir.split(/[\\/]/);
+  // A folder written with a trailing separator (`C:\`) must not leave an empty part.
+  const parts = baseDir.replace(/[\\/]+$/, "").split(/[\\/]/);
   for (const piece of relative.split(/[\\/]/)) {
     if (piece === "" || piece === ".") continue;
     if (piece === "..") {
@@ -203,6 +204,23 @@ function rootOf(dir: string): string | null {
 }
 
 /**
+ * The file a path written in a document points to, or null when it cannot be known (a
+ * relative path in an untitled tab). One rule for links, images and print (BUGS.md PREV-8):
+ * - a drive path or a network path (`\\server\share`, `//server/share`) is used as it is;
+ * - `/docs/a.md` starts at the root of the document's drive or share;
+ * - anything else is relative to the document's folder.
+ */
+export function resolveDocPath(baseDir: string | null, target: string): string | null {
+  if (/^[a-zA-Z]:[\\/]/.test(target) || /^[\\/]{2}/.test(target)) return target;
+  if (!baseDir) return null;
+  if (/^[\\/]/.test(target)) {
+    const root = rootOf(baseDir);
+    return root ? resolveRelative(root, target) : null;
+  }
+  return resolveRelative(baseDir, target);
+}
+
+/**
  * Decides what a link in a document may do. Only web and mail links reach the
  * system opener: a document must not be able to launch arbitrary URI handlers.
  */
@@ -232,19 +250,8 @@ export function classifyHref(href: string, baseDir: string | null): HrefTarget {
     if (target && !extOf(target)) target += ".md";
   }
   if (!target) return { kind: "none" };
-  let path: string;
-  if (/^[a-zA-Z]:[\\/]/.test(target) || target.startsWith("\\\\")) {
-    path = target;
-  } else if (!baseDir) {
-    return { kind: "none" };
-  } else if (/^[\\/]/.test(target)) {
-    // `/docs/a.md` starts at the root of the document's drive or share.
-    const root = rootOf(baseDir);
-    if (!root) return { kind: "none" };
-    path = resolveRelative(root, target);
-  } else {
-    path = resolveRelative(baseDir, target);
-  }
+  const path = resolveDocPath(baseDir, target);
+  if (!path) return { kind: "none" };
   return EXTERNAL_EXTENSIONS.has(extOf(path)) ? { kind: "external", path } : { kind: "file", path };
 }
 

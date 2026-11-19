@@ -60,6 +60,11 @@ const matchPlugin = ViewPlugin.fromClass(
 
 export const findExtension = [queryField, matchPlugin];
 
+/** The active Find query of a state, or null; rendered tables mark its matches (BUGS.md TAB-1). */
+export function findQueryOf(state: EditorState): SearchQuery | null {
+  return state.field(queryField, false) ?? null;
+}
+
 interface Match {
   from: number;
   to: number;

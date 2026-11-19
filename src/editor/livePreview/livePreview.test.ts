@@ -108,8 +108,8 @@ describe("block widgets", () => {
     expect(blocks(preview("| a | b |\n| 1 | 2 |"))).toEqual([]);
   });
 
-  it("leaves a rule inside a list or quote as source", () => {
-    expect(blocks(preview("> ---\n\nx"))).toEqual([]);
+  it("renders a rule inside a quote too (BUGS.md MD-1)", () => {
+    expect(blocks(preview("> ---\n\nx"))).toEqual([["HorizontalRule", "> ---"]]);
   });
 
   // Text added past the scanned region is picked up by the viewport reporter a moment later.
@@ -292,7 +292,8 @@ describe("link and image targets", () => {
     expect(resolveImageSrc("http://x.y/i.png")).toBe("http://x.y/i.png");
     expect(resolveImageSrc("file:///D:/pics/a%20b.png")).toBe("D:\\pics\\a b.png");
     previewContext.baseDir = () => null;
-    expect(resolveImageSrc("rel.png")).toBe("rel.png");
+    // An untitled tab has no folder: a relative image is not read from the app's folder.
+    expect(resolveImageSrc("rel.png")).toBe("");
   });
 
   it("keeps a malformed percent-encoding as written", () => {

@@ -11,6 +11,7 @@ import {
 import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
 import { CALLOUT_LINE, calloutFolded, toggleCalloutFold } from "./block";
 import {
+  documentPathChanged,
   isImagePath,
   parseSize,
   previewContext,
@@ -275,7 +276,7 @@ class Builder {
         this.eachVisibleLine(from, to, (lineFrom) => this.addLine(lineFrom, "cm-md-html-block"));
         return false;
       case "HorizontalRule": {
-        // Top-level rules are block widgets; a nested one stays styled source.
+        // Rules are block widgets (also in lists and quotes, BUGS.md MD-1); a revealed nested one is dimmed.
         if (ref.node.parent?.name !== "Document") this.dim(from, to);
         return false;
       }
@@ -554,7 +555,9 @@ const inlinePlugin = ViewPlugin.fromClass(
     }
 
     update(update: ViewUpdate): void {
-      const foldToggled = update.transactions.some((tr) => tr.effects.some((e) => e.is(toggleCalloutFold)));
+      const foldToggled = update.transactions.some((tr) =>
+        tr.effects.some((e) => e.is(toggleCalloutFold) || e.is(documentPathChanged)),
+      );
       if (
         update.docChanged ||
         update.viewportChanged ||

@@ -4,9 +4,10 @@ import { Transaction } from "@codemirror/state";
 import { EditorView, ViewPlugin, WidgetType, type ViewUpdate } from "@codemirror/view";
 import { applyFormat } from "../commands";
 import { openBlockSource } from "./block";
-import { cachedMath, cachedMermaid, renderMath, renderMermaid, type RenderedHtml } from "../lazy";
-import { cellText, joinRow, parseAlign, parseTable } from "../tableModel";
-import { previewContext, resolveHref, resolveImageSrc } from "./context";
+import { cachedMath, cachedMermaid, cachedMermaidError, renderMath, renderMermaid, type RenderedHtml } from "../lazy";
+import { findQueryOf } from "../find";
+import { cellText, joinRow, parseAlign, parseTable, type TableRowModel } from "../tableModel";
+import { documentPathChanged, isImagePath, parseSize, previewContext, resolveHref, resolveImageSrc, resolveWikiTarget } from "./context";
 
 function element(tag: string, className: string, text?: string): HTMLElement {
   const el = document.createElement(tag);
@@ -19,32 +20,101 @@ function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** Small renderer for table cells. Cells are static HTML, so this stays deliberately simple. */
+/** Attribute-free inline tags only, so a cell can never inject markup with handlers. */
+const CELL_HTML_TAG = /&lt;(\/?)(sub|sup|kbd|u|ins|mark|b|strong|i|em|s|del|strike|small)&gt;/gi;
+/** A link target with one level of balanced parentheses, as in `Foo_(bar)` (BUGS.md PREV-10). */
+const LINK_TARGET = String.raw`((?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?`;
+const CELL_IMAGE = new RegExp(String.raw`!\[([^\]]*)\]\(` + LINK_TARGET + String.raw`\)`, "g");
+const CELL_LINK = new RegExp(String.raw`\[([^\]]+)\]\(` + LINK_TARGET + String.raw`\)`, "g");
+const CELL_EMBED = /!\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/g;
+const CELL_WIKILINK = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+/** Inline maths as the parser reads it: `$$x$$`, or `$x$` with no space inside and no word after. */
+const CELL_MATH = /(?<![\\$])(\$\$(?![\s$])((?:\\.|[^\\$]|\$(?!\$))+?)\$\$|\$(?![\s$])((?:\\.|[^\\$])*?(?:\\.|[^\s\\$]))\$(?![\p{L}\p{N}_]))/gu;
+
+/** Bold, italic, strike, highlight and the allowed HTML tags, on already escaped text. */
+function cellEmphasis(html: string): string {
+  return (
+    html
+      .replace(/&lt;br\s*\/?&gt;/gi, "<br>")
+      .replace(CELL_HTML_TAG, (_m, slash: string, tag: string) => `<${slash}${tag.toLowerCase()}>`)
+      // Emphasis needs flanking markers: no space just inside them, so `2 * 3 * 4` stays text.
+      .replace(/\*\*(?!\s)([^*]*[^*\s])\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*(?!\s)([^*]*[^*\s])\*/g, "$1<em>$2</em>")
+      .replace(/(^|[^\w_])_(?!\s)([^_]*[^_\s])_(?![\w_])/g, "$1<em>$2</em>")
+      .replace(/~~([^~]+)~~/g, "<s>$1</s>")
+      .replace(/==([^=]+)==/g, "<mark>$1</mark>")
+  );
+}
+
+function cellImage(src: string, alt: string, width?: number, height?: number): string {
+  const resolved = resolveImageSrc(src.trim());
+  const size = `${width ? ` width="${width}"` : ""}${height ? ` height="${height}"` : ""}`;
+  const source = resolved ? ` src="${escapeHtml(resolved)}"` : "";
+  return `<img class="cm-md-image cm-md-cell-image" alt="${escapeHtml(alt)}"${source}${size}>`;
+}
+
+/**
+ * Small renderer for table cells. Cells are static HTML, so this stays deliberately simple.
+ * Code spans, maths, images and links are taken out first, so emphasis rules never run
+ * inside them (BUGS.md TAB-3); maths is filled in by `fillCellMath`.
+ */
 export function renderCellHtml(source: string): string {
-  const codeSpans: string[] = [];
+  const parts: string[] = [];
+  // NUL marks the placeholders; CommonMark shows it as U+FFFD anyway.
+  const hold = (html: string) => `\u0000${parts.push(html) - 1}\u0000`;
   // GFM unescapes `\|` in a table cell before inline parsing, so inside code spans too.
-  // NUL marks the code span placeholders; CommonMark shows it as U+FFFD anyway.
-  let html = escapeHtml(source.replace(/\u0000/g, "�"))
-    .replace(/\\\|/g, "|")
-    .replace(/`([^`]+)`/g, (_m, code: string) => {
-      codeSpans.push(`<code>${code}</code>`);
-      return `\u0000${codeSpans.length - 1}\u0000`;
-    });
-  html = html
-    .replace(/&lt;br\s*\/?&gt;/gi, "<br>")
-    // Attribute-free inline tags only, so a cell can never inject markup with handlers.
-    .replace(
-      /&lt;(\/?)(sub|sup|kbd|u|ins|mark|b|strong|i|em|s|del|strike|small)&gt;/gi,
-      (_m, slash: string, tag: string) => `<${slash}${tag.toLowerCase()}>`,
+  let text = source.replace(/\u0000/g, "\uFFFD").replace(/\\\|/g, "|");
+  text = text
+    .replace(/`([^`]+)`/g, (_m, code: string) => hold(`<code>${escapeHtml(code)}</code>`))
+    .replace(CELL_MATH, (_m, _all, block: string | undefined, inline: string | undefined) => {
+      const tex = (block ?? inline ?? "").trim();
+      return hold(`<span class="cm-md-math-inline" data-math="${escapeHtml(tex)}">${escapeHtml(tex)}</span>`);
+    })
+    .replace(CELL_EMBED, (_m, target: string, alias: string | undefined) => {
+      if (!isImagePath(target)) return hold(`<span class="cm-md-embed">${escapeHtml(alias || target.trim())}</span>`);
+      const size = parseSize(alias ?? "");
+      return hold(cellImage(target, size ? target.trim() : alias || target.trim(), size?.width, size?.height));
+    })
+    .replace(CELL_IMAGE, (_m, altText: string, src: string) => {
+      const bar = altText.lastIndexOf("|");
+      const size = bar >= 0 ? parseSize(altText.slice(bar + 1)) : null;
+      return hold(cellImage(src, size ? altText.slice(0, bar) : altText, size?.width, size?.height));
+    })
+    .replace(CELL_LINK, (_m, label: string, href: string) =>
+      hold(`<a data-href="${escapeHtml(href)}">${cellEmphasis(escapeHtml(label))}</a>`),
     )
-    // Emphasis needs flanking markers: no space just inside them, so `2 * 3 * 4` stays text.
-    .replace(/\*\*(?!\s)([^*]*[^*\s])\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*(?!\s)([^*]*[^*\s])\*/g, "$1<em>$2</em>")
-    .replace(/(^|[^\w_])_(?!\s)([^_]*[^_\s])_(?![\w_])/g, "$1<em>$2</em>")
-    .replace(/~~([^~]+)~~/g, "<s>$1</s>")
-    .replace(/==([^=]+)==/g, "<mark>$1</mark>")
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a data-href="$2">$1</a>');
-  return html.replace(/\u0000(\d+)\u0000/g, (_m, index: string) => codeSpans[Number(index)]);
+    .replace(CELL_WIKILINK, (_m, target: string, alias: string | undefined) =>
+      hold(
+        `<a class="cm-md-wikilink" data-href="${escapeHtml(resolveWikiTarget(target))}">${escapeHtml(alias ?? target)}</a>`,
+      ),
+    );
+  const restore = (html: string): string =>
+    html.replace(/\u0000(\d+)\u0000/g, (_m, index: string) => restore(parts[Number(index)]));
+  return restore(cellEmphasis(escapeHtml(text)));
+}
+
+/** Renders the maths placeholders of a cell, from the cache or once KaTeX has loaded. */
+function fillCellMath(cell: HTMLElement): void {
+  for (const host of cell.querySelectorAll<HTMLElement>("[data-math]")) {
+    const tex = host.dataset.math ?? "";
+    const cached = cachedMath(tex, false);
+    if (cached) {
+      host.innerHTML = cached.html;
+      continue;
+    }
+    renderMath(tex, false)
+      .then((entry) => {
+        if (host.isConnected && host.dataset.math === tex) host.innerHTML = entry.html;
+      })
+      .catch(() => host.classList.add("cm-md-render-error"));
+  }
+}
+
+/** Shows a cell's markdown rendered. */
+function setCellHtml(cell: HTMLElement, text: string): void {
+  cell.dataset.src = text;
+  cell.innerHTML = renderCellHtml(text);
+  fillCellMath(cell);
 }
 
 /** Moves the cursor into the source when a rendered block is clicked. */
@@ -83,6 +153,29 @@ function bindBlockSource(view: EditorView, host: HTMLElement, offset: number, wi
     openSource(view, host, offset);
   });
   host.appendChild(button);
+}
+
+/**
+ * Where a block widget sits when it is inside a list, quote or callout (BUGS.md MD-1): the
+ * quote and callout classes its lines would have had, and the list indentation in characters.
+ */
+export interface Nest {
+  classes: string;
+  indent: number;
+}
+
+export const TOP_LEVEL: Nest = { classes: "", indent: 0 };
+
+function sameNest(a: Nest, b: Nest): boolean {
+  return a.classes === b.classes && a.indent === b.indent;
+}
+
+function applyNest(dom: HTMLElement, nest: Nest): void {
+  for (const name of Array.from(dom.classList)) {
+    if (name.startsWith("cm-md-q") || name.startsWith("cm-md-callout") || name === "cm-md-nested") dom.classList.remove(name);
+  }
+  if (nest.classes) dom.classList.add("cm-md-nested", ...nest.classes.split(" "));
+  dom.style.marginInlineStart = nest.indent ? `${nest.indent}ch` : "";
 }
 
 abstract class SourceWidget extends WidgetType {
@@ -142,13 +235,17 @@ export class CheckboxWidget extends WidgetType {
 }
 
 export class HorizontalRuleWidget extends SourceWidget {
-  override eq(): boolean {
-    return true;
+  constructor(readonly nest: Nest = TOP_LEVEL) {
+    super();
+  }
+  override eq(other: HorizontalRuleWidget): boolean {
+    return sameNest(other.nest, this.nest);
   }
   toDOM(view: EditorView): HTMLElement {
     const wrap = element("div", "cm-md-hr");
     wrap.appendChild(document.createElement("hr"));
     bindBlockSource(view, wrap, 0, false);
+    applyNest(wrap, this.nest);
     return wrap;
   }
 }
@@ -186,8 +283,15 @@ class TableController {
   private active: CellRef | null = null;
   private pendingFocus: (CellRef & { atEnd: boolean }) | null = null;
   private rebuilding = false;
-  /** A cell that shows an editor selection while not focused (a Find match, BUGS.md H11). */
-  private marked: CellRef | null = null;
+  /** Parsed rows of `source`, parsed once per text (it was parsed ~5 times per keystroke). */
+  private parsed: TableRowModel[] = [];
+  /** Cells by source row and column; the delimiter row (1) has none. */
+  private grid: HTMLElement[][] = [];
+  /**
+   * Cells that show Find matches or an editor selection as marked source while not focused,
+   * by "row:col", with the marks drawn (BUGS.md H11, TAB-1).
+   */
+  private marked = new Map<string, string>();
   private readonly onSelectionChange = () => {
     if (this.active && this.wrap.isConnected) this.syncSelection();
   };
@@ -207,33 +311,48 @@ class TableController {
   }
 
   render(source: string): void {
+    if (source === this.source && this.grid.length) return;
+    const previous = this.parsed;
     const rows = parseTable(source);
     const columns = rows[0].cells.length;
     const shape = `${rows.length}x${columns}:${rows[1]?.text ?? ""}`;
     this.source = source;
+    this.parsed = rows;
+    if (findQueryOf(this.view.state) || this.marked.size) {
+      // Matches move with the text; a new table needs its marks too (BUGS.md TAB-1).
+      queueMicrotask(() => {
+        if (this.wrap.isConnected) this.showMarks();
+      });
+    }
     if (shape !== this.shape) {
       this.shape = shape;
       this.rebuild(rows, columns);
       return;
     }
-    for (const cell of this.cells()) {
-      const ref = this.refOf(cell);
-      const text = cellText(rows[ref.row], ref.col);
-      if (this.isActive(ref)) {
-        // Markdown trims cells, so compare trimmed text or a trailing space would be undone.
-        if (escapeCellText(cell.textContent ?? "").trim() !== text) {
-          cell.textContent = text;
-          caretTo(cell, true);
-          // A command changed the text (Bold, Paste, Undo): put the caret where the editor's
-          // selection is. Positions are only valid once CodeMirror finished this update.
-          queueMicrotask(() => {
-            if (this.isActive(ref) && this.wrap.isConnected) this.caretFromEditor(cell, ref);
-          });
-        }
-      } else if (cell.dataset.src !== text) {
-        cell.dataset.src = text;
-        cell.innerHTML = renderCellHtml(text);
+    for (let r = 0; r < rows.length; r++) {
+      // Only rows whose text changed, and the cell being edited, need a look.
+      if (previous[r]?.text === rows[r].text && this.active?.row !== r) continue;
+      for (const cell of this.grid[r] ?? []) this.renderCell(cell, rows);
+    }
+  }
+
+  private renderCell(cell: HTMLElement, rows: TableRowModel[]): void {
+    const ref = this.refOf(cell);
+    const text = cellText(rows[ref.row], ref.col);
+    if (this.isActive(ref)) {
+      // Markdown trims cells, so compare trimmed text or a trailing space would be undone.
+      if (escapeCellText(cell.textContent ?? "").trim() !== text) {
+        cell.textContent = text;
+        caretTo(cell, true);
+        // A command changed the text (Bold, Paste, Undo): put the caret where the editor's
+        // selection is. Positions are only valid once CodeMirror finished this update.
+        queueMicrotask(() => {
+          if (this.isActive(ref) && this.wrap.isConnected) this.caretFromEditor(cell, ref);
+        });
       }
+    } else if (cell.dataset.src !== text) {
+      this.marked.delete(`${ref.row}:${ref.col}`);
+      setCellHtml(cell, text);
     }
   }
 
@@ -243,8 +362,10 @@ class TableController {
     this.rebuilding = true;
     const aligns = Array.from({ length: columns }, (_v, i) => parseAlign(cellText(rows[1], i)));
     const table = document.createElement("table");
+    this.grid = [];
     const addRow = (parent: HTMLElement, rowIndex: number, cellTag: "th" | "td") => {
       const tr = document.createElement("tr");
+      const line: HTMLElement[] = (this.grid[rowIndex] = []);
       for (let c = 0; c < columns; c++) {
         const cell = document.createElement(cellTag);
         const text = cellText(rows[rowIndex], c);
@@ -252,10 +373,12 @@ class TableController {
         cell.spellcheck = this.view.contentDOM.spellcheck;
         cell.dataset.row = String(rowIndex);
         cell.dataset.col = String(c);
-        cell.dataset.src = text;
-        cell.innerHTML = renderCellHtml(text);
+        // Urdu or Arabic text runs and aligns right to left; an explicit alignment still wins.
+        cell.dir = "auto";
+        setCellHtml(cell, text);
         if (aligns[c]) cell.style.textAlign = aligns[c]!;
         tr.appendChild(cell);
+        line.push(cell);
       }
       parent.appendChild(tr);
     };
@@ -267,7 +390,7 @@ class TableController {
     table.appendChild(body);
     this.wrap.replaceChildren(table);
     this.active = null;
-    this.marked = null;
+    this.marked.clear();
     this.rebuilding = false;
     if (restore) {
       // rebuild runs inside CodeMirror's update (updateDOM); focusing dispatches, so wait.
@@ -281,7 +404,7 @@ class TableController {
   }
 
   private cells(): HTMLElement[] {
-    return Array.from(this.wrap.querySelectorAll<HTMLElement>("th,td"));
+    return this.grid.flat();
   }
 
   private refOf(cell: HTMLElement): CellRef {
@@ -293,16 +416,16 @@ class TableController {
   }
 
   private cellAt(row: number, col: number): HTMLElement | null {
-    return this.wrap.querySelector<HTMLElement>(`[data-row="${row}"][data-col="${col}"]`);
+    return this.grid[row]?.[col] ?? null;
   }
 
   private bodyRows(): number[] {
-    const rows = parseTable(this.source).length;
+    const rows = this.parsed.length;
     return [0, ...Array.from({ length: Math.max(0, rows - 2) }, (_v, i) => i + 2)];
   }
 
   private columns(): number {
-    return parseTable(this.source)[0].cells.length;
+    return this.parsed[0].cells.length;
   }
 
   /** Focuses a cell and places the caret; a range is in source offsets within the cell's text. */
@@ -331,7 +454,7 @@ class TableController {
 
   /** Document position of a cell's text and its length. A missing cell sits at the end of its row. */
   private cellRange(ref: CellRef): { from: number; length: number } {
-    const row = parseTable(this.source)[ref.row];
+    const row = this.parsed[ref.row];
     const base = this.tableStart() + row.offset;
     const span = row.cells[ref.col];
     return span ? { from: base + span.from, length: span.to - span.from } : { from: base + row.text.length, length: 0 };
@@ -340,7 +463,7 @@ class TableController {
   /** The cell at a document position, or the nearest one on its row (the header for the delimiter row). */
   private cellFor(from: number): HTMLElement | null {
     const start = this.tableStart();
-    const rows = parseTable(this.source);
+    const rows = this.parsed;
     for (let r = rows.length - 1; r >= 0; r--) {
       if (start + rows[r].offset > from) continue;
       const row = rows[r === 1 ? 0 : r];
@@ -415,30 +538,87 @@ class TableController {
     if (cell) this.focusCell(cell, fromAbove ? "start" : toLastCell ? "end" : "start");
   }
 
-  /** Shows a selection the editor has in this table while no cell is focused, like a Find match. */
-  showSelection(from: number, to: number): void {
-    if (this.hasFocus()) return;
+  /** Renders every cell again, e.g. after the document moved and relative images changed. */
+  refreshCells(): void {
+    for (const cell of this.cells()) {
+      const ref = this.refOf(cell);
+      if (!this.isActive(ref) && !this.marked.has(`${ref.row}:${ref.col}`)) setCellHtml(cell, cell.dataset.src ?? "");
+    }
+  }
+
+  /**
+   * Shows every Find match in this table's cells, and an editor selection inside one cell while
+   * no cell is focused (BUGS.md H11, TAB-1). A cell with marks shows its markdown, so a mark
+   * sits exactly on the matched text; the current match or selection is the strong mark.
+   */
+  showMarks(): void {
+    const state = this.view.state;
+    const main = state.selection.main;
     const { from: start, to: end } = this.range();
-    let next: CellRef | null = null;
-    if (from !== to && from >= start && to <= end) {
-      const cell = this.cellFor(from);
-      const ref = cell ? this.refOf(cell) : null;
-      const range = ref ? this.cellRange(ref) : null;
-      if (ref && range && from >= range.from && to <= range.from + range.length) next = ref;
+    const rows = this.parsed;
+    const wanted = new Map<string, { ref: CellRef; marks: { from: number; to: number; current: boolean }[] }>();
+    let row = 0;
+    const add = (from: number, to: number, current: boolean) => {
+      if (from < start || to > end) return;
+      const rel = from - start;
+      while (row + 1 < rows.length && rows[row + 1].offset <= rel) row++;
+      if (row === 1) return;
+      const line = rows[row];
+      const col = line.cells.findIndex(
+        (span) => line.offset + span.from <= rel && to - start <= line.offset + span.to,
+      );
+      if (col < 0 || col >= (this.grid[row]?.length ?? 0) || this.isActive({ row, col })) return;
+      const key = `${row}:${col}`;
+      const base = start + line.offset + line.cells[col].from;
+      let entry = wanted.get(key);
+      if (!entry) wanted.set(key, (entry = { ref: { row, col }, marks: [] }));
+      const mark = { from: from - base, to: to - base, current };
+      if (!entry.marks.some((m) => m.from === mark.from && m.to === mark.to)) entry.marks.push(mark);
+      else if (current) entry.marks = entry.marks.map((m) => (m.from === mark.from ? mark : m));
+    };
+    const query = findQueryOf(state);
+    if (query?.valid) {
+      const cursor = query.getCursor(state, start, end);
+      let count = 0;
+      for (let step = cursor.next(); !step.done && count < 5000; step = cursor.next(), count++) {
+        const { from, to } = step.value;
+        if (to > from) add(from, to, from === main.from && to === main.to);
+      }
     }
-    const previous = this.marked;
-    if (previous && (!next || previous.row !== next.row || previous.col !== next.col)) {
-      const cell = this.cellAt(previous.row, previous.col);
-      if (cell) cell.innerHTML = renderCellHtml(cell.dataset.src ?? "");
+    if (!this.hasFocus() && !main.empty) {
+      row = 0;
+      add(main.from, main.to, true);
     }
-    this.marked = next;
-    if (!next) return;
-    const cell = this.cellAt(next.row, next.col)!;
-    const range = this.cellRange(next);
-    const text = this.view.state.sliceDoc(range.from, range.from + range.length);
-    const mark = element("mark", "cm-md-cell-selection", text.slice(from - range.from, to - range.from));
-    cell.replaceChildren(text.slice(0, from - range.from), mark, text.slice(to - range.from));
-    mark.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    let scrollTo: HTMLElement | null = null;
+    for (const key of this.marked.keys()) {
+      if (wanted.has(key)) continue;
+      this.marked.delete(key);
+      const [r, c] = key.split(":").map(Number);
+      const cell = this.cellAt(r, c);
+      if (cell && !this.isActive({ row: r, col: c })) setCellHtml(cell, cell.dataset.src ?? "");
+    }
+    for (const [key, { ref, marks }] of wanted) {
+      marks.sort((x, y) => x.from - y.from);
+      const signature = JSON.stringify(marks);
+      if (this.marked.get(key) === signature) continue;
+      const hadCurrent = this.marked.get(key)?.includes('"current":true') ?? false;
+      this.marked.set(key, signature);
+      const cell = this.cellAt(ref.row, ref.col)!;
+      const text = cellText(rows[ref.row], ref.col);
+      const parts: (string | Node)[] = [];
+      let at = 0;
+      for (const mark of marks) {
+        if (mark.from < at) continue;
+        parts.push(text.slice(at, mark.from));
+        const node = element("mark", mark.current ? "cm-md-cell-selection" : "cm-find-match", text.slice(mark.from, mark.to));
+        if (mark.current && !hadCurrent) scrollTo = node;
+        parts.push(node);
+        at = mark.to;
+      }
+      parts.push(text.slice(at));
+      cell.replaceChildren(...parts);
+    }
+    scrollTo?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }
 
   private onMouseDown(event: MouseEvent): void {
@@ -458,11 +638,11 @@ class TableController {
     const ref = this.refOf(cell);
     if (this.isActive(ref)) return;
     this.active = ref;
-    if (this.marked && this.marked.row === ref.row && this.marked.col === ref.col) this.marked = null;
+    this.marked.delete(`${ref.row}:${ref.col}`);
     cell.classList.add("is-editing");
     document.addEventListener("selectionchange", this.onSelectionChange);
     // Show this cell's markdown while it is edited, like Obsidian.
-    const text = cellText(parseTable(this.source)[ref.row], ref.col);
+    const text = cellText(this.parsed[ref.row], ref.col);
     if (cell.textContent !== text || cell.childElementCount > 0) {
       cell.textContent = text;
       caretTo(cell, true);
@@ -483,9 +663,8 @@ class TableController {
       this.active = null;
       document.removeEventListener("selectionchange", this.onSelectionChange);
     }
-    const text = cellText(parseTable(this.source)[ref.row], ref.col);
-    cell.dataset.src = text;
-    cell.innerHTML = renderCellHtml(text);
+    const text = cellText(this.parsed[ref.row], ref.col);
+    setCellHtml(cell, text);
   }
 
   private onInput(event: Event): void {
@@ -496,11 +675,25 @@ class TableController {
   }
 
   private writeCell(ref: CellRef, text: string): void {
-    const rows = parseTable(this.source);
+    const rows = this.parsed;
     const row = rows[ref.row];
     const start = this.tableStart();
     const span = row.cells[ref.col];
     if (span && row.text.slice(span.from, span.to) === text) return;
+    // In a row without a leading pipe the first cell is also the start of the line, so `- `,
+    // `# ` or `> ` typed there would start a list, heading or quote and cut the table. Writing
+    // the row with its pipes keeps the text in the cell (BUGS.md PREV-6).
+    const leadingPipe = row.text.slice(row.prefix.length).startsWith("|");
+    if (ref.col === 0 && !leadingPipe) {
+      const values = Array.from({ length: Math.max(this.columns(), row.cells.length) }, (_v, c) =>
+        c === 0 ? text : cellText(row, c),
+      );
+      this.view.dispatch({
+        changes: { from: start + row.offset, to: start + row.offset + row.text.length, insert: formatRow(values, row.prefix) },
+        userEvent: "input.type",
+      });
+      return;
+    }
     if (span && span.from === span.to) {
       // Empty cell: its span is a point after the padding, so fill the whole gap between pipes.
       let from = span.from;
@@ -535,7 +728,7 @@ class TableController {
   }
 
   private addRow(focusCol: number): void {
-    const rows = parseTable(this.source);
+    const rows = this.parsed;
     const last = rows[rows.length - 1];
     const end = this.tableStart() + last.offset + last.text.length;
     this.pendingFocus = { row: rows.length, col: focusCol, atEnd: true };
@@ -549,13 +742,15 @@ class TableController {
    * Puts the editor cursor on the line just before or after the table and focuses the editor.
    * With no line there, arrow keys stay in the cell, like on the first or last line of a
    * document (BUGS.md H3, M5). Escape at the end of the document adds a line to land on, kept
-   * out of the undo history so the tab does not turn unsaved.
+   * out of the undo history so the tab does not turn unsaved. While the rest of the file is
+   * still loading, that line would end up in the middle of the file, so Escape stays in the
+   * cell (BUGS.md TAB-4).
    */
   private leave(after: boolean, escape = false): void {
     const { from: start, to: end } = this.range();
     const doc = this.view.state.doc;
     if (after && end >= doc.length) {
-      if (!escape) return;
+      if (!escape || !previewContext.isFullyLoaded()) return;
       this.view.dispatch({
         changes: { from: doc.length, insert: "\n" },
         selection: { anchor: doc.length + 1 },
@@ -749,9 +944,17 @@ export const tableFocus = ViewPlugin.fromClass(
     constructor(private readonly view: EditorView) {}
 
     update(update: ViewUpdate): void {
-      if (!update.selectionSet && !update.docChanged && !update.focusChanged) return;
+      if (update.transactions.some((tr) => tr.effects.some((e) => e.is(documentPathChanged)))) {
+        // Relative images in cells resolve against the new folder (BUGS.md PREV-7).
+        for (const table of tablesOf(this.view)) table.refreshCells();
+      }
+      const queryChanged = findQueryOf(update.state) !== findQueryOf(update.startState);
+      if (!update.selectionSet && !update.docChanged && !update.focusChanged && !queryChanged) return;
       const keyboard = update.transactions.some((tr) => tr.isUserEvent("select") && !tr.isUserEvent("select.pointer"));
-      const oldHead = update.startState.selection.main.head;
+      this.schedule(keyboard, update.startState.selection.main.head);
+    }
+
+    private schedule(keyboard: boolean, oldHead: number): void {
       if (this.scheduled) return;
       this.scheduled = true;
       // Positions of widgets are only known once this update has drawn them.
@@ -765,7 +968,7 @@ export const tableFocus = ViewPlugin.fromClass(
       const view = this.view;
       if (!view.dom.isConnected) return;
       const main = view.state.selection.main;
-      for (const table of tablesOf(view)) table.showSelection(main.from, main.to);
+      for (const table of tablesOf(view)) table.showMarks();
       if (!view.hasFocus || focusedTable(view)) return;
       const table = tableAt(view, main.head);
       if (!table) return;
@@ -780,11 +983,14 @@ export const tableFocus = ViewPlugin.fromClass(
 );
 
 export class TableWidget extends SourceWidget {
-  constructor(readonly source: string) {
+  constructor(
+    readonly source: string,
+    readonly nest: Nest = TOP_LEVEL,
+  ) {
     super();
   }
   override eq(other: TableWidget): boolean {
-    return other.source === this.source;
+    return other.source === this.source && sameNest(other.nest, this.nest);
   }
   override get estimatedHeight(): number {
     return 34 * Math.max(1, this.source.split("\n").length - 1) + 12;
@@ -792,6 +998,7 @@ export class TableWidget extends SourceWidget {
   toDOM(view: EditorView): HTMLElement {
     const controller = new TableController(view);
     controller.render(this.source);
+    applyNest(controller.wrap, this.nest);
     tableControllers.set(controller.wrap, controller);
     return controller.wrap;
   }
@@ -800,6 +1007,7 @@ export class TableWidget extends SourceWidget {
     const controller = tableControllers.get(dom);
     if (!controller) return false;
     controller.render(this.source);
+    applyNest(dom, this.nest);
     return true;
   }
   override destroy(dom: HTMLElement): void {
@@ -827,11 +1035,18 @@ export class MathWidget extends SourceWidget {
     readonly display: boolean,
     /** Offset of the math text from the start of the replaced range. */
     readonly sourceOffset: number,
+    readonly nest: Nest = TOP_LEVEL,
   ) {
     super();
   }
   override eq(other: MathWidget): boolean {
-    return other.source === this.source && other.display === this.display;
+    // The offset is baked into the click handlers, so a moved source needs a new DOM.
+    return (
+      other.source === this.source &&
+      other.display === this.display &&
+      other.sourceOffset === this.sourceOffset &&
+      sameNest(other.nest, this.nest)
+    );
   }
   override get estimatedHeight(): number {
     if (!this.display) return -1;
@@ -852,6 +1067,7 @@ export class MathWidget extends SourceWidget {
     }
     if (this.display) {
       bindBlockSource(view, host, this.sourceOffset, true);
+      applyNest(host, this.nest);
     } else {
       // Inline math reveals like other inline syntax when clicked.
       host.addEventListener("mousedown", (event) => {
@@ -868,11 +1084,17 @@ export class MermaidWidget extends SourceWidget {
     readonly source: string,
     readonly dark: boolean,
     readonly sourceOffset: number,
+    readonly nest: Nest = TOP_LEVEL,
   ) {
     super();
   }
   override eq(other: MermaidWidget): boolean {
-    return other.source === this.source && other.dark === this.dark;
+    return (
+      other.source === this.source &&
+      other.dark === this.dark &&
+      other.sourceOffset === this.sourceOffset &&
+      sameNest(other.nest, this.nest)
+    );
   }
   override get estimatedHeight(): number {
     return cachedMermaid(this.source, this.dark)?.height || 260;
@@ -880,8 +1102,12 @@ export class MermaidWidget extends SourceWidget {
   toDOM(view: EditorView): HTMLElement {
     const host = element("div", "cm-md-mermaid");
     const cached = cachedMermaid(this.source, this.dark);
+    const failed = cached ? undefined : cachedMermaidError(this.source, this.dark);
     if (cached) {
       applyRendered(view, host, cached);
+    } else if (failed !== undefined) {
+      host.classList.add("cm-md-render-error");
+      host.textContent = failed;
     } else {
       host.classList.add("cm-md-pending");
       host.style.minHeight = "260px";
@@ -899,6 +1125,7 @@ export class MermaidWidget extends SourceWidget {
         });
     }
     bindBlockSource(view, host, this.sourceOffset, true);
+    applyNest(host, this.nest);
     return host;
   }
 }
@@ -907,6 +1134,8 @@ export class MermaidWidget extends SourceWidget {
 const imageHeights = new Map<string, number>();
 
 export class ImageWidget extends WidgetType {
+  /** The URL the image loads from; it changes when the document moves (BUGS.md PREV-7). */
+  readonly resolved: string;
   constructor(
     readonly src: string,
     readonly alt: string,
@@ -914,10 +1143,12 @@ export class ImageWidget extends WidgetType {
     readonly height?: number,
   ) {
     super();
+    this.resolved = resolveImageSrc(src);
   }
   override eq(other: ImageWidget): boolean {
     return (
       other.src === this.src &&
+      other.resolved === this.resolved &&
       other.alt === this.alt &&
       other.width === this.width &&
       other.height === this.height
@@ -942,7 +1173,8 @@ export class ImageWidget extends WidgetType {
       image.classList.add("cm-md-image-broken");
       view.requestMeasure();
     });
-    image.src = resolveImageSrc(this.src);
+    if (this.resolved) image.src = this.resolved;
+    else image.classList.add("cm-md-image-broken");
     // Clicking an image keeps it rendered; double-click shows its markdown to edit.
     image.addEventListener("mousedown", (event) => {
       event.preventDefault();

@@ -76,6 +76,8 @@ export interface EditorHost {
   openLink(href: string): void;
   /** Directory of the tab's file, for resolving relative image paths. */
   baseDir(tabId: string): string | null;
+  /** False while more of the tab's file is still to be loaded; true when not given. */
+  isFullyLoaded?(tabId: string): boolean;
 }
 
 export interface ScrollSnapshot {
@@ -112,6 +114,8 @@ export interface EditorEngine {
   firstLine?(tabId: string): string;
   length(tabId: string): number;
   markSaved(tabId: string): void;
+  /** The tab's file path changed (first save, Save As): relative images resolve again. */
+  pathChanged(tabId: string): void;
   snapshot(tabId: string): ScrollSnapshot | null;
   restore(tabId: string, snap: ScrollSnapshot): void;
 
