@@ -76,6 +76,25 @@ describe("status bar pickers", () => {
     expect(picker(el, "sb-enc").textContent).toBe("UTF-16 LE");
   });
 
+  // BUGS.md FILES-2 and M15: UTF-16 without a BOM and the DOS code page can be chosen.
+  it("the encoding picker offers UTF-16 without BOM and OEM", async () => {
+    const el = await renderStatusBar();
+    await act(async () => picker(el, "sb-enc").click());
+    const labels = items(el).map((c) => c.querySelector(".mi-label")?.textContent);
+    expect(labels.slice(0, 8)).toEqual([
+      "UTF-8",
+      "UTF-8 with BOM",
+      "UTF-16 LE",
+      "UTF-16 LE without BOM",
+      "UTF-16 BE",
+      "UTF-16 BE without BOM",
+      "ANSI",
+      "OEM (DOS)",
+    ]);
+    await act(async () => item(el, "UTF-16 BE without BOM").click());
+    expect(app.tab().encoding).toBe("utf-16be-nobom");
+  });
+
   it("offers Reopen with encoding only for a file on disk", async () => {
     const el = await renderStatusBar();
     await act(async () => picker(el, "sb-enc").click());

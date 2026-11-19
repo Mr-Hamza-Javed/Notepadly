@@ -654,6 +654,14 @@ describe("session file", () => {
     });
   });
 
+  // BUGS.md FILES-2 and M15: the newer encodings survive a restart.
+  it("keeps every encoding the backend can report", () => {
+    for (const encoding of ["utf-16le-nobom", "utf-16be-nobom", "oem"] as const) {
+      const file = { v: 1 as const, activeId: "t1", tabs: [tab({ encoding })] };
+      expect(parseSession(JSON.stringify(file))!.tabs[0].encoding).toBe(encoding);
+    }
+  });
+
   it("returns null when there is no tab list", () => {
     expect(parseSession('{"activeId":"t"}')).toBeNull();
     expect(parseSession("null")).toBeNull();

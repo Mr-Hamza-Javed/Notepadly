@@ -3,7 +3,19 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type Eol = "CRLF" | "LF" | "CR";
-export type Encoding = "utf-8" | "utf-8-bom" | "utf-16le" | "utf-16be" | "ansi";
+/**
+ * "utf-16le"/"utf-16be" are written with a BOM, the "-nobom" forms without one
+ * (FILES-2). "ansi" is the system ANSI code page, "oem" the DOS one (437, 850...).
+ */
+export type Encoding =
+  | "utf-8"
+  | "utf-8-bom"
+  | "utf-16le"
+  | "utf-16le-nobom"
+  | "utf-16be"
+  | "utf-16be-nobom"
+  | "ansi"
+  | "oem";
 
 export interface FileStamp {
   size: number;

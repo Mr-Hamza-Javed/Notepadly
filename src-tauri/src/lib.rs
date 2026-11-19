@@ -5,6 +5,7 @@ mod background;
 mod fileicon;
 mod files;
 mod fonts;
+mod oem;
 mod store;
 mod window_state;
 

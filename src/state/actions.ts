@@ -601,10 +601,11 @@ async function writeAndReport(
  */
 async function saveUnmappable(id: string, path: string, options: loader.WriteOptions): Promise<boolean> {
   const toUtf8 = "Save as UTF-8";
-  const lossy = "Save as ANSI";
+  const page = getTab(id)?.encoding === "oem" ? "OEM" : "ANSI";
+  const lossy = `Save as ${page}`;
   const answer = await askUser(
     "Some characters cannot be saved",
-    `${fileNameOf(path)} is saved in ANSI, which cannot hold some of the characters in it. In ANSI they would become "?" for good.\n\nSave it as UTF-8 instead?`,
+    `${fileNameOf(path)} is saved in ${page}, which cannot hold some of the characters in it. In ${page} they would become "?" for good.\n\nSave it as UTF-8 instead?`,
     { yes: toUtf8, no: lossy, cancel: "Cancel" },
   );
   if (answer === lossy) return writeAndReport(id, path, { ...options, allowLossy: true });

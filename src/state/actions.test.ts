@@ -1156,6 +1156,34 @@ describe("encodings and line endings", () => {
     expect(app.text()).toBe("café");
   });
 
+  // BUGS.md M15: DOS files (code pages 437, 850...) can be reopened as OEM.
+  it("M15: reopens as OEM and names OEM when a character does not fit", async () => {
+    backend.write(C, cafeAnsi);
+    await app.actions.openPaths([C]);
+    await app.actions.reopenWithEncoding("oem");
+    expect(app.tab()).toMatchObject({ encoding: "oem", dirty: false });
+    app.type(" ш");
+    dialogs.messageAnswers.push("Save as OEM");
+    expect(await app.actions.save()).toBe(true);
+    expect(dialogs.messages[0].body).toContain("is saved in OEM");
+    expect(backend.bytes(C)).toEqual(new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x20, 0x3f]));
+  });
+
+  // BUGS.md FILES-2: a UTF-16 file without a BOM got one on the first save.
+  it("FILES-2: a UTF-16 file without a BOM is saved without one", async () => {
+    const utf16 = (text: string) => new Uint8Array([...text].flatMap((c) => [c.charCodeAt(0), 0]));
+    backend.write(C, utf16("one\r\ntwo"));
+    await app.actions.openPaths([C]);
+    expect(app.tab()).toMatchObject({ encoding: "utf-16le-nobom", eol: "CRLF" });
+    expect(app.text()).toBe("one\ntwo");
+    app.type("!");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.bytes(C)).toEqual(utf16("one\r\ntwo!"));
+    // Reopening as UTF-16 LE follows the file: still without a BOM.
+    await app.actions.reopenWithEncoding("utf-16le");
+    expect(app.tab().encoding).toBe("utf-16le-nobom");
+  });
+
   it("M15: asks before reopening throws away unsaved changes", async () => {
     backend.write(C, cafeAnsi);
     await app.actions.openPaths([C]);
