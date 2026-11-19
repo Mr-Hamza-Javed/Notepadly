@@ -344,6 +344,24 @@ describe("keyboard handling in the window", () => {
     app.actions.zoomReset();
   });
 
+  // Smaller open points: Ctrl+wheel outside the editor zoomed 10% per event, so a pinch jumped.
+  it("Ctrl+wheel outside the editor zooms one step per notch, not per event", () => {
+    app.actions.zoomReset();
+    const wheel = (deltaY: number, timeStamp: number) => {
+      const event = new WheelEvent("wheel", { deltaY, ctrlKey: true, bubbles: true, cancelable: true });
+      Object.defineProperty(event, "timeStamp", { value: timeStamp });
+      document.body.dispatchEvent(event);
+      return event;
+    };
+    // A touchpad pinch: twenty small events make one notch's worth.
+    for (let i = 0; i < 20; i++) expect(wheel(-5, 1000 + i).defaultPrevented).toBe(true);
+    expect(app.state().settings.zoom).toBe(110);
+    // A mouse notch zooms one step.
+    wheel(100, 5000);
+    expect(app.state().settings.zoom).toBe(100);
+    app.actions.zoomReset();
+  });
+
   it("Ctrl+9 jumps to the last tab and Ctrl+1 to the first", async () => {
     await app.actions.newTab();
     await app.actions.newTab();

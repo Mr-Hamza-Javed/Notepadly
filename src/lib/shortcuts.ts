@@ -2,6 +2,7 @@
 import { engine } from "../editor";
 import { findStep } from "./findBar";
 import { isTabDragging } from "./tabDrag";
+import { wheelZoomHandler } from "../editor/wheelZoom";
 import { actions } from "../state/actions";
 import { getActiveTab, useApp } from "../state/store";
 
@@ -255,12 +256,15 @@ function onContextMenu(event: MouseEvent): void {
   if (!isTextSurface(event.target)) event.preventDefault();
 }
 
+/** One zoom step per wheel notch's worth of movement: a touchpad or pinch sends many small events. */
+const zoomWheel = wheelZoomHandler((direction) => actions.zoomBy(direction * 10));
+
 /** Ctrl+wheel inside the editor is the engine's; elsewhere it must not zoom the WebView. */
 function onWheel(event: WheelEvent): void {
   if (!event.ctrlKey) return;
   event.preventDefault();
-  if (event.target instanceof HTMLElement && event.target.closest(".cm-editor")) return;
-  actions.zoomBy(event.deltaY < 0 ? 10 : -10);
+  if (event.target instanceof Element && event.target.closest(".cm-editor")) return;
+  zoomWheel(event);
 }
 
 let installed = false;
