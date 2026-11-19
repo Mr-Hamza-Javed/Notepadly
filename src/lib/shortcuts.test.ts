@@ -90,6 +90,8 @@ describe("WebView defaults that must never reach the user", () => {
       chord("p", { ctrl: true }),
       chord("f", { ctrl: true }),
       chord("j", { ctrl: true }),
+      chord("F3"),
+      chord("F3", { shift: true }),
     ]) {
       expect(isSuppressedDefault(c, false), JSON.stringify(c)).toBe(true);
     }

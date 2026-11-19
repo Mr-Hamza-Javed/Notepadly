@@ -42,7 +42,8 @@ export function chordToCommand({ key, ctrl, shift, alt }: Chord): Command | null
 /** WebView behaviour that must never reach a notepad, handled or not. */
 export function isSuppressedDefault({ key, ctrl, shift, alt }: Chord, production: boolean): boolean {
   const k = key.toLowerCase();
-  if (k === "f5" || k === "f7" || k === "browserback" || k === "browserforward") return true;
+  // F3 (with or without Shift) opens WebView2's own find bar where the app does not handle it (W4).
+  if (k === "f3" || k === "f5" || k === "f7" || k === "browserback" || k === "browserforward") return true;
   if (k === "f12") return production;
   if (alt && (k === "arrowleft" || k === "arrowright")) return true;
   if (!ctrl) return false;
