@@ -130,11 +130,34 @@ export function extOf(path: string): string {
 const MARKDOWN_EXTENSIONS = [".md", ".markdown", ".mdown", ".mkd", ".mdx"];
 export const isMarkdownPath = (path: string) => MARKDOWN_EXTENSIONS.includes(extOf(path));
 
-/** Windows paths: separators and case do not matter. */
+/**
+ * A Windows path in one spelling for comparing: `\` separators, no repeated or
+ * trailing ones, `.` and `..` resolved, the `\\?\` long-path prefix removed,
+ * lower case. 8.3 short names and mapped drives need the file system (Rust).
+ */
+export function pathKey(path: string): string {
+  let p = path.replace(/\//g, "\\");
+  if (/^\\\\\?\\unc\\/i.test(p)) p = `\\\\${p.slice(8)}`;
+  else if (p.startsWith("\\\\?\\")) p = p.slice(4);
+  const unc = p.startsWith("\\\\");
+  const parts: string[] = [];
+  const pieces = p.split("\\").filter((piece) => piece !== "");
+  // The drive (`C:`) or the share (`server\share`) is never climbed out of.
+  const rootCount = unc ? Math.min(2, pieces.length) : /^[a-z]:$/i.test(pieces[0] ?? "") ? 1 : 0;
+  pieces.forEach((piece, index) => {
+    if (index < rootCount) parts.push(piece);
+    else if (piece === ".") return;
+    else if (piece === "..") {
+      if (parts.length > rootCount) parts.pop();
+    } else parts.push(piece);
+  });
+  return `${unc ? "\\\\" : ""}${parts.join("\\")}`.toLowerCase();
+}
+
+/** Windows paths: separators, case, `.` and `..` and the `\\?\` prefix do not matter. */
 export function pathsEqual(a: string | null, b: string | null): boolean {
   if (a === null || b === null) return false;
-  const norm = (p: string) => p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
-  return norm(a) === norm(b);
+  return pathKey(a) === pathKey(b);
 }
 
 export function resolveRelative(baseDir: string, relative: string): string {
