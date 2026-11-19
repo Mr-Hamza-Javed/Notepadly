@@ -43,6 +43,9 @@ import {
   newTabId,
   onSharedSettings,
   patchTab,
+  clearDialogs,
+  nextDialog,
+  pushDialog,
   showMessage,
   useApp,
 } from "./store";
@@ -144,6 +147,19 @@ async function openExternal(url: string): Promise<void> {
   await openUrl(url);
 }
 
+/**
+ * A link to another computer's share sends the user's Windows credentials to it
+ * (BUGS.md SEC-2): ask first, as Windows does for files from the internet.
+ */
+async function mayOpenFrom(host: string | undefined): Promise<boolean> {
+  if (!host) return true;
+  const { ask } = await import("@tauri-apps/plugin-dialog");
+  return ask(
+    `This link opens a file on another computer (${host}).\n\nWindows may send your sign-in details to that computer. Open it only if you trust it.\n\nDo you want to open it?`,
+    { title: "Notepadly", kind: "warning" },
+  ).catch(() => false);
+}
+
 /** PDFs, images and other non-text files a document links to; `classifyHref` decides which. */
 async function openWithDefaultApp(path: string): Promise<void> {
   const { openPath } = await import("@tauri-apps/plugin-opener");
@@ -173,9 +189,14 @@ export const editorHost: EditorHost = {
     const base = editorHost.baseDir(state().activeId);
     const target = classifyHref(href, base);
     if (target.kind === "web") openExternal(target.url).catch(reportError("Could not open link"));
-    // A link opens next to the document it is in, whatever "Open files in" says (M10).
-    else if (target.kind === "file") void openHere([target.path]);
-    else if (target.kind === "external") openWithDefaultApp(target.path).catch(reportError("Could not open link"));
+    else if (target.kind === "file" || target.kind === "external") {
+      void mayOpenFrom(target.remoteHost).then((ok) => {
+        if (!ok) return;
+        // A link opens next to the document it is in, whatever "Open files in" says (M10).
+        if (target.kind === "file") void openHere([target.path]);
+        else openWithDefaultApp(target.path).catch(reportError("Could not open link"));
+      });
+    }
   },
   baseDir: (id) => {
     const path = getTab(id)?.path;
@@ -232,23 +253,22 @@ function waitForEditorParent(): Promise<void> {
 
 function askConfirmClose(tabId: string): Promise<"save" | "discard" | "cancel"> {
   return new Promise((resolve) => {
-    useApp.setState({
-      dialog: {
-        kind: "confirm-close",
-        tabId,
-        resolve: (answer) => {
-          useApp.setState({ dialog: null });
-          resolve(answer);
-        },
+    const dialog: Dialog = {
+      kind: "confirm-close",
+      tabId,
+      resolve: (answer) => {
+        if (state().dialog === dialog) nextDialog();
+        resolve(answer);
       },
-    });
+    };
+    pushDialog(dialog);
   });
 }
 
 function closeDialog(): void {
   const { dialog } = state();
   if (dialog?.kind === "confirm-close") dialog.resolve("cancel");
-  else if (dialog) useApp.setState({ dialog: null });
+  else if (dialog) nextDialog();
 }
 
 // ---- Activation --------------------------------------------------------------
@@ -706,7 +726,8 @@ async function prepareWindowClose(exiting = false): Promise<boolean> {
  * stored or resolved every tab.
  */
 async function resetForBackground(): Promise<void> {
-  useApp.setState({ view: "editor", dialog: null, find: { open: false, replace: false } });
+  clearDialogs();
+  useApp.setState({ view: "editor", find: { open: false, replace: false } });
   if (keepsSession()) return; // the session is what comes back
   const old = state().tabs.map((t) => t.id);
   await newTab();
@@ -769,10 +790,12 @@ function waitForReceipt(id: string): { done: Promise<boolean>; cancel: () => voi
  * Moves a tab dragged out of the tab strip: onto the window under the mouse, or
  * into a new window there. The tab is removed here only once the other window
  * has it, so a failed move leaves it where it was. Nothing is saved or reloaded.
+ * `toNewWindow` (the tab menu's "Move to new window", for keyboard and touch):
+ * always a new window, placed as usual rather than at the mouse.
  */
-async function moveTabOut(id: string): Promise<void> {
+async function moveTabOut(id: string, toNewWindow = false): Promise<void> {
   if (!getTab(id)) return;
-  const target = await ipc.tabDropTarget().catch(() => null);
+  const target = toNewWindow ? null : await ipc.tabDropTarget().catch(() => null);
   await loader.settleTabIo(id);
   const tab = getTab(id);
   if (!tab) return;
@@ -804,7 +827,7 @@ async function moveTabOut(id: string): Promise<void> {
     if (target) {
       await getCurrentWebviewWindow().emitTo(target.label, TAB_INCOMING_EVENT, { transfer, x: target.x, y: target.y });
     } else {
-      await ipc.newWindow([], { transfer: JSON.stringify(transfer), atCursor: true });
+      await ipc.newWindow([], { transfer: JSON.stringify(transfer), atCursor: !toNewWindow });
     }
   } catch (error) {
     receipt.cancel();
@@ -1293,7 +1316,7 @@ export const actions = {
 
   showDialog: (dialog: Dialog) => {
     if (state().dialog?.kind === "confirm-close") closeDialog();
-    useApp.setState({ dialog });
+    pushDialog(dialog);
   },
   closeDialog,
   openSettings: () => useApp.setState({ view: "settings" }),

@@ -876,6 +876,30 @@ describe("links in documents", () => {
     expect(app.state().tabs).toHaveLength(1);
   });
 
+  // BUGS.md SEC-2: a link to another computer's share reached it on one click.
+  it("asks before opening a link to another computer's share", async () => {
+    const { editorHost } = await import("./actions");
+    backend.write("\\\\evil.example\\s\\x.md", "remote");
+    dialogs.askAnswers = [false];
+    editorHost.openLink("\\\\evil.example\\s\\x.md");
+    editorHost.openLink("\\\\.\\pipe\\x.md");
+    await settle(20);
+    expect(dialogs.asked).toHaveLength(1);
+    expect(dialogs.asked[0]).toContain("evil.example");
+    expect(app.state().tabs).toHaveLength(1);
+    expect(backend.calls.some((c) => JSON.stringify(c.args ?? {}).includes("evil.example"))).toBe(false);
+
+    dialogs.askAnswers = [false];
+    editorHost.openLink("file://evil.example/s/report.pdf");
+    await settle(20);
+    expect(dialogs.openedPaths).toEqual([]);
+
+    dialogs.askAnswers = [true];
+    editorHost.openLink("\\\\evil.example\\s\\x.md");
+    await waitFor(() => app.tab().title === "x.md");
+    expect(app.text()).toBe("remote");
+  });
+
   it("never passes other URI schemes to the system", async () => {
     const { editorHost } = await import("./actions");
     editorHost.openLink("ms-settings:privacy");
@@ -1369,6 +1393,24 @@ describe("moving tabs between windows (F2)", () => {
     expect(app.state().tabs.map((t) => t.id)).toEqual([moved]);
     expect(app.text()).toBe("on disk + unsaved");
     expect(app.tab().dirty).toBe(true);
+  });
+
+  it("Move to new window always opens a new window, even over another window", async () => {
+    backend.reset();
+    backend.write(A, "on disk");
+    app = await bootApp({ keepDisk: true });
+    await app.actions.openPaths([A]);
+    const moved = app.tab().id;
+    await app.actions.newTab();
+    backend.dropTarget = { label: "window-1", x: 0, y: 0 };
+    const moving = app.actions.moveTabOut(moved, true);
+    await waitFor(() => backend.calls.some((c) => c.cmd === "window_new"));
+    expect(fakeWindow.emitted.some((e) => e.event === "tab-incoming")).toBe(false);
+    const call = backend.calls.find((c) => c.cmd === "window_new")!;
+    expect(call.args).toMatchObject({ paths: [], atCursor: false });
+    fakeWindow.deliver("tab-received", { id: moved });
+    await moving;
+    expect(app.state().tabs.map((t) => t.id)).not.toContain(moved);
   });
 
   it("keeps the tab when the other window never answers", async () => {

@@ -42,12 +42,34 @@ export const Tooltip = memo(function Tooltip() {
       timer = window.setTimeout(() => show(target), 550);
     };
 
+    // Keyboard focus on an icon button shows its tip too, but not a click's focus.
+    const focusIn = (e: FocusEvent) => {
+      const target = e.target instanceof Element ? e.target : null;
+      let visible = false;
+      try {
+        visible = !!target?.matches(":focus-visible");
+      } catch {
+        // A WebView without :focus-visible: no tips on focus.
+      }
+      hide();
+      if (!target || !visible || !target.hasAttribute("data-tip")) return;
+      current = target;
+      timer = window.setTimeout(() => show(target), 550);
+    };
+    const focusOut = (e: FocusEvent) => {
+      if (e.target === current) hide();
+    };
+
+    document.addEventListener("focusin", focusIn, true);
+    document.addEventListener("focusout", focusOut, true);
     document.addEventListener("pointerover", over, true);
     document.addEventListener("pointerdown", hide, true);
     document.addEventListener("keydown", hide, true);
     window.addEventListener("blur", hide);
     return () => {
       window.clearTimeout(timer);
+      document.removeEventListener("focusin", focusIn, true);
+      document.removeEventListener("focusout", focusOut, true);
       document.removeEventListener("pointerover", over, true);
       document.removeEventListener("pointerdown", hide, true);
       document.removeEventListener("keydown", hide, true);

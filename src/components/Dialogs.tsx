@@ -13,10 +13,47 @@ function dismiss() {
   focusEditorSoon();
 }
 
+/**
+ * Enter held down to answer a dialog must not go on to type newlines into the
+ * editor once the dialog has closed: swallow its repeats until the key is let go.
+ */
+function swallowEnterRepeats(): void {
+  const onKeyDown = (e: globalThis.KeyboardEvent) => {
+    if (e.key === "Enter" && e.repeat) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+  const stop = (e: globalThis.KeyboardEvent) => {
+    if (e.key !== "Enter") return;
+    window.removeEventListener("keydown", onKeyDown, true);
+    window.removeEventListener("keyup", stop, true);
+    window.removeEventListener("blur", stopAll);
+  };
+  const stopAll = () => stop({ key: "Enter" } as globalThis.KeyboardEvent);
+  window.addEventListener("keydown", onKeyDown, true);
+  window.addEventListener("keyup", stop, true);
+  window.addEventListener("blur", stopAll);
+}
+
 const FOCUSABLE = 'input, button:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 /** WinUI ContentDialog: smoke layer, card, tinted button footer. */
-function Shell({ title, buttons, onEscape, children, labelId }: { title: string; buttons: Button[]; onEscape: () => void; children?: ReactNode; labelId: string }) {
+function Shell({
+  title,
+  buttons,
+  onEscape,
+  children,
+  labelId,
+  describedBy,
+}: {
+  title: string;
+  buttons: Button[];
+  onEscape: () => void;
+  children?: ReactNode;
+  labelId: string;
+  describedBy?: string;
+}) {
   const root = useRef<HTMLDivElement | null>(null);
   const primary = buttons.find((b) => b.primary);
 
@@ -35,6 +72,13 @@ function Shell({ title, buttons, onEscape, children, labelId }: { title: string;
       e.preventDefault();
       onEscape();
     } else if (e.key === "Enter") {
+      // A held Enter (from the editor, or from the dialog before) must not answer this one.
+      if (e.repeat) {
+        e.preventDefault();
+        return;
+      }
+      // Whichever button Enter answers ("Don't save" too), its repeats stay out of the editor.
+      swallowEnterRepeats();
       const t = e.target as HTMLElement;
       const onOtherButton = t.tagName === "BUTTON" && !t.classList.contains("primary");
       if (!onOtherButton && primary && !primary.disabled) {
@@ -58,7 +102,7 @@ function Shell({ title, buttons, onEscape, children, labelId }: { title: string;
 
   return (
     <div className="smoke">
-      <div ref={root} className="dialog" role="dialog" aria-modal="true" aria-labelledby={labelId} tabIndex={-1} onKeyDown={onKeyDown}>
+      <div ref={root} className="dialog" role="dialog" aria-modal="true" aria-labelledby={labelId} aria-describedby={describedBy} tabIndex={-1} onKeyDown={onKeyDown}>
         <div className="dialog-body">
           <h2 id={labelId} className="dialog-title">
             {title}
@@ -240,10 +284,24 @@ function PageSetupDialog() {
 
 function Message({ d }: { d: Extract<DialogModel, { kind: "message" }> }) {
   return (
-    <Shell labelId="dlg-msg" title={d.title} onEscape={dismiss} buttons={[{ label: "OK", primary: true, onClick: dismiss }]}>
-      <p className="dialog-text">{d.body}</p>
+    <Shell labelId="dlg-msg" describedBy="dlg-msg-body" title={d.title} onEscape={dismiss} buttons={[{ label: "OK", primary: true, onClick: dismiss }]}>
+      <p id="dlg-msg-body" className="dialog-text">
+        {d.body}
+      </p>
     </Shell>
   );
+}
+
+/** A fresh key per dialog, so the next queued message mounts anew and takes focus. */
+const dialogKeys = new WeakMap<DialogModel, number>();
+let nextKey = 0;
+function keyOf(d: DialogModel): number {
+  let key = dialogKeys.get(d);
+  if (key === undefined) {
+    key = ++nextKey;
+    dialogKeys.set(d, key);
+  }
+  return key;
 }
 
 export const Dialogs = memo(function Dialogs() {
@@ -251,14 +309,14 @@ export const Dialogs = memo(function Dialogs() {
   if (!d) return null;
   switch (d.kind) {
     case "confirm-close":
-      return <ConfirmClose key={d.tabId} d={d} />;
+      return <ConfirmClose key={keyOf(d)} d={d} />;
     case "goto":
-      return <GoToLine />;
+      return <GoToLine key={keyOf(d)} />;
     case "link":
-      return <LinkDialog d={d} />;
+      return <LinkDialog key={keyOf(d)} d={d} />;
     case "page-setup":
-      return <PageSetupDialog />;
+      return <PageSetupDialog key={keyOf(d)} />;
     case "message":
-      return <Message d={d} />;
+      return <Message key={keyOf(d)} d={d} />;
   }
 });

@@ -208,12 +208,53 @@ export function patchTab(id: string, patch: Partial<TabMeta>): void {
   });
 }
 
+// ---- Dialog queue ------------------------------------------------------------
+
+/**
+ * Dialogs waiting their turn, as Windows stacks modal boxes (BUGS.md UI-9): a
+ * message never replaces what is on screen, so a second error does not hide the
+ * first and a half-typed Go to / Link / Page setup survives a background failure.
+ * Lives outside AppState because only the dialog plumbing cares.
+ */
+let dialogQueue: Dialog[] = [];
+
+/** Dialogs still waiting behind the one on screen (for tests). */
+export const queuedDialogs = (): readonly Dialog[] => dialogQueue;
+
+/** Removes the dialog on screen and shows the next waiting one, if any. */
+export function nextDialog(): void {
+  const next = dialogQueue.shift() ?? null;
+  useApp.setState({ dialog: next });
+}
+
+/** Drops the dialog on screen and everything waiting (a window going to the background). */
+export function clearDialogs(): void {
+  dialogQueue = [];
+  useApp.setState({ dialog: null });
+}
+
+/**
+ * Puts a dialog the user asked for (or a "save changes?" question) on screen now.
+ * A message it covers goes back to the front of the queue and returns afterwards.
+ */
+export function pushDialog(dialog: Dialog): void {
+  const current = useApp.getState().dialog;
+  if (current?.kind === "message") dialogQueue.unshift(current);
+  useApp.setState({ dialog });
+}
+
 export function showMessage(title: string, body: string): void {
-  // A "save changes?" dialog that the message replaces must still be answered,
-  // or whoever is waiting on it (closing a tab or the window) waits forever.
+  const message: Dialog = { kind: "message", title, body };
   const { dialog } = useApp.getState();
-  if (dialog?.kind === "confirm-close") dialog.resolve("cancel");
-  useApp.setState({ dialog: { kind: "message", title, body } });
+  if (!dialog) {
+    useApp.setState({ dialog: message });
+    return;
+  }
+  dialogQueue.push(message);
+  // A "save changes?" dialog must still be answered, or whoever is waiting on it
+  // (closing a tab or the window) waits forever (BUGS.md C4): answer it as Cancel,
+  // which brings up the message.
+  if (dialog.kind === "confirm-close") dialog.resolve("cancel");
 }
 
 // ---- Load progress (status bar) --------------------------------------------

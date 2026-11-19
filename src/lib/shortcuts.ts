@@ -1,6 +1,8 @@
 // Global keyboard handling, in the capture phase so it runs before the editor.
 import { engine } from "../editor";
 import { findStep } from "./findBar";
+import { isTabDragging } from "./tabDrag";
+import { wheelZoomHandler } from "../editor/wheelZoom";
 import { actions } from "../state/actions";
 import { getActiveTab, useApp } from "../state/store";
 
@@ -60,7 +62,8 @@ export function chordToCommand({ key, ctrl, shift, alt, code }: Chord): Command 
 export function isSuppressedDefault({ key, ctrl, shift, alt, code }: Chord, production: boolean): boolean {
   const k = ctrl ? shortcutKey(key, code) : key.toLowerCase();
   // F3 (with or without Shift) opens WebView2's own find bar where the app does not handle it (W4).
-  if (k === "f3" || k === "f5" || k === "f7" || k === "browserback" || k === "browserforward") return true;
+  // F5, Ctrl+R and the Refresh media key reload the page, which would drop unsaved work (W3).
+  if (k === "f3" || k === "f5" || k === "f7" || k === "browserback" || k === "browserforward" || k === "browserrefresh") return true;
   if (k === "f12") return production;
   if (alt && (k === "arrowleft" || k === "arrowright")) return true;
   if (!ctrl) return false;
@@ -82,8 +85,28 @@ function isNativeInput(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && !!target.closest("input, textarea, select");
 }
 
-function isTextSurface(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && !!target.closest("input, textarea, select, [contenteditable='true'], .cm-content");
+const TEXT_INPUT_TYPES = new Set(["", "text", "search", "url", "email", "tel", "number", "password"]);
+
+/**
+ * True where the WebView's own menu (Cut, Copy, Paste) belongs: text fields and
+ * editable text. Rendered parts inside the editor (a table's border, maths, a
+ * diagram, an image, a task checkbox) are CodeMirror widgets with
+ * contenteditable="false": there the WebView would offer "Refresh", "Back" and
+ * "Save as", and Refresh drops unsaved work (BUGS.md W3).
+ */
+export function isTextSurface(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target.closest("img, svg, video, canvas, hr")) return false;
+  const field = target.closest("input, textarea, select");
+  if (field) return !(field instanceof HTMLInputElement) || TEXT_INPUT_TYPES.has(field.getAttribute("type")?.toLowerCase() ?? "");
+  // The nearest element that decides: CodeMirror sets widgets' contentEditable property.
+  for (let el: Element | null = target; el; el = el.parentElement) {
+    const property = (el as HTMLElement).contentEditable;
+    const value = (el.getAttribute("contenteditable") ?? (property && property !== "inherit" ? property : null))?.toLowerCase();
+    if (value === null || value === undefined) continue;
+    return value === "true" || value === "" || value === "plaintext-only";
+  }
+  return false;
 }
 
 /** Select all, once a partly loaded file is whole, in the tab that asked for it only (BUGS.md UI-8). */
@@ -115,7 +138,7 @@ function goToDocEnd(extend: boolean): boolean {
 }
 
 function openLinkDialog(): void {
-  useApp.setState({ dialog: { kind: "link", initialText: engine.selectionText(), initialUrl: "" } });
+  actions.showDialog({ kind: "link", initialText: engine.selectionText(), initialUrl: "" });
 }
 
 function activateIndex(index: number): void {
@@ -188,6 +211,8 @@ function onKeyDown(event: KeyboardEvent): void {
   };
 
   if (event.key === "Escape") {
+    // The tab drag cancels itself on this Escape; nothing else may close (BUGS.md UI-13).
+    if (isTabDragging()) return;
     if (dialog) {
       // Focus inside the dialog: its own handler answers and restores focus.
       if (event.target instanceof HTMLElement && event.target.closest(".smoke")) return;
@@ -231,12 +256,15 @@ function onContextMenu(event: MouseEvent): void {
   if (!isTextSurface(event.target)) event.preventDefault();
 }
 
+/** One zoom step per wheel notch's worth of movement: a touchpad or pinch sends many small events. */
+const zoomWheel = wheelZoomHandler((direction) => actions.zoomBy(direction * 10));
+
 /** Ctrl+wheel inside the editor is the engine's; elsewhere it must not zoom the WebView. */
 function onWheel(event: WheelEvent): void {
   if (!event.ctrlKey) return;
   event.preventDefault();
-  if (event.target instanceof HTMLElement && event.target.closest(".cm-editor")) return;
-  actions.zoomBy(event.deltaY < 0 ? 10 : -10);
+  if (event.target instanceof Element && event.target.closest(".cm-editor")) return;
+  zoomWheel(event);
 }
 
 let installed = false;

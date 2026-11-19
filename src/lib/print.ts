@@ -109,7 +109,7 @@ function buildStyle(tab: TabMeta): string {
   html,body{height:auto!important;overflow:visible!important;background:#fff!important;color-scheme:light}
   body>*:not(#${ROOT_ID}){display:none!important}
   #${ROOT_ID}{display:block;color:#000;font:${font};overflow-wrap:anywhere}
-  #${ROOT_ID} pre{white-space:pre-wrap;margin:0;font:inherit;tab-size:4}
+  #${ROOT_ID} pre,#${ROOT_ID} .np-plain{white-space:pre-wrap;margin:0;font:inherit;tab-size:4}
   #${ROOT_ID} code{font-family:Consolas,monospace;font-size:.92em}
   #${ROOT_ID} table{border-collapse:collapse}
   #${ROOT_ID} th,#${ROOT_ID} td{border:1px solid #999;padding:3px 8px}
@@ -378,10 +378,51 @@ export async function renderParts(root: HTMLElement, parts: PrintPart[], baseDir
   }
 }
 
+/** Block elements that take their direction from their own text, as editor lines do (BUGS.md UI-12). */
+const AUTO_DIR = "p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, dt, dd, figcaption, summary";
+
+/** Urdu or Arabic paragraphs print right-aligned, with numbers and punctuation on the right side. */
+export function applyAutoDirection(root: HTMLElement): void {
+  root.querySelectorAll(AUTO_DIR).forEach((el) => el.setAttribute("dir", "auto"));
+}
+
+/** Plain text as one block per line, each with its own direction, keeping spaces and empty lines. */
+export function plainTextBlock(text: string): HTMLElement {
+  const block = document.createElement("div");
+  block.className = "np-plain";
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    const div = block.appendChild(document.createElement("div"));
+    div.dir = "auto";
+    if (line) div.textContent = line;
+    else div.appendChild(document.createElement("br"));
+  }
+  return block;
+}
+
+/**
+ * True from the start of preparing a print until its dialog is finished. A second
+ * Ctrl+P meanwhile would remove the page the first one is printing (BUGS.md UI-11).
+ */
+let printing = false;
+
+export const isPrinting = (): boolean => printing;
+
 export async function printTab(id: string): Promise<void> {
+  if (printing) return;
+  printing = true;
+  let waiting = false;
+  try {
+    waiting = await preparePage(id);
+  } finally {
+    if (!waiting) printing = false;
+  }
+}
+
+/** Returns true once the print dialog is open (and `afterprint` will end it). */
+async function preparePage(id: string): Promise<boolean> {
   await ensureFullyLoaded(id);
   const tab = getTab(id);
-  if (!tab) return;
+  if (!tab) return false;
   const text = engine.getText(id);
   cleanup();
 
@@ -394,10 +435,9 @@ export async function printTab(id: string): Promise<void> {
     const html = marked.parse(markdown, { async: false, gfm: true }) as string;
     root.appendChild(sanitizeHtml(html, baseDir));
     await renderParts(root, parts, baseDir);
+    applyAutoDirection(root);
   } else {
-    const pre = document.createElement("pre");
-    pre.textContent = text;
-    root.appendChild(pre);
+    root.appendChild(plainTextBlock(text));
   }
 
   const style = document.createElement("style");
@@ -409,6 +449,21 @@ export async function printTab(id: string): Promise<void> {
 
   // The print preview re-reads the DOM when options change, so the root stays
   // until the dialog is finished. A later print also clears any leftovers.
-  window.addEventListener("afterprint", cleanup, { once: true });
+  const done = () => {
+    window.removeEventListener("afterprint", done);
+    window.removeEventListener("pointerdown", unblock, true);
+    printing = false;
+    cleanup();
+  };
+  // Should a WebView never send afterprint, a click in the page shows the dialog is
+  // gone: Print must not stay blocked for good. The page stays until the next print.
+  const unblock = () => {
+    window.removeEventListener("afterprint", done);
+    window.removeEventListener("pointerdown", unblock, true);
+    printing = false;
+  };
+  window.addEventListener("afterprint", done);
+  window.addEventListener("pointerdown", unblock, true);
   window.print();
+  return true;
 }

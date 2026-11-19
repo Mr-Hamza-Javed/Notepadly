@@ -170,6 +170,8 @@ describe("printing a tab", () => {
   });
 
   beforeEach(() => {
+    // The previous test's print dialog is finished.
+    window.dispatchEvent(new Event("afterprint"));
     print.mockClear();
     document.getElementById("notepadly-print-root")?.remove();
   });
@@ -229,8 +231,61 @@ describe("printing a tab", () => {
     await app.actions.openPaths(["C:\\p\\raw.txt"]);
     await app.actions.print();
     const root = document.getElementById("notepadly-print-root")!;
-    expect(root.querySelector("pre")?.textContent).toBe("# not a heading\n<b>tag</b>");
+    const lines = [...root.querySelectorAll(".np-plain > div")].map((div) => div.textContent);
+    expect(lines).toEqual(["# not a heading", "<b>tag</b>"]);
     expect(root.querySelector("b")).toBeNull();
+  });
+
+  // BUGS.md UI-12: Urdu lines printed left-aligned, with punctuation on the wrong side.
+  it("gives every printed paragraph, heading, list item and cell its own direction", async () => {
+    backend.write("C:\\p\\urdu.md", "# سرخی\n\nیہ ایک جملہ ہے۔\n\n- فہرست\n\n| ا | ب |\n| - | - |\n| ج | د |\n\n> اقتباس");
+    await app.actions.openPaths(["C:\\p\\urdu.md"]);
+    await app.actions.print();
+    const root = document.getElementById("notepadly-print-root")!;
+    for (const selector of ["h1", "p", "li", "th", "td", "blockquote"]) {
+      expect(root.querySelector(selector)?.getAttribute("dir"), selector).toBe("auto");
+    }
+  });
+
+  it("prints plain text one line per block, each with its own direction, keeping empty lines", async () => {
+    backend.write("C:\\p\\urdu.txt", "یہ ایک جملہ ہے۔\n\n  indented");
+    await app.actions.openPaths(["C:\\p\\urdu.txt"]);
+    await app.actions.print();
+    const lines = [...document.querySelectorAll<HTMLElement>("#notepadly-print-root .np-plain > div")];
+    expect(lines.map((div) => div.dir)).toEqual(["auto", "auto", "auto"]);
+    expect(lines.map((div) => div.textContent)).toEqual(["یہ ایک جملہ ہے۔", "", "  indented"]);
+    expect(lines[1].querySelector("br")).not.toBeNull();
+  });
+
+  // BUGS.md UI-11: a second Ctrl+P while the first was being prepared removed its page.
+  it("ignores Print while a print is being prepared or its dialog is open", async () => {
+    backend.write("C:\\p\\twice.md", "# Twice");
+    await app.actions.openPaths(["C:\\p\\twice.md"]);
+    const first = app.actions.print();
+    const second = app.actions.print();
+    await Promise.all([first, second]);
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(document.getElementById("notepadly-print-root")?.querySelector("h1")?.textContent).toBe("Twice");
+    // The dialog is still open: a third press does nothing either.
+    await app.actions.print();
+    expect(print).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new Event("afterprint"));
+    expect(document.getElementById("notepadly-print-root")).toBeNull();
+    await app.actions.print();
+    expect(print).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows printing again after a print failed", async () => {
+    print.mockImplementationOnce(() => {
+      throw new Error("no printer");
+    });
+    backend.write("C:\\p\\fail.txt", "x");
+    await app.actions.openPaths(["C:\\p\\fail.txt"]);
+    await app.actions.print();
+    expect(app.message()?.title).toBe("Could not print");
+    app.actions.closeDialog();
+    await app.actions.print();
+    expect(print).toHaveBeenCalledTimes(2);
   });
 
   it("puts the page setup into the print stylesheet", async () => {

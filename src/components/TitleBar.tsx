@@ -6,7 +6,7 @@ import { AppIcon, G, Glyph } from "./icons";
 import { Menu, type AnchorRect, type MenuEntry } from "./Menu";
 import { CaptionButtons } from "./CaptionButtons";
 import { focusEditorSoon } from "./focus";
-import { isPulledOut, reorderTarget } from "../lib/tabDrag";
+import { isPulledOut, reorderTarget, setTabDragging } from "../lib/tabDrag";
 
 interface TabProps {
   tab: TabMeta;
@@ -41,6 +41,13 @@ const Tab = memo(function Tab({ tab, active, index, onPressTab, onMenu }: TabPro
         (list?.children[(index + dir) % n] as HTMLElement | undefined)?.focus();
         break;
       }
+      case "Home":
+      case "End": {
+        e.preventDefault();
+        const n = list?.children.length ?? 0;
+        (list?.children[e.key === "Home" ? 0 : n - 1] as HTMLElement | undefined)?.focus();
+        break;
+      }
       case "ContextMenu":
       case "F10":
         if (e.key === "ContextMenu" || e.shiftKey) {
@@ -57,6 +64,8 @@ const Tab = memo(function Tab({ tab, active, index, onPressTab, onMenu }: TabPro
     <div
       role="tab"
       aria-selected={active}
+      aria-label={tab.dirty ? `${tab.title}, unsaved` : tab.title}
+      aria-keyshortcuts="Delete"
       tabIndex={active ? 0 : -1}
       className="tab"
       data-tab-id={id}
@@ -80,8 +89,10 @@ const Tab = memo(function Tab({ tab, active, index, onPressTab, onMenu }: TabPro
       <button
         type="button"
         className="tab-close"
-        tabIndex={active ? 0 : -1}
-        aria-label={`Close ${tab.title}`}
+        // Not a second control inside role="tab" (nested interactive): the keyboard
+        // closes a tab with Delete or its context menu, so this is for the mouse.
+        tabIndex={-1}
+        aria-hidden="true"
         data-tip="Close tab"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
@@ -102,12 +113,14 @@ function tabMenu(id: string): MenuEntry[] {
   const tab = tabs[index];
   const hasPath = !!tab?.path;
   return [
-    { id: "close", label: "Close", onSelect: () => void actions.closeTab(id) },
-    { id: "others", label: "Close others", disabled: tabs.length < 2, onSelect: () => void actions.closeOthers(id) },
-    { id: "right", label: "Close to the right", disabled: index >= tabs.length - 1, onSelect: () => void actions.closeToRight(id) },
+    { id: "close", label: "Close", accessKey: "c", onSelect: () => void actions.closeTab(id) },
+    { id: "others", label: "Close others", accessKey: "o", disabled: tabs.length < 2, onSelect: () => void actions.closeOthers(id) },
+    { id: "right", label: "Close to the right", accessKey: "r", disabled: index >= tabs.length - 1, onSelect: () => void actions.closeToRight(id) },
     { kind: "sep" },
-    { id: "copy", label: "Copy path", disabled: !hasPath, onSelect: () => void actions.copyPath(id) },
-    { id: "reveal", label: "Reveal in Explorer", disabled: !hasPath, onSelect: () => void actions.revealTab(id) },
+    { id: "newwindow", label: "Move to new window", accessKey: "n", disabled: tabs.length < 2, onSelect: () => void actions.moveTabOut(id, true) },
+    { kind: "sep" },
+    { id: "copy", label: "Copy path", accessKey: "p", disabled: !hasPath, onSelect: () => void actions.copyPath(id) },
+    { id: "reveal", label: "Reveal in Explorer", accessKey: "e", disabled: !hasPath, onSelect: () => void actions.revealTab(id) },
   ];
 }
 
@@ -203,6 +216,7 @@ const TabStrip = memo(function TabStrip() {
       if (!dragging) {
         if (Math.abs(raw) < 5 && Math.abs(ev.clientY - e.clientY) < 5) return;
         dragging = true;
+        setTabDragging(true);
         el.classList.add("dragging");
       }
       const strip = sc.getBoundingClientRect();
@@ -237,6 +251,7 @@ const TabStrip = memo(function TabStrip() {
       window.removeEventListener("keydown", onKey, true);
       if (!dragging) return false;
       dragging = false;
+      setTabDragging(false);
       ls.classList.add("no-anim");
       el.classList.remove("dragging", "detaching");
       nodes.forEach((n) => {
