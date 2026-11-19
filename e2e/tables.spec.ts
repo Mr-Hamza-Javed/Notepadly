@@ -45,7 +45,7 @@ test("H1: the toolbar's Bold button applies to the cell selection", async ({ pag
   await page.keyboard.press("Control+a");
   await page.getByRole("button", { name: "Bold (Ctrl+B)" }).click();
   await expect.poll(() => row(page, 5)).toBe("| **kiwi** | 3 |");
-  expect((await focusedCell(page))?.row).toBe(3);
+  await expect.poll(async () => (await focusedCell(page))?.row).toBe(3);
 });
 
 test("M1: Select All in a cell selects only the cell's text", async ({ page }) => {
@@ -63,7 +63,7 @@ test("M2: F5 inserts the date at the cell caret, after a space typed there", asy
   await page.keyboard.press("F5");
   // Was "| kiwi due4:49 PM 11/19/2026 | 3 |": the typed space was lost.
   await expect.poll(() => row(page, 5)).toMatch(/^\| kiwi due \d{1,2}:\d{2}.*\d{4} \| 3 \|$/);
-  expect(await focusedCell(page)).toMatchObject({ row: 3, col: 0 });
+  await expect.poll(() => focusedCell(page)).toMatchObject({ row: 3, col: 0 });
 });
 
 test("M2: pasting with Ctrl+V and with Edit > Paste cannot break the row", async ({ page }) => {
@@ -99,7 +99,7 @@ test("arrow keys move inside a cell first, then from cell to cell", async ({ pag
   await page.keyboard.press("Home");
   // Right walks through "kiwi" before it leaves the cell.
   for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowRight");
-  expect(await focusedCell(page)).toMatchObject({ row: 3, col: 0 });
+  await expect.poll(() => focusedCell(page)).toMatchObject({ row: 3, col: 0 });
   await page.keyboard.press("ArrowRight");
   await expect.poll(() => focusedCell(page)).toMatchObject({ row: 3, col: 1, text: "3" });
   // Left at the start of a cell goes to the end of the one before.
@@ -115,7 +115,7 @@ test("arrow keys move inside a cell first, then from cell to cell", async ({ pag
   await page.keyboard.press("Shift+ArrowLeft");
   await page.keyboard.press("Shift+ArrowLeft");
   await expect.poll(() => selections(page)).toEqual({ editor: "pie", dom: "pie" });
-  expect(await focusedCell(page)).toMatchObject({ row: 2, col: 0 });
+  await expect.poll(() => focusedCell(page)).toMatchObject({ row: 2, col: 0 });
   // Tab and Shift+Tab move along the row.
   await page.keyboard.press("Tab");
   await expect.poll(() => focusedCell(page)).toMatchObject({ row: 2, col: 1 });
