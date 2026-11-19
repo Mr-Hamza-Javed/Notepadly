@@ -344,28 +344,96 @@ struct DropTarget {
     y: f64,
 }
 
+/// One window a dragged tab could land on, in physical screen pixels.
+struct DropCandidate {
+    label: String,
+    /// Native handle, to match the window Windows reports under the mouse.
+    handle: isize,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale: f64,
+}
+
+/// Picks the window a tab dropped at `cursor` lands on. `candidates` lists the
+/// visible windows in no particular order, the source window included.
+/// `topmost` is the window Windows reports under the mouse: only that one can
+/// take the drop, so a window hidden behind another (or behind the source
+/// window itself) never does. Without it, the first window under the mouse.
+fn pick_drop_target(
+    candidates: &[DropCandidate],
+    source: &str,
+    cursor: (f64, f64),
+    topmost: Option<isize>,
+) -> Option<DropTarget> {
+    candidates
+        .iter()
+        .filter(|c| topmost.is_none_or(|top| c.handle == top))
+        .filter(|c| c.label != source)
+        .find_map(|c| {
+            let (dx, dy) = (cursor.0 - c.x, cursor.1 - c.y);
+            let inside = dx >= 0.0 && dy >= 0.0 && dx < c.width && dy < c.height;
+            inside.then(|| DropTarget {
+                label: c.label.clone(),
+                x: dx / c.scale,
+                y: dy / c.scale,
+            })
+        })
+}
+
+/// The top-level window under a point on the screen, as Windows sees it, so
+/// the one in front wins where windows overlap.
+#[cfg(windows)]
+fn topmost_window_at(x: f64, y: f64) -> Option<isize> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
+    let point = POINT {
+        x: x.floor() as i32,
+        y: y.floor() as i32,
+    };
+    // SAFETY: plain Win32 queries; they only read window state.
+    unsafe {
+        let hit = WindowFromPoint(point);
+        if hit.is_null() {
+            return None;
+        }
+        // The hit is usually WebView2's child window; its root is the app window.
+        let root = GetAncestor(hit, GA_ROOT);
+        (!root.is_null()).then_some(root as isize)
+    }
+}
+
+#[cfg(not(windows))]
+fn topmost_window_at(_x: f64, _y: f64) -> Option<isize> {
+    None
+}
+
 /// The other visible window under the mouse, for a tab dropped there (F2).
 #[tauri::command]
 fn tab_drop_target(window: WebviewWindow) -> Option<DropTarget> {
     let cursor = window.cursor_position().ok()?;
     let app = window.app_handle();
-    app.webview_windows()
+    let candidates: Vec<DropCandidate> = app
+        .webview_windows()
         .into_values()
-        .filter(|w| w.label() != window.label() && w.is_visible().unwrap_or(false))
-        .filter(|w| !w.is_minimized().unwrap_or(false))
-        .find_map(|w| {
+        .filter(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false))
+        .filter_map(|w| {
             let pos = w.inner_position().ok()?;
             let size = w.inner_size().ok()?;
-            let scale = w.scale_factor().ok()?;
-            let (dx, dy) = (cursor.x - pos.x as f64, cursor.y - pos.y as f64);
-            let inside =
-                dx >= 0.0 && dy >= 0.0 && dx < size.width as f64 && dy < size.height as f64;
-            inside.then(|| DropTarget {
+            Some(DropCandidate {
                 label: w.label().to_owned(),
-                x: dx / scale,
-                y: dy / scale,
+                handle: w.hwnd().map_or(0, |h| h.0 as isize),
+                x: pos.x as f64,
+                y: pos.y as f64,
+                width: size.width as f64,
+                height: size.height as f64,
+                scale: w.scale_factor().ok()?,
             })
         })
+        .collect();
+    let topmost = topmost_window_at(cursor.x, cursor.y);
+    pick_drop_target(&candidates, window.label(), (cursor.x, cursor.y), topmost)
 }
 
 /// Tauri gives a window one 256 px icon and Windows shrinks it for the taskbar and
@@ -697,6 +765,42 @@ mod tests {
             "window-3"
         );
         assert_eq!(state.new_label(|_| false), "window-4");
+    }
+
+    fn candidate(label: &str, handle: isize, x: f64, width: f64) -> DropCandidate {
+        DropCandidate {
+            label: label.into(),
+            handle,
+            x,
+            y: 0.0,
+            width,
+            height: 500.0,
+            scale: 2.0,
+        }
+    }
+
+    #[test]
+    fn a_tab_drops_on_the_window_in_front_not_one_behind_it() {
+        // window-1 lies behind window-2 where they overlap (x 300..500).
+        let windows = [
+            candidate("main", 1, 0.0, 200.0),
+            candidate("window-1", 2, 0.0, 500.0),
+            candidate("window-2", 3, 300.0, 500.0),
+        ];
+        let label = |t: Option<DropTarget>| t.map(|t| t.label);
+        // Over the overlap, Windows reports window-2 in front.
+        assert_eq!(
+            label(pick_drop_target(&windows, "main", (400.0, 10.0), Some(3))).as_deref(),
+            Some("window-2")
+        );
+        // Dropped over the source window itself, which covers window-1 there:
+        // no other window takes it (it opens a new window instead).
+        assert!(pick_drop_target(&windows, "main", (100.0, 10.0), Some(1)).is_none());
+        // A window of another app is in front: no drop target.
+        assert!(pick_drop_target(&windows, "main", (400.0, 10.0), Some(99)).is_none());
+        // Without z-order information, any window under the mouse.
+        let free = pick_drop_target(&windows, "main", (100.0, 10.0), None).unwrap();
+        assert_eq!((free.label.as_str(), free.x, free.y), ("window-1", 50.0, 5.0));
     }
 
     #[test]
