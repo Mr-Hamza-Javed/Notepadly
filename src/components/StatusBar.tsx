@@ -198,7 +198,9 @@ export const StatusBar = memo(function StatusBar() {
   const visible = useApp((s) => s.settings.statusBar);
   if (!visible) return null;
   return (
-    <div className="statusbar" role="status">
+    // Not a live region: role="status" made screen readers read the whole bar after
+    // every keystroke and caret move (BUGS.md UI-5).
+    <div className="statusbar" role="group" aria-label="Status bar">
       <CursorCells />
       <ModeCell />
       <RightCells />

@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -189,6 +190,9 @@ export function Menu({
   const [sub, setSub] = useState<{ index: number; anchor: AnchorRect; focus: boolean } | null>(null);
   const root = useRef<HTMLDivElement | null>(null);
   const timer = useRef(0);
+  /** The focus stays on the menu box: screen readers follow the active descendant (BUGS.md UI-4). */
+  const baseId = useId();
+  const itemId = (i: number) => `${baseId}-item-${i}`;
 
   useEffect(() => {
     if (autoFocus) root.current?.focus({ preventScroll: true });
@@ -321,6 +325,7 @@ export function Menu({
         popupRef={root}
         role="menu"
         tabIndex={-1}
+        aria-activedescendant={isItem(entries[active]) ? itemId(active) : undefined}
         data-kbd={kbd}
         className={`menu${compact ? " compact" : ""}${className ? ` ${className}` : ""}`}
         style={width ? { width } : undefined}
@@ -337,6 +342,7 @@ export function Menu({
           return (
             <div
               key={e.id}
+              id={itemId(i)}
               data-i={i}
               data-tip={e.tip}
               role={e.checked !== undefined ? "menuitemcheckbox" : "menuitem"}

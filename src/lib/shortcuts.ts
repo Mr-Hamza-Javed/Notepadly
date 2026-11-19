@@ -15,6 +15,22 @@ export interface Chord {
   ctrl: boolean;
   shift: boolean;
   alt: boolean;
+  /** `KeyboardEvent.code`: the physical key, for layouts that type another script. */
+  code?: string;
+}
+
+/**
+ * The key a shortcut is matched on. With an Urdu, Arabic, Russian or other non-Latin
+ * layout Chromium reports the layout's letter even with Ctrl held (Ctrl+S gives "س"),
+ * while Windows accelerators, and so Notepad, go by the physical key: use its Latin
+ * letter or digit then (BUGS.md UI-1). Layouts that type Latin letters keep their own.
+ */
+export function shortcutKey(key: string, code?: string): string {
+  if (key.length === 1 && key.charCodeAt(0) > 0x7f && code) {
+    const physical = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(code);
+    if (physical) return (physical[1] ?? physical[2]).toLowerCase();
+  }
+  return key.toLowerCase();
 }
 
 const CTRL_KEYS: Record<string, Command> = {
@@ -29,8 +45,8 @@ const CTRL_SHIFT_KEYS: Record<string, Command> = {
   "+": "zoomIn", "=": "zoomIn",
 };
 
-export function chordToCommand({ key, ctrl, shift, alt }: Chord): Command | null {
-  const k = key.toLowerCase();
+export function chordToCommand({ key, ctrl, shift, alt, code }: Chord): Command | null {
+  const k = ctrl ? shortcutKey(key, code) : key.toLowerCase();
   if (ctrl && alt) return !shift && k === "s" ? "saveAll" : null;
   if (alt) return null;
   if (ctrl) return (shift ? CTRL_SHIFT_KEYS[k] : CTRL_KEYS[k]) ?? null;
@@ -41,8 +57,8 @@ export function chordToCommand({ key, ctrl, shift, alt }: Chord): Command | null
 }
 
 /** WebView behaviour that must never reach a notepad, handled or not. */
-export function isSuppressedDefault({ key, ctrl, shift, alt }: Chord, production: boolean): boolean {
-  const k = key.toLowerCase();
+export function isSuppressedDefault({ key, ctrl, shift, alt, code }: Chord, production: boolean): boolean {
+  const k = ctrl ? shortcutKey(key, code) : key.toLowerCase();
   // F3 (with or without Shift) opens WebView2's own find bar where the app does not handle it (W4).
   if (k === "f3" || k === "f5" || k === "f7" || k === "browserback" || k === "browserforward") return true;
   if (k === "f12") return production;
@@ -70,7 +86,8 @@ function isTextSurface(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && !!target.closest("input, textarea, select, [contenteditable='true'], .cm-content");
 }
 
-function selectAllLoaded(): void {
+/** Select all, once a partly loaded file is whole, in the tab that asked for it only (BUGS.md UI-8). */
+export function selectAllLoaded(): void {
   const id = useApp.getState().activeId;
   actions
     .ensureFullyLoaded(id)
@@ -162,7 +179,7 @@ function run(command: Command): boolean {
 
 function onKeyDown(event: KeyboardEvent): void {
   if (event.isComposing || event.getModifierState("AltGraph")) return;
-  const chord: Chord = { key: event.key, ctrl: event.ctrlKey, shift: event.shiftKey, alt: event.altKey };
+  const chord: Chord = { key: event.key, ctrl: event.ctrlKey, shift: event.shiftKey, alt: event.altKey, code: event.code };
   const production = !!import.meta.env?.PROD;
   const { dialog, view, find } = useApp.getState();
   const stop = () => {
@@ -188,6 +205,12 @@ function onKeyDown(event: KeyboardEvent): void {
     return;
   }
 
+  // A menu has the keyboard, as in Windows: Ctrl+W must not close the tab its menu is for (BUGS.md UI-2).
+  const inMenu = event.target instanceof Element && !!event.target.closest("[role='menu']");
+  if (inMenu && chordToCommand(chord)) {
+    event.preventDefault();
+    return;
+  }
   if (!dialog && view === "editor") {
     const command = chordToCommand(chord);
     if (command && !(isNativeInput(event.target) && NATIVE_IN_INPUT.has(command))) {

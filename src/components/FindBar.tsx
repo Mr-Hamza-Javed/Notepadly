@@ -163,7 +163,9 @@ const FindCard = memo(function FindCard() {
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => onKey(e, next)}
           />
-          <span className="find-count">{count}</span>
+          <span className="find-count" role="status">
+            {count}
+          </span>
         </div>
         <button type="button" className="icon-btn" aria-label="Previous match" data-tip="Previous (Shift+Enter)" disabled={noQuery} onClick={prev}>
           <Glyph cp={G.arrowUp} size={14} />

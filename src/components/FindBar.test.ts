@@ -112,4 +112,29 @@ describe("find bar", () => {
     // F3 works without typing the query again.
     expect(app.engine.findNext()).toMatchObject({ total: 1 });
   });
+
+  // BUGS.md UI-5: the counter is the only answer to Enter or F3, so a screen reader must hear it.
+  it("the match counter is a polite live region", async () => {
+    app.type("one two one");
+    app.actions.openFind(false);
+    const el = await renderFindBar();
+    await typeInto(field(el, "Find"), "one");
+    await flushUi();
+    const counter = el.querySelector(".find-count")!;
+    expect(counter.textContent).toMatch(/of 2/);
+    expect(counter.getAttribute("role")).toBe("status");
+  });
+
+  it("UI-5: the status bar is not a live region, so typing does not read it out", async () => {
+    const { StatusBar } = await import("./StatusBar");
+    const el = document.body.appendChild(document.createElement("div"));
+    host = el;
+    const r = createRoot(el);
+    root = r;
+    await act(async () => r.render(createElement(StatusBar)));
+    const bar = el.querySelector<HTMLElement>(".statusbar")!;
+    expect(bar).not.toBeNull();
+    expect(bar.closest("[role='status'], [role='alert'], [role='log'], [aria-live='polite'], [aria-live='assertive']")).toBeNull();
+    expect(bar.getAttribute("aria-label")).toBe("Status bar");
+  });
 });

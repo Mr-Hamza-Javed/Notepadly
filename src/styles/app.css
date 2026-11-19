@@ -89,6 +89,8 @@ a { color: var(--link); }
   background: var(--editor);
 }
 .editor-host { position: absolute; inset: 0; }
+/* Groups the chrome that Settings and Help make inert, without changing the layout. */
+.covered { display: contents; }
 .editor-host > * { height: 100%; }
 .app[data-view="settings"] .editor-host,
 .app[data-view="help"] .editor-host { visibility: hidden; }

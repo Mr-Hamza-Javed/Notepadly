@@ -61,17 +61,27 @@ function App() {
     };
   }, []);
 
+  // Settings and Help cover the editor: what is under them must not take the keyboard
+  // or be read by screen readers (BUGS.md UI-6). The editor itself is already hidden.
+  const covered = view !== "editor";
+
   return (
     <div className="app" data-view={view}>
-      <TitleBar />
-      <ChromeRow />
-      <ExternalChangeBar />
+      <div className="covered" inert={covered}>
+        <TitleBar />
+        <ChromeRow />
+        <ExternalChangeBar />
+      </div>
       <div className="editor-area">
         <EditorHost />
-        <FindBar />
+        <div className="covered" inert={covered}>
+          <FindBar />
+        </div>
       </div>
-      <TableContextMenu />
-      <StatusBar />
+      <div className="covered" inert={covered}>
+        <TableContextMenu />
+        <StatusBar />
+      </div>
       <PageLayer />
       <Dialogs />
       <Tooltip />
