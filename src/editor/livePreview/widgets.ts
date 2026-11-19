@@ -4,7 +4,7 @@ import { Transaction } from "@codemirror/state";
 import { EditorView, ViewPlugin, WidgetType, type ViewUpdate } from "@codemirror/view";
 import { applyFormat } from "../commands";
 import { openBlockSource } from "./block";
-import { cachedMath, cachedMermaid, renderMath, renderMermaid, type RenderedHtml } from "../lazy";
+import { cachedMath, cachedMermaid, cachedMermaidError, renderMath, renderMermaid, type RenderedHtml } from "../lazy";
 import { findQueryOf } from "../find";
 import { cellText, joinRow, parseAlign, parseTable, type TableRowModel } from "../tableModel";
 import { documentPathChanged, isImagePath, parseSize, previewContext, resolveHref, resolveImageSrc, resolveWikiTarget } from "./context";
@@ -1007,7 +1007,8 @@ export class MathWidget extends SourceWidget {
     super();
   }
   override eq(other: MathWidget): boolean {
-    return other.source === this.source && other.display === this.display;
+    // The offset is baked into the click handlers, so a moved source needs a new DOM.
+    return other.source === this.source && other.display === this.display && other.sourceOffset === this.sourceOffset;
   }
   override get estimatedHeight(): number {
     if (!this.display) return -1;
@@ -1048,7 +1049,7 @@ export class MermaidWidget extends SourceWidget {
     super();
   }
   override eq(other: MermaidWidget): boolean {
-    return other.source === this.source && other.dark === this.dark;
+    return other.source === this.source && other.dark === this.dark && other.sourceOffset === this.sourceOffset;
   }
   override get estimatedHeight(): number {
     return cachedMermaid(this.source, this.dark)?.height || 260;
@@ -1056,8 +1057,12 @@ export class MermaidWidget extends SourceWidget {
   toDOM(view: EditorView): HTMLElement {
     const host = element("div", "cm-md-mermaid");
     const cached = cachedMermaid(this.source, this.dark);
+    const failed = cached ? undefined : cachedMermaidError(this.source, this.dark);
     if (cached) {
       applyRendered(view, host, cached);
+    } else if (failed !== undefined) {
+      host.classList.add("cm-md-render-error");
+      host.textContent = failed;
     } else {
       host.classList.add("cm-md-pending");
       host.style.minHeight = "260px";

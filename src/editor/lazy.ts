@@ -32,6 +32,8 @@ export interface RenderedHtml {
 
 const mathCache = new LruCache<RenderedHtml>(300);
 const mermaidCache = new LruCache<RenderedHtml>(40);
+/** Error text of diagrams that failed, so a broken one is not parsed again on each scroll. */
+const mermaidErrors = new LruCache<string>(40);
 
 let katexLoading: Promise<typeof KatexApi> | null = null;
 
@@ -59,6 +61,8 @@ export async function renderMath(src: string, display: boolean): Promise<Rendere
       throwOnError: false,
       output: "html",
       strict: "ignore",
+      // `\rule{99999em}{99999em}` would build a box that breaks the layout; maxExpand keeps its default.
+      maxSize: 100,
     });
     entry = { html, height: 0 };
     mathCache.set(key, entry);
@@ -83,12 +87,19 @@ export function cachedMermaid(src: string, dark: boolean): RenderedHtml | undefi
   return mermaidCache.get(mermaidKey(src, dark));
 }
 
+/** The error a diagram failed with last time, if it did. */
+export function cachedMermaidError(src: string, dark: boolean): string | undefined {
+  return mermaidErrors.get(mermaidKey(src, dark));
+}
+
 /** Mermaid keeps global config and DOM scratch space, so renders run one at a time. */
 export function renderMermaid(src: string, dark: boolean): Promise<RenderedHtml> {
   const job = mermaidQueue.then(async () => {
     const key = mermaidKey(src, dark);
     const hit = mermaidCache.get(key);
     if (hit) return hit;
+    const failed = mermaidErrors.get(key);
+    if (failed !== undefined) throw new Error(failed);
     const mermaid = await loadMermaid();
     mermaid.initialize({
       startOnLoad: false,
@@ -96,7 +107,13 @@ export function renderMermaid(src: string, dark: boolean): Promise<RenderedHtml>
       theme: dark ? "dark" : "default",
       suppressErrorRendering: true,
     });
-    const { svg } = await mermaid.render(`notepadly-mermaid-${++mermaidSerial}`, src);
+    let svg: string;
+    try {
+      ({ svg } = await mermaid.render(`notepadly-mermaid-${++mermaidSerial}`, src));
+    } catch (error) {
+      mermaidErrors.set(key, error instanceof Error ? error.message : "Could not render this diagram.");
+      throw error;
+    }
     const entry: RenderedHtml = { html: svg, height: 0 };
     mermaidCache.set(key, entry);
     return entry;
