@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { mountEngine, nextFrame } from "../test/editorHarness";
+import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { engine, urlAt } from ".";
 
 const lastDirty = (log: ReturnType<typeof mountEngine>["log"], id: string) =>
@@ -276,6 +277,18 @@ describe("editor engine: key bindings", () => {
     expect(engine.getText("a")).toBe("- first\n- ");
   });
 
+  it("has no hidden Ctrl+U / Alt+U selection undo, which Notepad does not have", () => {
+    engine.createDoc("a", "hello world", "plain");
+    engine.activate("a");
+    engine.restore("a", { anchor: 0, head: 5, scrollTop: 0 });
+    engine.restore("a", { anchor: 6, head: 11, scrollTop: 0 });
+    press("u", { ctrlKey: true });
+    expect(engine.selectionText()).toBe("world");
+    engine.restore("a", { anchor: 0, head: 5, scrollTop: 0 });
+    press("u", { altKey: true });
+    expect(engine.selectionText()).toBe("hello");
+  });
+
   it("Ctrl+Z and Ctrl+Y undo and redo typing", () => {
     engine.createDoc("a", "", "plain");
     engine.activate("a");
@@ -349,6 +362,92 @@ describe("editor engine: modes and large documents", () => {
     dom.dispatchEvent(new WheelEvent("wheel", { deltaY: 100, ctrlKey: true, cancelable: true }));
     dom.dispatchEvent(new WheelEvent("wheel", { deltaY: 100, cancelable: true }));
     expect(log.zoom).toEqual([10, -10]);
+  });
+
+  // BUGS.md smaller open points: a pinch or touchpad sends many small Ctrl+wheel events.
+  it("zooms one step per mouse-wheel notch, not per event, for a pinch or touchpad", () => {
+    const { log } = mountEngine();
+    const dom = document.querySelector(".cm-editor")!;
+    const wheel = (deltaY: number, deltaMode = 0) =>
+      dom.dispatchEvent(new WheelEvent("wheel", { deltaY, deltaMode, ctrlKey: true, cancelable: true }));
+    // A pinch: 20 events of 3 pixels each is less than one notch.
+    for (let i = 0; i < 20; i++) wheel(-3);
+    expect(log.zoom).toEqual([]);
+    // Ten more make a notch's worth: one step.
+    for (let i = 0; i < 20; i++) wheel(-3);
+    expect(log.zoom).toEqual([10]);
+    // Turning back starts again from zero instead of using up what was left.
+    wheel(-50);
+    wheel(100);
+    expect(log.zoom).toEqual([10, -10]);
+    // A wheel that reports lines: three lines are one notch.
+    wheel(3, 1);
+    expect(log.zoom).toEqual([10, -10, -10]);
+  });
+});
+
+describe("editor engine: clipboard and multiple cursors", () => {
+  let clipboardText: Promise<string>;
+  beforeEach(() => {
+    mountEngine();
+    clipboardText = Promise.resolve("X");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: () => clipboardText, writeText: async () => {} },
+    });
+  });
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  it("pastes at the cursor", async () => {
+    engine.createDoc("a", "alpha", "plain");
+    engine.activate("a");
+    await engine.paste();
+    expect(engine.getText("a")).toBe("Xalpha");
+  });
+
+  // BUGS.md EDIT-10: the paste went to whatever tab was active when the clipboard answered.
+  it("EDIT-10: drops a paste when the tab or selection changed while the clipboard was read", async () => {
+    engine.createDoc("a", "alpha", "plain");
+    engine.createDoc("b", "beta", "plain");
+    engine.activate("a");
+    let answer!: (text: string) => void;
+    clipboardText = new Promise((resolve) => (answer = resolve));
+    const pending = engine.paste();
+    engine.activate("b");
+    answer("X");
+    await pending;
+    expect(engine.getText("a")).toBe("alpha");
+    expect(engine.getText("b")).toBe("beta");
+
+    clipboardText = new Promise((resolve) => (answer = resolve));
+    const moved = engine.paste();
+    engine.restore("b", { anchor: 2, head: 2, scrollTop: 0 });
+    answer("Y");
+    await moved;
+    expect(engine.getText("b")).toBe("beta");
+  });
+
+  // BUGS.md EDIT-11: the cell escaping was decided from the main cursor only.
+  it("EDIT-11: text inserted at several cursors is escaped only in the ones in a table", async () => {
+    const table = "| a | b |\n| --- | --- |\n| 1 | 2 |";
+    const text = `before\n\n${table}\n\nafter`;
+    engine.createDoc("t", text, "formatted");
+    engine.activate("t");
+    await nextFrame();
+    const view = EditorView.findFromDOM(document.querySelector(".cm-editor") as HTMLElement)!;
+    const inCell = text.indexOf("1 |") + 1;
+    // The app's states keep one selection today; the engine must not depend on that.
+    view.dispatch({ effects: StateEffect.appendConfig.of(EditorState.allowMultipleSelections.of(true)) });
+    view.dispatch({ selection: EditorSelection.create([EditorSelection.cursor(6), EditorSelection.cursor(inCell)], 0) });
+    engine.insertText("x|y\nz");
+    const lines = engine.getText("t").split("\n");
+    expect(lines.slice(0, 2)).toEqual(["beforex|y", "z"]);
+    expect(lines).toContain("| 1x\\|y z | 2 |");
+    // Each cursor ends after its own insertion.
+    const heads = view.state.selection.ranges.map((range) => range.head);
+    expect(heads).toEqual([6 + "x|y\nz".length, engine.getText("t").indexOf("x\\|y z") + "x\\|y z".length]);
   });
 });
 
