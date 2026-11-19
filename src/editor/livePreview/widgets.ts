@@ -23,7 +23,8 @@ function escapeHtml(text: string): string {
 export function renderCellHtml(source: string): string {
   const codeSpans: string[] = [];
   // GFM unescapes `\|` in a table cell before inline parsing, so inside code spans too.
-  let html = escapeHtml(source)
+  // NUL marks the code span placeholders; CommonMark shows it as U+FFFD anyway.
+  let html = escapeHtml(source.replace(/\u0000/g, "�"))
     .replace(/\\\|/g, "|")
     .replace(/`([^`]+)`/g, (_m, code: string) => {
       codeSpans.push(`<code>${code}</code>`);

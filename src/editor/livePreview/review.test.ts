@@ -140,3 +140,10 @@ describe("cell rendering", () => {
     expect(renderCellHtml("x \\| `y`")).toBe("x | <code>y</code>");
   });
 });
+
+describe("cell rendering of odd characters", () => {
+  it("PREV-5: a NUL character in a cell does not turn the text into 'undefined'", () => {
+    expect(renderCellHtml("a \u00000\u0000 b")).toBe("a �0� b");
+    expect(renderCellHtml("\u00000\u0000 `c`")).toBe("�0� <code>c</code>");
+  });
+});
