@@ -10,7 +10,7 @@ const DEBOUNCE_MS = 120;
 const NONE: FindResult = { total: 0, current: 0 };
 
 /** Survives the card closing, as Notepad remembers the last search. */
-const memory = { search: "", replace: "", caseSensitive: false, wrap: true };
+const memory = { search: "", replace: "", caseSensitive: false, wrap: true, wholeWord: false, regexp: false };
 
 const FindCard = memo(function FindCard() {
   const find = useApp((s) => s.find);
@@ -19,13 +19,15 @@ const FindCard = memo(function FindCard() {
   const [replace, setReplace] = useState(memory.replace);
   const [caseSensitive, setCase] = useState(memory.caseSensitive);
   const [wrap, setWrap] = useState(memory.wrap);
+  const [wholeWord, setWholeWord] = useState(memory.wholeWord);
+  const [regexp, setRegexp] = useState(memory.regexp);
   const [result, setResult] = useState<FindResult>(NONE);
   /** Replacing needs the whole file: partial text would change only the loaded part (BUGS.md C2). */
   const [loading, setLoading] = useState(false);
   const input = useRef<HTMLInputElement | null>(null);
   const timer = useRef(0);
-  const query = useRef({ search, replace, caseSensitive, wrap });
-  query.current = { search, replace, caseSensitive, wrap };
+  const query = useRef({ search, replace, caseSensitive, wrap, wholeWord, regexp });
+  query.current = { search, replace, caseSensitive, wrap, wholeWord, regexp };
   Object.assign(memory, query.current);
 
   const runNow = useCallback(() => {
@@ -78,7 +80,15 @@ const FindCard = memo(function FindCard() {
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(runNow, DEBOUNCE_MS);
     return () => window.clearTimeout(timer.current);
-  }, [search, replace, caseSensitive, wrap, runNow]);
+  }, [search, replace, caseSensitive, wrap, wholeWord, regexp, runNow]);
+
+  // In a big document the count finishes after `find` returned (BUGS.md M14).
+  useEffect(() => {
+    engine.onFindResult?.((next) => {
+      if (query.current.search) setResult(next);
+    });
+    return () => engine.onFindResult?.(null);
+  }, []);
 
   const next = () => {
     flush();
@@ -175,6 +185,12 @@ const FindCard = memo(function FindCard() {
         </button>
         <button type="button" className="icon-btn" aria-label="Match case" aria-pressed={caseSensitive} data-tip="Match case" onClick={() => setCase(!caseSensitive)}>
           Aa
+        </button>
+        <button type="button" className="icon-btn" aria-label="Match whole word" aria-pressed={wholeWord} data-tip="Match whole word" onClick={() => setWholeWord(!wholeWord)}>
+          <span style={{ textDecoration: "underline", textUnderlineOffset: 2 }}>ab</span>
+        </button>
+        <button type="button" className="icon-btn" aria-label="Use regular expression" aria-pressed={regexp} data-tip="Use regular expression" onClick={() => setRegexp(!regexp)}>
+          .*
         </button>
         <button type="button" className="icon-btn" aria-label="Wrap around" aria-pressed={wrap} data-tip="Wrap around" onClick={() => setWrap(!wrap)}>
           <Glyph cp={G.wrapAround} size={14} />

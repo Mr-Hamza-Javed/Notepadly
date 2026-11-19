@@ -125,6 +125,48 @@ describe("find bar", () => {
     expect(counter.getAttribute("role")).toBe("status");
   });
 
+  it("whole-word and regular-expression toggles change the search; Replace stays literal without regex", async () => {
+    app.type("cat concat c4t");
+    app.actions.openFind(true);
+    const el = await renderFindBar();
+    const toggle = (label: string) =>
+      act(async () => el.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click());
+    await typeInto(field(el, "Find"), "cat");
+    await flushUi();
+    expect(count(el)).toMatch(/of 2$/);
+    await toggle("Match whole word");
+    await flushUi();
+    expect(count(el)).toBe("1 of 1");
+    await toggle("Match whole word");
+    await toggle("Use regular expression");
+    await typeInto(field(el, "Find"), "c(\\d)t");
+    await flushUi();
+    expect(count(el)).toBe("1 of 1");
+    await typeInto(field(el, "Replace"), "[$1]");
+    await act(async () => button(el, "Replace all").click());
+    await flushUi();
+    expect(app.text()).toBe("cat concat [4]");
+    await typeInto(field(el, "Find"), "(");
+    await flushUi();
+    expect(count(el)).toBe("Invalid expression");
+    // Without regex the same replacement text goes in as typed.
+    await toggle("Use regular expression");
+    await typeInto(field(el, "Find"), "cat");
+    await typeInto(field(el, "Replace"), "$1");
+    await act(async () => button(el, "Replace all").click());
+    await flushUi();
+    expect(app.text()).toBe("$1 con$1 [4]");
+  });
+
+  it("M14: a count that finishes in the background updates the counter", async () => {
+    app.type(`needle ${"lorem ipsum dolor sit amet\n".repeat(400_000)}needle`);
+    app.actions.openFind(false);
+    const el = await renderFindBar();
+    await typeInto(field(el, "Find"), "needle");
+    for (let i = 0; i < 100 && !/^\d+ of 2$/.test(count(el)); i++) await flushUi(100);
+    expect(count(el)).toMatch(/^\d+ of 2$/);
+  }, 30_000);
+
   it("UI-5: the status bar is not a live region, so typing does not read it out", async () => {
     const { StatusBar } = await import("./StatusBar");
     const el = document.body.appendChild(document.createElement("div"));

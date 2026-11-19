@@ -15,6 +15,12 @@ describe("find bar counter", () => {
     expect(findCountLabel({ total: FIND_COUNT_LIMIT, current: 0 })).toBe("10,000+ results");
   });
 
+  it("shows a running count, and an invalid regular expression", () => {
+    expect(findCountLabel({ total: 0, current: 0, pending: true })).toBe("Searching…");
+    expect(findCountLabel({ total: 12, current: 1, pending: true })).toBe("1 of 12+");
+    expect(findCountLabel({ total: 0, current: 0, invalid: true })).toBe("Invalid expression");
+  });
+
   it("routes F3 steps to the mounted find bar only", () => {
     expect(findStep(1)).toBe(false);
     const steps: number[] = [];
