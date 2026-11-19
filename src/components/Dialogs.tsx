@@ -110,7 +110,12 @@ function GoToLine() {
 
   const go = () => {
     if (!valid) return;
+    const dialog = useApp.getState().dialog;
     const jump = () => {
+      // The file may finish loading after the dialog was cancelled, replaced or the tab
+      // changed: then the jump is stale and must not close another dialog (BUGS.md UI-7).
+      const now = useApp.getState();
+      if (now.dialog !== dialog || now.activeId !== activeId) return;
       if (n > engine.lineCount()) {
         setError("The line number is beyond the total number of lines");
         return;
@@ -119,7 +124,7 @@ function GoToLine() {
       engine.goToLine(n);
       focusEditorSoon();
     };
-    if (n > engine.lineCount() && !fullyLoaded) void actions.ensureFullyLoaded(activeId).then(jump);
+    if (n > engine.lineCount() && !fullyLoaded) actions.ensureFullyLoaded(activeId).then(jump, () => {});
     else jump();
   };
 
