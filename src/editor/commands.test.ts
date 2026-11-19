@@ -421,6 +421,29 @@ describe("EDIT-3: inline markers across list items, quotes, headings and spaces"
   });
 });
 
+describe("EDIT-4: headings inside quotes and list items", () => {
+  it("puts the heading marker after the quote or list marker", () => {
+    expect(format("> qu|ote", { type: "block", kind: "h2" })).toBe("> ## qu|ote");
+    expect(format("- it|em", { type: "block", kind: "h1" })).toBe("- # it|em");
+    expect(format("> > |", { type: "block", kind: "h3" })).toBe("> > ### |");
+  });
+
+  it("changes and removes a heading inside a quote", () => {
+    expect(format("> ## qu|ote", { type: "block", kind: "body" })).toBe("> qu|ote");
+    expect(format("> ## qu|ote", { type: "block", kind: "h4" })).toBe("> #### qu|ote");
+  });
+
+  it("skips quote lines with no text in a multi-line selection", () => {
+    expect(format("|> one\n>\n> two|", { type: "block", kind: "h2" })).toBe("|> ## one\n>\n> ## two|");
+  });
+
+  it("reports the heading level inside a quote, and the list kind of an empty item", () => {
+    expect(formatContextAt(markdownView("> ## qu|ote").state).block).toBe("h2");
+    expect(formatContextAt(markdownView("- |").state).list).toBe("bullet");
+    expect(formatContextAt(markdownView("1. |").state).list).toBe("number");
+  });
+});
+
 describe("toolbar context", () => {
   const contextOf = (input: string) => formatContextAt(markdownView(input).state);
 

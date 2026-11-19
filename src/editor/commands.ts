@@ -58,6 +58,9 @@ function selectedLines(state: EditorState, range: SelectionRange): Line[] {
 
 // ---------- Inline toggles ----------
 
+/** Quote and list markers at the start of a line. */
+const CONTAINER_PREFIX = /^[ \t]*(?:>[ \t]?)*[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?/;
+
 /** Quote, list and heading markers at the start of a line: inline markers go after them. */
 const BLOCK_PREFIX = /^[ \t]*(?:>[ \t]?)*[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?|#{1,6}[ \t]+)?/;
 
@@ -201,9 +204,11 @@ function setBlockKind(view: EditorView, kind: BlockKind): void {
     const lines = selectedLines(state, range);
     for (const line of lines) {
       // "## " on a blank line is an empty heading, not formatting: skip blanks in a multi-line selection.
-      if (lines.length > 1 && !line.text.trim()) continue;
-      const existing = /^#{1,6}[ \t]+/.exec(line.text);
-      changes.push({ from: line.from, to: line.from + (existing ? existing[0].length : 0), insert: prefix });
+      if (lines.length > 1 && !line.text.slice(CONTAINER_PREFIX.exec(line.text)![0].length).trim()) continue;
+      // The heading marker goes after any quote or list marker: `> ## text`, not `## > text`.
+      const at = line.from + CONTAINER_PREFIX.exec(line.text)![0].length;
+      const existing = /^#{1,6}(?:[ \t]+|$)/.exec(state.sliceDoc(at, line.to));
+      changes.push({ from: at, to: at + (existing ? existing[0].length : 0), insert: prefix });
     }
   }
   dispatchPrefixChanges(view, changes);
@@ -690,14 +695,20 @@ export function formatContextAt(state: EditorState): FormatContext {
   inspect(tree.resolveInner(head, -1));
   inspect(tree.resolveInner(head, 1));
 
-  const contentStart = line.from + (/^\s*/.exec(line.text)?.[0].length ?? 0);
-  for (let node: SyntaxNode | null = tree.resolveInner(contentStart, 1); node; node = node.parent) {
-    const heading = /^(?:ATX|Setext)Heading(\d)$/.exec(node.name);
-    if (heading) {
-      context.block = `h${heading[1]}` as BlockKind;
-    } else if (node.name === "ListItem" && context.list === "none") {
-      if (node.getChild("Task")) context.list = "task";
-      else context.list = node.parent?.name === "OrderedList" ? "number" : "bullet";
+  // From the first marker (an empty list item has nothing after it) and from after the quote
+  // and list markers (a heading inside a quote or list item starts there).
+  const markerStart = line.from + (/^\s*/.exec(line.text)?.[0].length ?? 0);
+  const contentStart = line.from + CONTAINER_PREFIX.exec(line.text)![0].length;
+  const starts = contentStart > markerStart ? [markerStart, contentStart] : [markerStart];
+  for (const start of starts) {
+    for (let node: SyntaxNode | null = tree.resolveInner(start, 1); node; node = node.parent) {
+      const heading = /^(?:ATX|Setext)Heading(\d)$/.exec(node.name);
+      if (heading) {
+        context.block = `h${heading[1]}` as BlockKind;
+      } else if (node.name === "ListItem" && context.list === "none") {
+        if (node.getChild("Task")) context.list = "task";
+        else context.list = node.parent?.name === "OrderedList" ? "number" : "bullet";
+      }
     }
   }
   return context;
