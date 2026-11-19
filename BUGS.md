@@ -25,12 +25,12 @@ This report covers **functionality**: broken features, wrong results, data loss 
 
 | # | Bug | Why first |
 | --- | --- | --- |
-| C1 | Save As without an extension silently overwrites another file | Data loss |
+| C1 | Save As without an extension silently overwrites another file | Data loss — fixed (965dcfc) |
 | C2 | Replace all during loading changes only part of the file | Silent wrong result |
-| C3 | Edits in a big file cannot be saved once the file changes on disk | Work is stuck |
+| C3 | Edits in a big file cannot be saved once the file changes on disk | Work is stuck — fixed (246833d) |
 | C4 | After an error message, a tab or the window can never close | App is stuck |
 | C5 | Session does not come back if the main window closed first | Unsaved notes "vanish" |
-| C6 | Urdu/Unicode saved in an ANSI file becomes `?` | Data loss |
+| C6 | Urdu/Unicode saved in an ANSI file becomes `?` | Data loss — fixed (529593f, a7319a4) |
 | C8 | Typing goes into the previous tab while a tab loads | Wrong file is edited |
 | H1 | Ctrl+B in a table cell makes `****text` | Everyday feature broken |
 | H2 | Left/Right arrow gets stuck at tables, maths and diagrams | Keyboard navigation broken |
@@ -40,7 +40,7 @@ This report covers **functionality**: broken features, wrong results, data loss 
 
 ## CRITICAL: data loss or the app gets stuck
 
-### C1. Save As without an extension renames the file and overwrites another one ✅
+### C1. Save As without an extension renames the file and overwrites another one ✅ — fixed (965dcfc)
 - **What happens:** in Save As, pick "All files" and type `LICENSE`. The app adds `.md` (or `.txt`) itself and writes to `LICENSE.md`. If `LICENSE.md` already exists it is **overwritten without asking**, because the Windows dialog only checked `LICENSE`.
 - **Test:** `LICENSE.md` held "IMPORTANT EXISTING CONTENT". Save As `C:\d\LICENSE` → its content became "hello".
 - **Also:** `.gitignore` becomes `.gitignore.txt`. Files with no extension (`Makefile`, `LICENSE`, `hosts`) can never be saved with Save As.
@@ -53,7 +53,7 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - **Cause:** `src/components/FindBar.tsx:176`. `openFind` starts the full load but Replace all does not wait for it.
 - **Fix:** `await actions.ensureFullyLoaded(activeId)` before Replace and Replace all; disable the buttons while loading.
 
-### C3. Edits in a partly loaded big file cannot be saved anywhere once the file changes on disk ✅
+### C3. Edits in a partly loaded big file cannot be saved anywhere once the file changes on disk ✅ — fixed (246833d)
 - **What happens:** edit a big file, then another program changes it (a logger, a sync tool). Now:
   1. Save → "File changed on disk ... use Save as to keep your text under another name."
   2. Save as → "This file changed on disk while only part of it was loaded. Reload it to continue."
@@ -75,13 +75,13 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - The notes are still on disk and return after a PC restart, but until then they look lost. New notes written in that window get no draft either.
 - **Fix:** create a new `main` window when none exists, or give the last hidden window the main role.
 
-### C6. Saving in ANSI silently turns Urdu/Unicode into `?` 📖
+### C6. Saving in ANSI silently turns Urdu/Unicode into `?` 📖 — fixed (529593f, a7319a4)
 - **What happens:** the file is detected as ANSI (or ANSI is picked in the status bar). Type Urdu, emoji or any letter the code page lacks. On save each one becomes `?`. No warning, and the tab shows as saved.
 - **Dangerous path:** one bad byte in the first 256 KB of a UTF-8 file makes the whole file ANSI. Urdu typed into it then becomes `????` for good.
 - **Cause:** `src-tauri/src/files.rs:491` (`Unmappable(_) => out.push(b'?')`).
 - **Fix:** check before saving and ask the user ("Save as UTF-8?").
 
-### C7. Encoding is detected from the first 256 KB only 📖
+### C7. Encoding is detected from the first 256 KB only 📖 — fixed (529593f, a7319a4)
 - **What happens:** an ANSI file whose first non-ASCII letter comes after 256 KB is treated as UTF-8. Those bytes show as `�` in later chunks. Saving then damages those bytes in the loaded part for good.
 - **Cause:** `src-tauri/src/files.rs:174` (`detect_encoding`); later chunks use `from_utf8_lossy`.
 - **Fix:** when a later chunk has invalid UTF-8, reload the tab as ANSI, or at least block saving with a warning.
@@ -166,11 +166,11 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - If an update is "ready" and the user turns the setting off, it still installs on close.
 - **Cause:** `src-tauri/src/autoupdate.rs:208` (`install_if_ready`) does not check `enabled`.
 
-### H14. A file with mixed line endings is fully rewritten on save 📖
+### H14. A file with mixed line endings is fully rewritten on save 📖 — fixed (529593f, a7319a4)
 - With both CRLF and LF in a file, **every** line is saved in the first line's style. A Git diff shows the whole file changed. No warning; the status bar shows the first line's style only.
 - **Cause:** `src-tauri/src/files.rs:458` (`encode_text`).
 
-### H15. Save fails in a folder where new files cannot be created 📖
+### H15. Save fails in a folder where new files cannot be created 📖 — fixed (529593f), not checked on Windows
 - The file itself is writable but a temp file cannot be made in its folder (some ACLs, drive roots, some network shares). Save gives "Access is denied" although writing in place would work.
 - **Cause:** `src-tauri/src/files.rs:644`. The in-place fallback covers a failed replace, not a failed temp file.
 
@@ -200,7 +200,7 @@ Press Ctrl+M by mistake and Tab moves focus to the status bar; typing goes nowhe
 ### M5. Moving down out of the last table row marks the document unsaved ✅
 With a table at the end of the document, Down arrow or Escape adds a newline and the tab becomes dirty. Cause: `widgets.ts:387`.
 
-### M6. Save As onto the path of another open tab gives two tabs for one file ✅
+### M6. Save As onto the path of another open tab gives two tabs for one file ✅ — fixed (246833d)
 Both tabs show `a.txt`; saving in one leaves the other in a stale/reload state.
 
 ### M7. Links that open wrongly ✅
@@ -238,7 +238,7 @@ Find, Replace, Select all, Ctrl+End, Print, Save As, Go to line and changing the
 ### M14. Find scans the whole file on each keystroke in big files 📖
 `recount` and `firstFrom` run on the UI thread (120 ms debounce only). In a 100 MB file with few matches the UI can stall on each letter. Cause: `src/editor/find.ts:107`.
 
-### M15. A wrongly detected encoding cannot be corrected 📖
+### M15. A wrongly detected encoding cannot be corrected 📖 — mostly fixed (529593f, a7319a4)
 - A UTF-16 file without a BOM is read as UTF-8 (a NUL between every letter).
 - Changing the encoding in the status bar only affects **saving**; the file is not decoded again (no "Reopen with encoding").
 - A binary file opens as text and is damaged on save, with no warning.
@@ -306,7 +306,7 @@ These look likely from the code but need a run on WebView2.
 | W5 | Hovering the maximize button does not show Windows 11 Snap Layouts | Custom caption buttons |
 | W6 | The "Autocorrect" setting has no effect | The `autocorrect` attribute does nothing in Chromium |
 | W7 | A file that is one line of several MB (minified JSON) is very slow with word wrap | CodeMirror is weak on very long lines; not measured here |
-| W8 | Saving on paths over 260 characters, FAT/exFAT USB drives and network shares | `ReplaceFileW` gets the raw path (`files.rs:545`) |
+| W8 | Saving on paths over 260 characters, FAT/exFAT USB drives and network shares | `ReplaceFileW` gets the raw path (`files.rs:545`) — long paths fixed (529593f); FAT/exFAT and shares still to check |
 
 ---
 
@@ -363,6 +363,17 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 | H10 (first part) | Find Next/Previous report the real index after the cursor was moved. Parts 2 (F3 does not update the bar) and 3 ("10000+") are still open | `96a6e76` |
 | H9 (part) | `%%comments%%` and front matter are left out of printing. Maths, Mermaid, callouts, highlights, wikilinks and tags still print raw | `ccacdde` |
 | L6 (part) | "Montserrat Extra Bold" no longer lists a false "Montserrat Extra"; bitmap `.fon` fonts ("Courier 10,12,15", "MS Sans Serif 8,10,12,14,18,24") are left out. "Inter" is still always listed | `ea5c821`, `fec7557` |
+| C1 | Save As uses the path the dialog returns (the dialog already adds the selected filter's extension and checks that exact name), so `LICENSE` with "All files" stays `LICENSE` | `965dcfc` |
+| T3 | A device name as first line (`con`, `nul`, `com1`...) suggests `con_.md` | `965dcfc` |
+| T4 | Trailing dots and spaces are dropped from the chosen Save As name, as Windows does | `965dcfc` |
+| M6 | Save As onto a file open in another clean tab closes that tab; if that tab has unsaved changes the save is refused with a message | `246833d` |
+| C3 | Save As on a partly loaded file that changed on disk asks to save the loaded part (with the edits) to the new file; the tab then becomes that complete file | `246833d` |
+| C6 | A save in ANSI with characters the code page lacks fails in Rust (`UNMAPPABLE`); the app asks: Save as UTF-8 / Save as ANSI (with `?`) / Cancel | `529593f`, `a7319a4` |
+| C7 | The background scan reports bytes that are not valid in the encoding; an unedited UTF-8 tab is then read again as ANSI, an edited one gets a warning | `529593f`, `a7319a4` |
+| H14 | Unchanged lines of a mixed-line-ending file keep their own ending; changing the line ending in the status bar still converts every line | `529593f`, `a7319a4` |
+| H15 | When no temp file can be created (access denied) but the file exists, it is written in place (not atomic). Rust not compiled here | `529593f` |
+| M15 (most) | UTF-16 without BOM is detected; status bar Encoding menu has "Reopen with encoding". Still open: no binary-file warning, code pages other than 874/932/936/949/950/1250-1258 | `529593f`, `a7319a4` |
+| W8 (part) | Paths of 260+ characters get the `\\?\` prefix before `ReplaceFileW`. FAT/exFAT and network shares still need a Windows check | `529593f` |
 
 ### Fixed on this branch (new)
 
@@ -377,12 +388,12 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 | --- | --- |
 | H5 | `src/editor/commands.test.ts` "H5: adding a row to a table inside a blockquote keeps it in the quote" |
 | H7 | `src/state/actions.test.ts` "H7: a deleted-then-restored file leaves an unedited tab clean" |
-| H14 | `src-tauri/src/files.rs` `mixed_line_endings_are_kept_on_save` (`#[ignore]`) |
+| H14 | `src-tauri/src/files.rs` `mixed_line_endings_are_kept_on_save` (`#[ignore]`) — fixed (529593f), test runs again |
 | H16 | `src/state/actions.test.ts` "H16: a restored tab whose file is gone is not an empty unsaved document" |
 | M4 (second part) | `src/editor/commands.test.ts` "M4: bolding two paragraphs bolds each one" |
 | M7 | `src/state/logic.test.ts` "M7: [[v1.2 notes]] opens v1.2 notes.md" |
 | M12 | `src/lib/loader.test.ts` "M12: undo still works after a tab was hibernated and woken" |
-| M15 | `src-tauri/src/files.rs` `utf16_without_bom_is_detected` (`#[ignore]`) |
+| M15 | `src-tauri/src/files.rs` `utf16_without_bom_is_detected` (`#[ignore]`) — fixed (529593f), test runs again |
 | L2, L3 | `src/editor/markdown.test.ts` "L2: colour codes are not tags", "L3: comparison operators are not highlight markers" |
 | L8 | `src/editor/tableModel.test.ts` "L8: 2 * 3 * 4 stays plain text" |
 
@@ -395,12 +406,12 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 - **Cause:** `src/state/actions.ts:49` / `:85` (`scheduleTitle`): the title is set on a 250 ms timer, and `prepareWindowClose` (`:484`) stores the session without running a pending title update. The test in `actions.test.ts` waits for the title before closing to stay deterministic.
 - **Fix:** flush pending title timers in `prepareWindowClose`, or derive the title in `buildSession` for untitled dirty tabs.
 
-#### T3. A note whose first line is a Windows device name suggests an invalid file name 📖
+#### T3. A note whose first line is a Windows device name suggests an invalid file name 📖 — fixed (965dcfc)
 - **What happens:** an untitled tab whose first line is `con`, `nul`, `aux`, `prn`, `com1`..`com9` or `lpt1`..`lpt9` suggests `con.md` etc. in Save As. Windows reserves these names with any extension, so the dialog refuses or the save fails.
 - **Expected:** a usable suggestion (`con_.md` or `Untitled.md`). **Actual:** `con.md`.
 - **Cause:** `src/state/logic.ts:192` (`suggestedFileName`) strips forbidden characters but not reserved names.
 
-#### T4. A Save As name ending in a dot keeps a "." extension that Windows then drops 📖
+#### T4. A Save As name ending in a dot keeps a "." extension that Windows then drops 📖 — fixed (965dcfc)
 - **What happens:** in Save As type `notes.` → `extOf` sees the extension `.`, so no `.md`/`.txt` is added. Windows strips the trailing dot and writes `notes` with no extension, while the tab's path stays `...\notes.`. `pathsEqual` then treats `notes.` and `notes` as different files, so opening `notes` again gives a second tab for the same file.
 - **Cause:** `src/state/logic.ts:111` (`extOf`) and `:198` (`withDefaultExtension`); related to C1.
 - **Fix:** trim trailing dots and spaces from the chosen path before using it (Windows does the same).
@@ -436,3 +447,19 @@ These are not bugs in existing code: Windows Notepad does these things and Notep
   - Use the drag position on screen to tell a drop outside every window (new window) from a drop on another window's tab bar (move).
   - Make sure the moved tab's draft and session entry belong to the new window, so nothing is lost or duplicated on restart.
 - **Related:** M18, C5 and H12. Test the move with a dirty tab, a partly loaded big file and an untitled tab.
+
+### New (files)
+
+#### FILES-1. A mixed-line-ending file cannot be normalised to its first line's style 📖
+- **What happens:** the file starts with CRLF but also has LF lines. Picking "Windows (CRLF)" in the status bar does nothing (it is already shown), so the LF lines stay. Since H14 is fixed, a save keeps them too. Workaround: pick LF, then CRLF.
+- **Cause:** `src/state/actions.ts` `changeFileFormat` returns early when the picked line ending equals `tab.eol`; the frontend does not know the file is mixed.
+- **Fix:** let Rust report "mixed" in `FileChunk`, show it in the status bar, and let picking any style normalise.
+
+#### FILES-2. A UTF-16 file without a BOM gets a BOM when saved 📖
+- **What happens:** since M15, such a file is read as UTF-16, but `save` always writes `Encoding::bom()`, so the first save adds `FF FE` / `FE FF` and the file grows by 2 bytes.
+- **Cause:** `src-tauri/src/files.rs` `save` / `write_in_place`; the encoding enum has no "UTF-16 without BOM".
+- **Fix:** probably fine (Notepad also writes a BOM), but could add BOM-less UTF-16 variants if it matters.
+
+#### FILES-3. The H15 in-place fallback is not atomic 📖
+- **What happens:** when the folder allows no new files, the file is overwritten in place. If the write fails part way (disk full, network drop), the file is damaged and no temp copy exists.
+- **Cause:** `src-tauri/src/files.rs` `write_in_place`. Notepad has the same limit.
