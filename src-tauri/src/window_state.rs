@@ -219,6 +219,74 @@ impl WindowPaths {
     }
 }
 
+/// What a second launch of the app does (F1, `on_second_instance`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum SecondLaunch {
+    /// No files: open a new window next to this one (on screen, last focused).
+    NewWindowNear(String),
+    /// Files go to this window on screen, which follows "Open files in": sent
+    /// now when its page is ready (`send`), else kept for it to take at boot.
+    FilesTo { label: String, send: bool },
+    /// No window on screen: bring this one back. `wake` it from the background
+    /// first; when its page is not `ready`, the files are kept for its boot and
+    /// it shows itself, else they are sent to open here and it is shown.
+    Bring {
+        label: String,
+        wake: bool,
+        ready: bool,
+    },
+    /// There is no window at all.
+    Nothing,
+}
+
+impl WindowPaths {
+    /// Where a second launch goes. `windows` in the app's order; `main` is the
+    /// first window's label. A window on screen means a visible one: the
+    /// focused one, else `main`, else the first.
+    pub fn route_second_launch(
+        &self,
+        windows: &[WindowView],
+        main: &str,
+        has_paths: bool,
+    ) -> SecondLaunch {
+        let visible = |label: &str| windows.iter().any(|(l, v)| l == label && *v);
+        let focused = self
+            .focused()
+            .filter(|label| visible(label))
+            .or_else(|| visible(main).then(|| main.to_owned()))
+            .or_else(|| windows.iter().find(|(_, v)| *v).map(|(l, _)| l.clone()));
+        if let Some(label) = focused {
+            if !has_paths {
+                return SecondLaunch::NewWindowNear(label);
+            }
+            let send = self.is_ready(&label);
+            return SecondLaunch::FilesTo { label, send };
+        }
+        let Some((label, visible)) = windows
+            .iter()
+            .find(|(l, _)| l == main)
+            .or_else(|| windows.first())
+        else {
+            return SecondLaunch::Nothing;
+        };
+        let ready = self.is_ready(label);
+        SecondLaunch::Bring {
+            label: label.clone(),
+            wake: !visible && ready,
+            ready,
+        }
+    }
+
+    /// Records what a window about to be created needs: its paths, its boot
+    /// data, and that it counts as on screen while it boots hidden (RUST-5).
+    /// `forget` undoes all of it when the window cannot be built.
+    pub fn prepare_window(&self, label: &str, paths: Vec<String>, boot: WindowBoot) {
+        self.store(label, paths);
+        self.set_boot(label, boot);
+        self.mark_booting(label);
+    }
+}
+
 /// A Windows path in a form where two spellings of one file compare equal:
 /// `/` as `\`, no `\\?\` prefix, `.` and `..` resolved, trailing dots and
 /// spaces dropped from each name (Windows ignores them), and lower case. Purely
@@ -267,6 +335,102 @@ mod tests {
 
     fn views(list: &[(&str, bool)]) -> Vec<WindowView> {
         list.iter().map(|(l, v)| (l.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn a_second_launch_without_files_opens_a_window_next_to_the_focused_one() {
+        let state = WindowPaths::default();
+        let windows = views(&[("main", true), ("window-1", true), ("window-2", false)]);
+        assert_eq!(
+            state.route_second_launch(&windows, "main", false),
+            SecondLaunch::NewWindowNear("main".into())
+        );
+        state.set_focused("window-1");
+        assert_eq!(
+            state.route_second_launch(&windows, "main", false),
+            SecondLaunch::NewWindowNear("window-1".into())
+        );
+        // A hidden window that last had the focus is passed over.
+        state.set_focused("window-2");
+        assert_eq!(
+            state.route_second_launch(&windows, "main", false),
+            SecondLaunch::NewWindowNear("main".into())
+        );
+        let no_main = views(&[("main", false), ("window-3", true)]);
+        assert_eq!(
+            state.route_second_launch(&no_main, "main", false),
+            SecondLaunch::NewWindowNear("window-3".into())
+        );
+    }
+
+    #[test]
+    fn a_second_launch_with_files_sends_them_or_keeps_them_for_a_booting_window() {
+        let state = WindowPaths::default();
+        let windows = views(&[("main", true)]);
+        assert_eq!(
+            state.route_second_launch(&windows, "main", true),
+            SecondLaunch::FilesTo {
+                label: "main".into(),
+                send: false
+            }
+        );
+        state.take("main");
+        assert_eq!(
+            state.route_second_launch(&windows, "main", true),
+            SecondLaunch::FilesTo {
+                label: "main".into(),
+                send: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_second_launch_with_no_window_on_screen_brings_one_back() {
+        let state = WindowPaths::default();
+        // Waiting in the background, page ready: wake it, then send the files.
+        let hidden = views(&[("window-1", false), ("main", false)]);
+        state.take("main");
+        assert_eq!(
+            state.route_second_launch(&hidden, "main", true),
+            SecondLaunch::Bring {
+                label: "main".into(),
+                wake: true,
+                ready: true
+            }
+        );
+        // Still booting (hidden until its first paint): keep the files for it.
+        assert_eq!(
+            state.route_second_launch(&views(&[("window-1", false)]), "main", false),
+            SecondLaunch::Bring {
+                label: "window-1".into(),
+                wake: false,
+                ready: false
+            }
+        );
+        assert_eq!(
+            state.route_second_launch(&[], "main", true),
+            SecondLaunch::Nothing
+        );
+    }
+
+    // BUGS.md "Review: Rust backend": open_window's clean-up when the window
+    // cannot be built was untested.
+    #[test]
+    fn a_window_that_could_not_be_built_leaves_nothing_behind() {
+        let state = WindowPaths::default();
+        let boot = WindowBoot {
+            restore: None,
+            transfer: Some("{}".into()),
+        };
+        state.prepare_window("window-1", vec!["a.txt".into()], boot);
+        let windows = views(&[("main", true), ("window-1", false)]);
+        // While it boots it counts as on screen, so main is not the last window.
+        assert!(!state.is_last("main", &windows));
+        state.forget("window-1");
+        assert!(state.is_last("main", &windows));
+        assert!(!state.any_on_screen(&views(&[("window-1", false)])));
+        assert_eq!(state.take_boot("window-1"), WindowBoot::default());
+        assert!(state.take("window-1").is_empty());
     }
 
     #[test]

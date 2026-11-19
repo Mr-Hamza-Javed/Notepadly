@@ -18,7 +18,7 @@ use tauri::{
     WindowEvent,
 };
 use tauri_plugin_window_state::StateFlags;
-use window_state::{WindowBoot, WindowPaths, WindowView};
+use window_state::{SecondLaunch, WindowBoot, WindowPaths, WindowView};
 
 const MAIN_WINDOW: &str = "main";
 const OPEN_PATHS_EVENT: &str = "open-paths";
@@ -366,10 +366,8 @@ fn open_window(
             config.height = height;
         }
     }
-    state.store(&config.label, paths);
-    state.set_boot(&config.label, boot);
     // Hidden until its first paint, but it counts as on screen meanwhile (RUST-5).
-    state.mark_booting(&config.label);
+    state.prepare_window(&config.label, paths, boot);
     // The config is the main window's, so the WebView2 flags in
     // `additionalBrowserArgs` (tauri.conf.json) apply here too. They turn off
     // msSmartScreenProtection, which is safe only because no Notepadly window
@@ -580,18 +578,19 @@ fn on_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
     let paths = paths_from_args(args, Path::new(&cwd));
     let state = app.state::<WindowPaths>();
     let windows = app.webview_windows();
-    let on_screen = |w: &&WebviewWindow| w.is_visible().unwrap_or(false);
-    let focused = state
-        .focused()
-        .and_then(|label| windows.get(&label))
-        .filter(on_screen)
-        .or_else(|| windows.get(MAIN_WINDOW).filter(on_screen))
-        .or_else(|| windows.values().find(on_screen));
-    if let Some(window) = focused {
-        let label = window.label().to_owned();
-        if paths.is_empty() {
+    let mut views: Vec<(String, bool)> = windows
+        .iter()
+        .map(|(label, w)| (label.clone(), w.is_visible().unwrap_or(false)))
+        .collect();
+    // A stable order, so "the first window" is the same every time.
+    views.sort();
+    let (label, wake) = match state.route_second_launch(&views, MAIN_WINDOW, !paths.is_empty()) {
+        SecondLaunch::Nothing => return,
+        SecondLaunch::NewWindowNear(label) => {
+            let Some(near) = windows.get(&label).cloned() else {
+                return;
+            };
             let app = app.clone();
-            let near = window.clone();
             // Off the main thread, as window_new is (see there).
             tauri::async_runtime::spawn(async move {
                 if let Err(error) =
@@ -600,27 +599,31 @@ fn on_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
                     eprintln!("Notepadly: could not open a new window: {error}");
                 }
             });
-        } else if state.is_ready(&label) {
-            let _ = app.emit_to(EventTarget::webview_window(label), OPEN_PATHS_EVENT, paths);
-        } else {
-            state.store(&label, paths);
+            return;
         }
+        SecondLaunch::FilesTo { label, send: true } => {
+            let _ = app.emit_to(EventTarget::webview_window(label), OPEN_PATHS_EVENT, paths);
+            return;
+        }
+        SecondLaunch::FilesTo { label, send: false }
+        | SecondLaunch::Bring {
+            label,
+            ready: false,
+            ..
+        } => {
+            // Frontend still booting: it drains these and shows the window itself.
+            state.store(&label, paths);
+            return;
+        }
+        SecondLaunch::Bring { label, wake, .. } => (label, wake),
+    };
+    let Some(window) = windows.get(&label) else {
         return;
-    }
-    let window = app
-        .get_webview_window(MAIN_WINDOW)
-        .or_else(|| windows.into_values().next());
-    let Some(window) = window else { return };
-    let label = window.label().to_owned();
+    };
     // Waiting in the background after its last window closed: wake it first so
     // the page can take the paths, then show it below.
-    if background::is_in_background(&window) && state.is_ready(&label) {
-        background::wake(&window);
-    }
-    if !state.is_ready(&label) {
-        // Frontend still booting: it drains these and shows the window itself.
-        state.store(&label, paths);
-        return;
+    if wake {
+        background::wake(window);
     }
     if !paths.is_empty() {
         let _ = app.emit_to(

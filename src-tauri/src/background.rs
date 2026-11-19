@@ -32,11 +32,6 @@ pub fn enter_background(app: AppHandle, window: WebviewWindow) -> Result<(), Str
     Ok(())
 }
 
-/// True when the window was waiting in the background.
-pub fn is_in_background(window: &WebviewWindow) -> bool {
-    !window.is_visible().unwrap_or(true)
-}
-
 /// Wakes a window that `enter_background` put to sleep. Call before showing it.
 pub fn wake(window: &WebviewWindow) {
     set_asleep(window, false);
