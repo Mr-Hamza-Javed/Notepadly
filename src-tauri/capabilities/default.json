@@ -32,7 +32,36 @@
     "opener:default",
     {
       "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "**" }]
+      "allow": [{ "path": "**" }],
+      "deny": [
+        { "path": "**/*.exe" }, { "path": "**/*.com" }, { "path": "**/*.scr" }, { "path": "**/*.pif" },
+        { "path": "**/*.bat" }, { "path": "**/*.cmd" }, { "path": "**/*.btm" }, { "path": "**/*.ps1" },
+        { "path": "**/*.ps1xml" }, { "path": "**/*.ps2" }, { "path": "**/*.ps2xml" }, { "path": "**/*.psc1" },
+        { "path": "**/*.psc2" }, { "path": "**/*.psd1" }, { "path": "**/*.psm1" }, { "path": "**/*.pssc" },
+        { "path": "**/*.cdxml" }, { "path": "**/*.vbs" }, { "path": "**/*.vbe" }, { "path": "**/*.vb" },
+        { "path": "**/*.js" }, { "path": "**/*.jse" }, { "path": "**/*.wsf" }, { "path": "**/*.wsh" },
+        { "path": "**/*.wsc" }, { "path": "**/*.ws" }, { "path": "**/*.jar" }, { "path": "**/*.msi" },
+        { "path": "**/*.msp" }, { "path": "**/*.mst" }, { "path": "**/*.msc" }, { "path": "**/*.msh" },
+        { "path": "**/*.msh1" }, { "path": "**/*.msh2" }, { "path": "**/*.mshxml" }, { "path": "**/*.msh1xml" },
+        { "path": "**/*.msh2xml" }, { "path": "**/*.cpl" }, { "path": "**/*.dll" }, { "path": "**/*.ocx" },
+        { "path": "**/*.sys" }, { "path": "**/*.drv" }, { "path": "**/*.lnk" }, { "path": "**/*.url" },
+        { "path": "**/*.website" }, { "path": "**/*.scf" }, { "path": "**/*.hta" }, { "path": "**/*.reg" },
+        { "path": "**/*.inf" }, { "path": "**/*.application" }, { "path": "**/*.appref-ms" }, { "path": "**/*.gadget" },
+        { "path": "**/*.xbap" }, { "path": "**/*.chm" }, { "path": "**/*.hlp" }, { "path": "**/*.appx" },
+        { "path": "**/*.appxbundle" }, { "path": "**/*.msix" }, { "path": "**/*.msixbundle" }, { "path": "**/*.appinstaller" },
+        { "path": "**/*.diagcab" }, { "path": "**/*.settingcontent-ms" }, { "path": "**/*.library-ms" }, { "path": "**/*.search-ms" },
+        { "path": "**/*.searchconnector-ms" }, { "path": "**/*.theme" }, { "path": "**/*.themepack" }, { "path": "**/*.deskthemepack" },
+        { "path": "**/*.iso" }, { "path": "**/*.img" }, { "path": "**/*.vhd" }, { "path": "**/*.vhdx" },
+        { "path": "**/*.py" }, { "path": "**/*.pyw" }, { "path": "**/*.pyz" }, { "path": "**/*.pyzw" },
+        { "path": "**/*.pyc" }, { "path": "**/*.rb" }, { "path": "**/*.pl" }, { "path": "**/*.sh" },
+        { "path": "**/*.xll" }, { "path": "**/*.xlam" }, { "path": "**/*.ppam" }, { "path": "**/*.docm" },
+        { "path": "**/*.dotm" }, { "path": "**/*.xlsm" }, { "path": "**/*.xltm" }, { "path": "**/*.xlsb" },
+        { "path": "**/*.pptm" }, { "path": "**/*.potm" }, { "path": "**/*.ppsm" }, { "path": "**/*.sldm" },
+        { "path": "**/*.iqy" }, { "path": "**/*.slk" }, { "path": "**/*.mde" }, { "path": "**/*.mda" },
+        { "path": "**/*.mdt" }, { "path": "**/*.mdw" }, { "path": "**/*.mdz" }, { "path": "**/*.accde" },
+        { "path": "**/*.ade" }, { "path": "**/*.adp" }, { "path": "**/*.html" }, { "path": "**/*.htm" },
+        { "path": "**/*.mht" }, { "path": "**/*.mhtml" }, { "path": "**/*.xhtml" }
+      ]
     }
   ]
 }
