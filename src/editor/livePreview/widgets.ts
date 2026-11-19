@@ -520,6 +520,23 @@ class TableController {
     return true;
   }
 
+  /**
+   * Edits the focused cell at its caret the way typing does (the `input` event then writes the
+   * cell), for Paste, F5 and Cut from the menus. Going through the editor selection lost a space
+   * typed at the end of the cell, since the cell's markdown is trimmed: "Due " then F5 gave
+   * "Due4:49 PM" (found by e2e). False when there is no focused cell or the browser cannot.
+   */
+  editInCell(text: string | null): boolean {
+    const cell = this.active ? this.cellAt(this.active.row, this.active.col) : null;
+    const selected = cell && this.hasFocus() ? cellSelection(cell) : null;
+    if (!selected || (text === null && selected.anchor === selected.head)) return false;
+    try {
+      return text === null ? document.execCommand("delete") : document.execCommand("insertText", false, text);
+    } catch {
+      return false;
+    }
+  }
+
   /** Moves focus into the cell at a document position (the editor's cursor went into the table). */
   focusAt(anchor: number, head: number): void {
     const cell = this.cellFor(Math.min(anchor, head));

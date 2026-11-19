@@ -808,6 +808,7 @@ class Engine implements EditorEngine {
   }
 
   deleteSelection(): void {
+    if (this.view && focusedTable(this.view)?.editInCell(null)) return;
     this.view?.dispatch(this.view.state.replaceSelection(""), { userEvent: "delete.selection", scrollIntoView: true });
   }
 
@@ -821,6 +822,7 @@ class Engine implements EditorEngine {
   insertText(text: string): void {
     const view = this.view;
     if (!view) return;
+    if (view.state.selection.ranges.length === 1 && focusedTable(view)?.editInCell(text)) return;
     // Text for a table cell (Paste, F5, a link) must not break the row with a newline or pipe.
     // Decided per cursor: with several, only those in a table get escaped text (BUGS.md EDIT-11).
     const spec = view.state.changeByRange((range) => {
