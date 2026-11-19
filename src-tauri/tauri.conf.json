@@ -39,9 +39,10 @@
       ],
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "**"
-        ]
+        "scope": {
+          "allow": ["**"],
+          "deny": ["$APPDATA/**", "$APPLOCALDATA/**", "\\\\.\\**"]
+        }
       }
     }
   },
