@@ -2,6 +2,7 @@
 import { indentLess, insertTab } from "@codemirror/commands";
 import { syntaxTree } from "@codemirror/language";
 import {
+  ChangeSet,
   EditorSelection,
   type ChangeSpec,
   type EditorState,
@@ -112,6 +113,59 @@ function wrappingMarks(state: EditorState, from: number, to: number, nodeName: s
   return marks.length >= 2 ? [marks[0], marks[marks.length - 1]] : null;
 }
 
+/**
+ * Wraps each stretch in `marker` once. Nodes of the same kind inside or overlapping a stretch
+ * lose their own marks and the wrap grows to cover them, so bolding `**a** and **b**` gives
+ * `**a and b**`, not `****a** and **b****` (BUGS.md EDIT-7).
+ */
+function wrapStretches(
+  state: EditorState,
+  stretches: [number, number][],
+  marker: string,
+  nodeName: string,
+  markName: string,
+): { changes: ChangeSet; map: (pos: number, assoc: -1 | 1) => number; bounds: [number, number][]; absorbed: boolean } {
+  const removals: ChangeSpec[] = [];
+  const bounds = stretches.map(([from, to]): [number, number] => {
+    let start = from;
+    let end = to;
+    if (to > from) {
+      syntaxTree(state).iterate({
+        from,
+        to,
+        enter: (node) => {
+          if (node.name !== nodeName) return true;
+          if (node.from >= to || node.to <= from) return false;
+          const marks = node.node.getChildren(markName);
+          if (marks.length < 2) return false;
+          const open = marks[0];
+          const close = marks[marks.length - 1];
+          removals.push({ from: open.from, to: open.to }, { from: close.from, to: close.to });
+          start = Math.min(start, node.from);
+          end = Math.max(end, node.to);
+          return false;
+        },
+      });
+    }
+    return [start, end];
+  });
+  // Removing first and inserting after keeps a new marker from merging with a removed one.
+  const removed = state.changes(removals);
+  const inserted = ChangeSet.of(
+    bounds.flatMap(([from, to]) => [
+      { from: removed.mapPos(from, 1), insert: marker },
+      { from: removed.mapPos(to, -1), insert: marker },
+    ]),
+    removed.newLength,
+  );
+  return {
+    changes: removed.compose(inserted),
+    map: (pos, assoc) => inserted.mapPos(removed.mapPos(pos, assoc), assoc),
+    bounds,
+    absorbed: removals.length > 0,
+  };
+}
+
 function toggleInline(view: EditorView, marker: string, nodeName: string, markName: string): void {
   const { state } = view;
   const tree = syntaxTree(state);
@@ -152,16 +206,18 @@ function toggleInline(view: EditorView, marker: string, nodeName: string, markNa
           return { changes, range: keepDirection(changes.mapPos(range.from, 1), changes.mapPos(range.to, -1)) };
         }
         // `**one\n\ntwo**` is not bold: wrap each paragraph on its own, inside its whitespace.
-        const changes = state.changes(
-          segments.flatMap(([from, to]) => [
-            { from, insert: marker },
-            { from: to, insert: marker },
-          ]),
-        );
-        return { changes, range: keepDirection(changes.mapPos(range.from, 1), changes.mapPos(range.to, -1)) };
+        const wrap = wrapStretches(state, segments, marker, nodeName, markName);
+        const first = Math.min(range.from, wrap.bounds[0][0]);
+        const last = Math.max(range.to, wrap.bounds[wrap.bounds.length - 1][1]);
+        return { changes: wrap.changes, range: keepDirection(wrap.map(first, 1), wrap.map(last, -1)) };
       }
       // One stretch: `**word **` is not bold, so the markers go inside the selected whitespace.
       const [from, to] = segments[0];
+      const wrap = wrapStretches(state, [[from, to]], marker, nodeName, markName);
+      if (wrap.absorbed) {
+        const [start, end] = wrap.bounds[0];
+        return { changes: wrap.changes, range: keepDirection(wrap.map(start, 1), wrap.map(end, -1)) };
+      }
       return {
         changes: [
           { from, insert: marker },
@@ -474,6 +530,12 @@ function editTable(view: EditorView, op: Extract<FormatCommand, { type: "table-e
       break;
     case "col-left":
     case "col-right": {
+      // In an extra cell past the header, pad every row first so the new column lines up
+      // with the cell it was added next to (BUGS.md EDIT-8).
+      if (column >= columns) {
+        const width = Math.max(...grid.map((row) => row.length));
+        grid = grid.map((row, r) => [...row, ...Array<string>(width - row.length).fill(r === 1 ? "---" : "")]);
+      }
       const at = op === "col-left" ? column : column + 1;
       grid = grid.map((row, r) => {
         const next = row.slice();

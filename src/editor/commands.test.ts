@@ -503,3 +503,43 @@ describe("toolbar context", () => {
     expect(formatContextAt(markdownViewAt(`${table}\n\nafter`, table.length + 3).state).inTable).toBe(false);
   });
 });
+
+describe("EDIT-7: bold over a selection that already holds bold", () => {
+  it("bolds the whole selection once instead of doubling the markers", () => {
+    expect(format("|**bold** and **more**|", { type: "bold" })).toBe("**|bold and more|**");
+    expect(format("say |one **two** three| now", { type: "bold" })).toBe("say **|one two three|** now");
+    expect(format("|*a* b|", { type: "italic" })).toBe("*|a b|*");
+    expect(format("|~~a~~ b|", { type: "strike" })).toBe("~~|a b|~~");
+  });
+
+  it("grows to cover a bold run the selection only partly holds", () => {
+    expect(format("**bo|ld** and more|", { type: "bold" })).toBe("**|bold and more|**");
+  });
+
+  it("leaves other kinds alone and toggles back on a second press", () => {
+    expect(format("|a **b** c|", { type: "italic" })).toBe("*|a **b** c|*");
+    const view = markdownView("|**bold** and **more**|");
+    applyFormat(view, { type: "bold" });
+    applyFormat(view, { type: "bold" });
+    expect(show(view)).toBe("|bold and more|");
+  });
+
+  it("merges the bold runs of each paragraph in a multi-paragraph selection", () => {
+    expect(format("|**a** b\n\nc **d**|", { type: "bold" })).toBe("**|a b**\n\n**c d|**");
+  });
+});
+
+describe("EDIT-8: column commands in the extra cell of a long row", () => {
+  const text = "| a | b |\n| --- | --- |\n| 1 | 2 | 3 |";
+
+  it("pads the header and delimiter so the new column lines up", () => {
+    const right = markdownViewAt(text, text.indexOf("3"));
+    applyFormat(right, { type: "table-edit", op: "col-right" });
+    expect(right.state.doc.toString()).toBe("| a | b |  |  |\n| --- | --- | --- | --- |\n| 1 | 2 | 3 |  |");
+
+    const left = markdownViewAt(text, text.indexOf("3"));
+    applyFormat(left, { type: "table-edit", op: "col-left" });
+    expect(left.state.doc.toString()).toBe("| a | b |  |  |\n| --- | --- | --- | --- |\n| 1 | 2 |  | 3 |");
+    expect(left.state.doc.lineAt(left.state.selection.main.head).number).toBe(3);
+  });
+});
