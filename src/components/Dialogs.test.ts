@@ -215,3 +215,22 @@ describe("message dialog accessibility and Enter", () => {
     expect(after.defaultPrevented).toBe(false);
   });
 });
+
+describe("Enter on another dialog button", () => {
+  beforeEach(async () => {
+    app = await bootApp();
+  });
+
+  it("keeps the repeats of a held Enter out of the editor too", async () => {
+    const el = await renderDialogs();
+    await act(async () => app.actions.showDialog({ kind: "goto" }));
+    const cancel = [...el.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Cancel")!;
+    await act(async () => {
+      cancel.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    const repeat = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(repeat);
+    expect(repeat.defaultPrevented).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter" }));
+  });
+});

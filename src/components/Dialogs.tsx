@@ -77,11 +77,12 @@ function Shell({
         e.preventDefault();
         return;
       }
+      // Whichever button Enter answers ("Don't save" too), its repeats stay out of the editor.
+      swallowEnterRepeats();
       const t = e.target as HTMLElement;
       const onOtherButton = t.tagName === "BUTTON" && !t.classList.contains("primary");
       if (!onOtherButton && primary && !primary.disabled) {
         e.preventDefault();
-        swallowEnterRepeats();
         primary.onClick();
       }
     } else if (e.key === "Tab") {
