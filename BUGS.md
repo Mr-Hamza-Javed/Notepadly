@@ -190,6 +190,56 @@ These were written on Linux and only type-checked, or only read. Do this before 
 - **Recommendation:** add a deny list for executable types (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`, `.vbs`, `.js`, `.msi`, `.lnk`, `.scr`…) in the capability, so a future frontend bug cannot launch a program. Check it on Windows.
 - **What the deny list does not change:** these files still open as text in Notepadly, as in Windows Notepad, through File > Open, Explorer, drag and drop, and links. The deny list only stops the app from asking Windows to *run* them with their default program.
 
+## Review: UI and shortcuts
+
+Fixed on this branch: UI-1 to UI-8 (see 2.3; each has a test that fails without the fix). Still open:
+
+### Bugs
+
+#### UI-9. A message replaces whatever dialog is open, and a second message hides the first 📖
+- **Steps:** open Go to line (Ctrl+G) or the Link dialog and start typing while a save or load fails in the background; or Save all with two files that fail.
+- **Actual:** the Go to / Link / Page setup dialog and what was typed in it vanish; with two errors only the last one is ever seen. **Expected:** messages wait their turn, as Windows stacks modal boxes, and the dialog underneath comes back.
+- **Cause:** `src/state/store.ts:211-217` `showMessage` sets `dialog` to the message unconditionally; `src/components/Dialogs.tsx` shows one dialog at a time.
+- **Fix:** a small dialog queue in the store. A message over another message or an input dialog is queued and shown after it closes (`confirm-close` keeps its C4 handling).
+
+#### UI-10. Windows high contrast: the unsaved dot, the active tab and the toggles disappear 📖 ⚠️
+- **Steps:** Windows Settings > Accessibility > Contrast themes > Night sky, then edit a tab.
+- **Actual (from the CSS):** forced colours replace backgrounds. The unsaved dot (`.tab-close .dot`, `background: currentColor`, `src/styles/app.css` ~213), the active tab (marked only by its background), the toggle knob and radio marks (`src/styles/settings.css`) and the find highlights stop being visible. There is no `@media (forced-colors: active)` rule anywhere.
+- **Fix:** add a `forced-colors` block: `forced-color-adjust: none` with `CanvasText` / `Highlight` for the dot and the switches, and a `Highlight` border for the active tab and the menu's hot item. Check in the real app.
+
+#### UI-11. Two quick Ctrl+P presses print the wrong page or an empty one 📖
+- **Steps:** press Ctrl+P, release, and press it again before the first print preview opens (a big Formatted file takes a while in `marked` and image loading).
+- **Cause:** `src/lib/print.ts:379` `printTab` calls `cleanup()` first, which removes the root the first run already put in the page; both runs then call `window.print()`. `actions.print` has no "already printing" guard. Key repeat is blocked, but two presses are not.
+- **Fix:** ignore Print while a print is being prepared or its dialog is open (a flag cleared on `afterprint` or on error).
+
+#### UI-12. Urdu / right-to-left text prints left-aligned 📖
+- **Actual:** in the editor every line has `dir="auto"`. In print, Formatted paragraphs, list items, headings and table cells have no `dir`, and Plain text is one `<pre>`, so Urdu lines print left-aligned with punctuation and numbers on the wrong side.
+- **Cause:** `src/lib/print.ts:383-394`.
+- **Fix:** after `sanitizeHtml`, set `dir="auto"` on `p, li, h1-h6, td, th, blockquote`; for Plain text, write one `<div dir="auto">` per line in a `pre-wrap` block.
+
+#### UI-13. Escape during a tab drag also closes the find bar 📖
+- Since UI-3, Escape cancels a tab drag. The global key handler (`src/lib/shortcuts.ts`, window capture, registered first) still sees the same Escape and closes the find bar or Settings.
+- **Fix:** expose `isTabDragging()` from the strip (or mark the event) and let `onKeyDown` skip it.
+
+### Improvements
+- **Menu access keys (missing Notepad behaviour):** Notepad underlines access keys, so Alt, F, S saves. Here a letter in an open menu only highlights the item (`src/components/Menu.tsx` typeahead) and Enter is still needed. Add mnemonics to `src/components/menus.ts` and run the item on a unique match.
+- **A keyboard way to move a tab to a new window:** dragging (F2) is mouse-only. Add "Move to new window" to the tab context menu (`TitleBar.tsx` `tabMenu`, calling `actions.moveTabOut` with no drop target). This also helps touch and screen reader users.
+- **Tab strip for screen readers:**
+  - A tab's name is only its title, so "unsaved" (the dot) is never announced. Add it to the tab's `aria-label`.
+  - The close button sits inside `role="tab"` (nested interactive control).
+  - Home and End do nothing in the tab strip (`TitleBar.tsx` `onKeyDown`).
+- **Settings radios:** each `role="radio"` button is its own Tab stop and the arrow keys do nothing (`src/components/Settings/index.tsx` `Radios`). Use a roving tabindex and Up/Down, as in the ARIA radio group pattern.
+- **Message dialogs:** the body is not linked with `aria-describedby`, so a screen reader may read only "Could not save file" and "OK" (`Dialogs.tsx` `Shell` / `Message`).
+- **Tooltips** appear only on mouse hover (`Tooltip.tsx`). Keyboard focus on an icon button (find bar, toolbar, caption buttons) shows nothing. Show the tip on `focusin` when `:focus-visible`.
+- **Holding Enter on "Save changes?"** answers Save, and the repeats then type newlines into the editor. Ignore repeated Enter in `Shell` (`Dialogs.tsx`).
+- **"Show replace" re-seeds the Find box** from the editor selection (`FindBar.tsx`, effect on `[find]`), so after a match was selected the typed query is replaced by the match in its own letter case. Seed only when the bar opens.
+- **Tests:** there are now jsdom tests for the tab strip (`src/components/TitleBar.test.ts`), menus (`Menu.test.ts`), dialogs (`Dialogs.test.ts`) and the page layer (`src/App.test.ts`). Still missing: the Settings and Help pages, the status bar pickers, TablePicker / FormatToolbar, and a real-browser check of the tab drag (pointer capture outside the window, `buttons` in WebView2).
+- **Not checked here (needs Windows):**
+  - The `event.key` WebView2 sends for Ctrl+letter on Urdu, Arabic and Russian layouts. UI-1 assumes Chromium's usual layout letter; if WebView2 already sends Latin, the fix does nothing.
+  - Narrator / NVDA reading of menus (UI-4) and of the find counter (UI-5).
+  - `inert` in WebView2 (UI-6; Chromium supports it since version 102).
+  - High contrast (UI-10).
+
 ---
 
 # Part 2: Done
@@ -295,6 +345,14 @@ These were written on Linux and only type-checked, or only read. Do this before 
 | WIN-1 | After the hidden restart from an update, every later window hid itself | Only the first window starts hidden | `cb1f8a5` |
 | MERGE-1 | The startup draft clean-up deleted the drafts of other windows' stored sessions | `runInit` keeps the drafts of every stored session (a small risk remains, see Part 1) | `95c2f1b` |
 | — | Bitmap `.fon` fonts appeared as false families | Left out of the font list | `fec7557` |
+| UI-1 | With an Urdu, Arabic or Russian keyboard layout no Ctrl shortcut or Alt+F/E/V worked, and Ctrl+P / Ctrl+F opened WebView2's print dialog / find bar | Shortcuts match the physical key (`KeyboardEvent.code`) when the layout types a non-Latin letter, as Windows accelerators do | `4d9b803` |
+| UI-2 | Right-click a tab, then Ctrl+W: the menu stayed, and "Close to the right" / "Close others" then closed every tab | The menu closes when its tab goes; both actions do nothing for a missing tab; app shortcuts do not run while a menu has the keyboard | `e0f3049` |
+| UI-3 | Tab drag: Escape did not cancel; a release the window did not see left the drag following the mouse, and the next click moved the tab to a new window; Ctrl+W during a drag reordered the wrong tabs | Escape cancels; a move with no button down ends the drag; the drop is skipped when the tab list changed | `03ed49f` |
+| UI-4 | Screen readers said nothing while moving through menus with the arrow keys | Menus set `aria-activedescendant` on the focused menu box | `93ad036` |
+| UI-5 | The whole status bar was a live region, read out after every keystroke; the find counter was not announced | The status bar is a labelled group; the find counter is `role="status"` | `11ada79` |
+| UI-6 | Under Settings and Help, Tab reached the invisible tab strip, menu bar, find bar and status bar (Enter or Delete could close a tab unseen) | That chrome is `inert` while a page covers it | `c85d3f1` |
+| UI-7 | Go to line in a loading file, then Escape and Ctrl+K: when the load ended, the old jump closed the Link dialog and moved the cursor | The jump runs only while its own dialog is open on the same tab; load errors are caught | `8480f8a` |
+| UI-8 | Edit > Select all in a loading file selected all in whichever tab was shown when the load ended | Uses the same guarded path as Ctrl+A | `a664f28` |
 
 ## 2.4 Features added
 
