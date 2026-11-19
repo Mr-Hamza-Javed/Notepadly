@@ -62,6 +62,8 @@ export const ipc = {
   draftRead: (id: string) => invoke<string | null>("draft_read", { id }),
   draftWrite: (id: string, text: string) => invoke<void>("draft_write", { id, text }),
   draftDelete: (id: string) => invoke<void>("draft_delete", { id }),
+  /** Deletes every draft whose id is not in `keep`. */
+  draftsPrune: (keep: string[]) => invoke<void>("drafts_prune", { keep }),
 
   /** Paths from argv for this window; drained on first call. */
   takePendingPaths: () => invoke<string[]>("take_pending_paths"),

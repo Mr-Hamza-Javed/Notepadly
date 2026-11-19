@@ -872,6 +872,27 @@ describe("closing the window and restoring the session", () => {
     await waitFor(() => backend.drafts.size === 0 && JSON.parse(backend.session!).tabs.length === 0);
   });
 
+  it("L16: deletes drafts that no restored tab owns", async () => {
+    app = await bootApp();
+    app.type("kept draft");
+    await app.actions.closeWindow();
+    const kept = [...backend.drafts.keys()];
+    backend.drafts.set("orphan-from-a-crash", "lost text");
+
+    app = await bootApp({ keepDisk: true });
+    await waitFor(() => !backend.drafts.has("orphan-from-a-crash"));
+    expect([...backend.drafts.keys()]).toEqual(kept);
+    expect(app.text()).toBe("kept draft");
+  });
+
+  it("L16: a corrupt session leaves no drafts behind", async () => {
+    backend.reset();
+    backend.session = "not json";
+    backend.drafts.set("t-old", "orphaned");
+    app = await bootApp({ keepDisk: true });
+    await waitFor(() => backend.drafts.size === 0);
+  });
+
   it("starts fresh when the session file is corrupt", async () => {
     backend.reset();
     backend.session = '{"tabs": [ {"id": 5}, broken';

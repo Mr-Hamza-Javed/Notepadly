@@ -849,6 +849,19 @@ export function flushPersistence(): Promise<void> {
   return flushChain;
 }
 
+/**
+ * Deletes drafts no tab owns (left by a crash or a corrupt session, BUGS.md L16).
+ * Runs on the flush chain, so a draft written by this run is never pruned.
+ */
+export function pruneDrafts(): Promise<void> {
+  const run = flushChain.catch(noop).then(() => {
+    const keep = useApp.getState().tabs.filter((t) => rtOf(t.id).hasDraft).map((t) => t.id);
+    return ipc.draftsPrune(keep);
+  });
+  flushChain = run.catch(noop);
+  return run;
+}
+
 /** `startup: "new"` promises to discard the previous session's unsaved text. */
 export async function discardSession(session: SessionFile | null): Promise<void> {
   if (session) {

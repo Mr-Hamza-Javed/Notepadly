@@ -176,6 +176,11 @@ export class FakeBackend {
       case "session_write":
         this.session = args.json as string;
         return null;
+      case "drafts_prune": {
+        const keep = args.keep as string[];
+        for (const id of [...this.drafts.keys()]) if (!keep.includes(id)) this.drafts.delete(id);
+        return null;
+      }
       case "draft_read":
       case "draft_write":
       case "draft_delete": {

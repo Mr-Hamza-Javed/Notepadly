@@ -720,6 +720,8 @@ async function runInit(): Promise<void> {
     engine.activate(activeId);
     engine.focus();
   }
+  // Only the main window owns drafts; clear out those no restored tab owns.
+  if (isMainWindow) loader.pruneDrafts().catch(() => {});
   loader.setPersistence(continueSession);
   initFinished = true;
 
