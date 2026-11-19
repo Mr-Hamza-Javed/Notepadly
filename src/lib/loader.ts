@@ -13,7 +13,7 @@ import {
   type SessionFile,
   type SessionTab,
 } from "../state/logic";
-import { getTab, patchTab, setLoadProgress, showMessage, useApp } from "../state/store";
+import { getLoadProgress, getTab, patchTab, setLoadProgress, showMessage, useApp } from "../state/store";
 import type { TabMeta } from "../state/types";
 
 export const FIRST_CHUNK = 256 * 1024;
@@ -84,6 +84,8 @@ interface TabRuntime {
   binaryWarned: boolean;
   /** What the stored draft was written from (edits, length, file state); a flush skips an unchanged one (H8). */
   draftSig: string | null;
+  /** Bumped by cancelFullLoad: a running whole-file load stops at its next chunk. */
+  cancelSeq: number;
 }
 
 const runtimes = new Map<string, TabRuntime>();
@@ -116,6 +118,7 @@ function rtOf(id: string): TabRuntime {
       diskEncoding: null,
       binaryWarned: false,
       draftSig: null,
+      cancelSeq: 0,
     };
     runtimes.set(id, rt);
   }
@@ -142,6 +145,33 @@ export class DraftUnreadableError extends Error {
   constructor(detail: string) {
     super(`The unsaved changes of this tab could not be read. They are kept, and Notepadly tries again when you switch to the tab.\n${detail}`);
   }
+}
+
+/** The user stopped a whole-file load (Escape or the status bar's Cancel, M13). */
+export class LoadCancelledError extends Error {
+  constructor() {
+    super("Loading the whole file was cancelled.");
+  }
+}
+
+/** A file whose text cannot be held in memory as one string (M13). */
+export class FileTooBigError extends Error {
+  constructor() {
+    super(
+      "This file is too big to load completely. Notepadly can still show, edit and save it in parts: scroll to read on, Save keeps the rest of the file as it is, and Save as copies it.",
+    );
+  }
+}
+
+/**
+ * Most characters a tab loads in full. A JavaScript string holds at most about 536 million,
+ * and saving or a draft copies the whole text into one: stay well below that (M13).
+ */
+let maxLoadedChars = 400_000_000;
+
+/** For tests: a lower cap than a test could fill. */
+export function setMaxLoadedChars(chars: number): void {
+  maxLoadedChars = chars;
 }
 
 export class LoadBlockedError extends Error {
@@ -296,33 +326,64 @@ export function ensureFullyLoaded(id: string): Promise<void> {
   if (!initial || (initial.fullyLoaded && engine.hasDoc(id))) return Promise.resolve();
   const rt = rtOf(id);
   if (rt.fullLoad) return rt.fullLoad;
-  const run = (async () => {
-    let stalled = 0;
-    try {
-      for (;;) {
-        if (!engine.hasDoc(id)) await materialise(id);
-        const tab = getTab(id);
-        if (!tab || tab.fullyLoaded) return;
-        if (!tailUsable(tab, rt)) throw new LoadBlockedError();
-        setLoadProgress({ tabId: id, loaded: tab.loadedOffset, total: tab.stamp?.size ?? tab.loadedOffset });
-        await loadStep(id, NEXT_CHUNK);
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const after = getTab(id);
-        if (after && after.loadedOffset === tab.loadedOffset && !after.fullyLoaded && rt.busy === 0) {
-          if (++stalled > 3) {
-            if (!tailUsable(after, rt)) throw new LoadBlockedError();
-            throw new Error("The file could not be read any further.");
-          }
-        } else stalled = 0;
-      }
-    } finally {
-      setLoadProgress(null);
-    }
-  })().finally(() => {
+  const run = loadWhile(id, rt, () => true).finally(() => {
     rt.fullLoad = null;
   });
   rt.fullLoad = run;
   return run;
+}
+
+/**
+ * Loads chunk by chunk until `done()` (checked once the editor holds the tab, and after
+ * each chunk) or the end of the file: Go to line loads only up to its line (M13).
+ */
+export async function ensureLoadedUntil(id: string, done: () => boolean): Promise<void> {
+  const tab = getTab(id);
+  if (!tab || (tab.fullyLoaded && engine.hasDoc(id))) return;
+  const rt = rtOf(id);
+  if (rt.fullLoad) return rt.fullLoad;
+  await loadWhile(id, rt, () => !done());
+}
+
+/** Stops a whole-file load of this tab; its callers get a LoadCancelledError. */
+export function cancelFullLoad(id: string): void {
+  const rt = runtimes.get(id);
+  if (rt) rt.cancelSeq++;
+}
+
+/** Escape: stops the whole-file load the status bar shows. False when none runs. */
+export function cancelShownLoad(): boolean {
+  const progress = getLoadProgress();
+  if (!progress) return false;
+  cancelFullLoad(progress.tabId);
+  return true;
+}
+
+async function loadWhile(id: string, rt: TabRuntime, more: () => boolean): Promise<void> {
+  const cancelAtStart = rt.cancelSeq;
+  let stalled = 0;
+  try {
+    for (;;) {
+      if (!engine.hasDoc(id)) await materialise(id);
+      if (rt.cancelSeq !== cancelAtStart) throw new LoadCancelledError();
+      const tab = getTab(id);
+      if (!tab || tab.fullyLoaded || !more()) return;
+      if (!tailUsable(tab, rt)) throw new LoadBlockedError();
+      if (engine.length(id) >= maxLoadedChars) throw new FileTooBigError();
+      setLoadProgress({ tabId: id, loaded: tab.loadedOffset, total: tab.stamp?.size ?? tab.loadedOffset });
+      await loadStep(id, NEXT_CHUNK);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const after = getTab(id);
+      if (after && after.loadedOffset === tab.loadedOffset && !after.fullyLoaded && rt.busy === 0) {
+        if (++stalled > 3) {
+          if (!tailUsable(after, rt)) throw new LoadBlockedError();
+          throw new Error("The file could not be read any further.");
+        }
+      } else stalled = 0;
+    }
+  } finally {
+    if (getLoadProgress()?.tabId === id) setLoadProgress(null);
+  }
 }
 
 interface DiskRead {

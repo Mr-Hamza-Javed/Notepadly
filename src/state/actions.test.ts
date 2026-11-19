@@ -603,6 +603,56 @@ describe("large files", () => {
     expect(backend.exists("C:\\notes\\copy.md")).toBe(false);
   });
 
+  // BUGS.md M13: a whole-file load could not be stopped.
+  it("M13: a whole-file load can be cancelled, without an error message", async () => {
+    const id = app.tab().id;
+    const invoke = backend.invoke.bind(backend);
+    vi.spyOn(backend, "invoke").mockImplementation(async (cmd, args) => {
+      if (cmd === "file_read_chunk") await new Promise((resolve) => setTimeout(resolve, 30));
+      return invoke(cmd, args);
+    });
+    const loading = app.actions.ensureFullyLoaded(id);
+    await waitFor(() => app.loader.cancelShownLoad());
+    await expect(loading).rejects.toBeInstanceOf(app.loader.LoadCancelledError);
+    expect(app.tab().fullyLoaded).toBe(false);
+    expect(app.message()).toBeNull();
+    expect(app.loader.cancelShownLoad()).toBe(false);
+    vi.restoreAllMocks();
+    // A later load is not cancelled by the old request.
+    await app.actions.ensureFullyLoaded(id);
+    expect(app.text()).toBe(big);
+  });
+
+  it("M13: Go to line loads only up to that line", async () => {
+    const id = app.tab().id;
+    await app.actions.ensureLoadedUntil(id, () => app.engine.lineCount() >= 5_000);
+    expect(app.engine.lineCount()).toBeGreaterThanOrEqual(5_000);
+    expect(app.tab().fullyLoaded).toBe(false);
+  });
+
+  it("M13: refuses to load a file too big for one string, and says why", async () => {
+    app.loader.setMaxLoadedChars(500_000);
+    try {
+      await expect(app.actions.ensureFullyLoaded(app.tab().id)).rejects.toBeInstanceOf(app.loader.FileTooBigError);
+      expect(app.message()?.body).toContain("too big to load completely");
+      expect(app.tab().fullyLoaded).toBe(false);
+    } finally {
+      app.loader.setMaxLoadedChars(400_000_000);
+    }
+  });
+
+  it("M13: Print refuses a file too big to print instead of loading it", async () => {
+    const huge = "word ".repeat(2_200_000); // 11 MB, over the formatted print limit
+    backend.write("C:\\notes\\huge.md", huge);
+    await app.actions.openPaths(["C:\\notes\\huge.md"]);
+    expect(app.tab().mode).toBe("formatted");
+    const reads = backend.count("file_read_chunk");
+    await app.actions.print();
+    expect(app.message()?.title).toBe("Could not print");
+    expect(app.message()?.body).toContain("too big to print formatted");
+    expect(backend.count("file_read_chunk")).toBe(reads);
+  });
+
   it("loads a small file completely in the background", async () => {
     const small = line.repeat(4_000); // ~360 KB: more than the first chunk, under 2 MiB
     backend.write(B, small);

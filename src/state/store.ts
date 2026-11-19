@@ -275,6 +275,10 @@ export function setLoadProgress(progress: LoadProgress | null): void {
   useLoadStore.setState({ progress });
 }
 
+export function getLoadProgress(): LoadProgress | null {
+  return useLoadStore.getState().progress;
+}
+
 /** Whole-file load progress of the active tab; null when nothing is loading. */
 export function useLoadProgress(): LoadProgress | null {
   const activeId = useApp((s) => s.activeId);

@@ -657,6 +657,7 @@ async function saveAs(tabId?: string): Promise<boolean> {
     try {
       await loader.ensureFullyLoaded(id);
     } catch (error) {
+      if (error instanceof loader.LoadCancelledError) return false;
       if (!(error instanceof loader.LoadBlockedError)) {
         showMessage("Could not save file", errorText(error));
         return false;
@@ -1101,7 +1102,18 @@ async function ensureFullyLoaded(id: string): Promise<void> {
   try {
     await loader.ensureFullyLoaded(id);
   } catch (error) {
-    showMessage("Could not load the whole file", errorText(error));
+    // Cancelled by the user (Escape, Cancel): nothing to report.
+    if (!(error instanceof loader.LoadCancelledError)) showMessage("Could not load the whole file", errorText(error));
+    throw error;
+  }
+}
+
+/** Loads until `done()`; reports why it could not, like ensureFullyLoaded. */
+async function ensureLoadedUntil(id: string, done: () => boolean): Promise<void> {
+  try {
+    await loader.ensureLoadedUntil(id, done);
+  } catch (error) {
+    if (!(error instanceof loader.LoadCancelledError)) showMessage("Could not load the file", errorText(error));
     throw error;
   }
 }
@@ -1458,11 +1470,15 @@ export const actions = {
     ensureFullyLoaded(state().activeId).catch(() => {});
   },
   closeFind: () => {
+    // The whole-file load the find bar started is not needed any more (M13).
+    loader.cancelFullLoad(state().activeId);
     useApp.setState({ find: { open: false, replace: false } });
     engine.clearFind();
     engine.focus();
   },
   ensureFullyLoaded,
+  ensureLoadedUntil,
+  cancelFullLoad: (id: string) => loader.cancelFullLoad(id),
   whenActivated,
 
   // In the user's regional format, which may differ from the display language (MD-2).
@@ -1491,7 +1507,7 @@ export const actions = {
       const { printTab } = await import("../lib/print");
       await printTab(state().activeId);
     } catch (error) {
-      showMessage("Could not print", errorText(error));
+      if (!(error instanceof loader.LoadCancelledError)) showMessage("Could not print", errorText(error));
     }
   },
 

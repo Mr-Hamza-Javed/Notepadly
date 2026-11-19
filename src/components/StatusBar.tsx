@@ -45,7 +45,21 @@ const CursorCells = memo(function CursorCells() {
   return (
     <>
       <div className="sb-cell sb-pos">{`Ln ${fmt(line)}, Col ${fmt(col)}`}</div>
-      <div className="sb-cell sb-chars div">{text}</div>
+      <div className="sb-cell sb-chars div">
+        {text}
+        {progress && (
+          // A whole-file load can take long on a big file: it can be stopped (M13; Escape too).
+          <button
+            type="button"
+            className="sb-btn"
+            aria-label="Cancel loading the whole file"
+            title="Cancel (Esc)"
+            onClick={() => actions.cancelFullLoad(progress.tabId)}
+          >
+            Cancel
+          </button>
+        )}
+      </div>
     </>
   );
 });

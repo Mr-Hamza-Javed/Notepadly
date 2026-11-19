@@ -168,7 +168,10 @@ function GoToLine() {
       engine.goToLine(n);
       focusEditorSoon();
     };
-    if (n > engine.lineCount() && !fullyLoaded) actions.ensureFullyLoaded(activeId).then(jump, () => {});
+    // Loads only up to the line asked for, not the whole file (M13).
+    if (n > engine.lineCount() && !fullyLoaded) {
+      actions.ensureLoadedUntil(activeId, () => engine.lineCount() >= n).then(jump, () => {});
+    }
     else jump();
   };
 
