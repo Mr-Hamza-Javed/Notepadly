@@ -504,6 +504,50 @@ describe("toolbar context", () => {
   });
 });
 
+describe("lists: Enter on an empty nested item, and numbering after Tab", () => {
+  it("Enter on an empty nested item moves it out one level", () => {
+    expect(run("- a\n    - |", continueMarkup)).toEqual([true, "- a\n- |"]);
+    expect(run("- a\n  - b\n  - |", continueMarkup)).toEqual([true, "- a\n  - b\n- |"]);
+    expect(run("> - a\n>     - |", continueMarkup)).toEqual([true, "> - a\n> - |"]);
+    expect(run("- [ ] a\n    - [ ] |", continueMarkup)).toEqual([true, "- [ ] a\n- [ ] |"]);
+  });
+
+  it("a moved-out item takes the next number of its new level and renumbers below", () => {
+    expect(run("1. a\n    1. x\n    2. |\n2. b", continueMarkup)).toEqual([true, "1. a\n    1. x\n2. |\n3. b"]);
+    expect(run("1. a\n    - |", continueMarkup)).toEqual([true, "1. a\n2. |"]);
+  });
+
+  it("Enter on an empty top-level item still ends the list", () => {
+    expect(run("- a\n- |", continueMarkup)).toEqual([true, "- a\n|"]);
+  });
+
+  it("Tab starts a nested numbered list at 1 and renumbers the items below", () => {
+    expect(run("1. a\n2. b|\n3. c", handleTab)).toEqual([true, "1. a\n    1. b|\n2. c"]);
+    expect(run("1. a\n    1. x\n2. b|", handleTab)).toEqual([true, "1. a\n    1. x\n    2. b|"]);
+  });
+
+  it("Shift+Tab continues the outer numbering", () => {
+    expect(run("1. a\n    1. b|\n2. c", handleShiftTab)).toEqual([true, "1. a\n2. b|\n3. c"]);
+  });
+
+  it("Tab into a bulleted sub-list takes its bullet; bullets alone are unchanged", () => {
+    expect(run("1. a\n    - x\n2. b|", handleTab)).toEqual([true, "1. a\n    - x\n    - b|"]);
+    expect(run("- a\n- b|\n- c", handleTab)).toEqual([true, "- a\n    - b|\n- c"]);
+  });
+
+  it("does not renumber a separate list, or one that starts at another number", () => {
+    expect(run("5. a\n6. b|", handleTab)).toEqual([true, "5. a\n    1. b|"]);
+    expect(run("1. a\n2. b|\n\npara\n\n7. z", handleTab)[1]).toBe("1. a\n    1. b|\n\npara\n\n7. z");
+  });
+
+  it("Tab and the renumbering are one undo step", () => {
+    const view = markdownView("1. a\n2. b|\n3. c");
+    handleTab(view);
+    undo(view);
+    expect(show(view)).toBe("1. a\n2. b|\n3. c");
+  });
+});
+
 describe("EDIT-7: bold over a selection that already holds bold", () => {
   it("bolds the whole selection once instead of doubling the markers", () => {
     expect(format("|**bold** and **more**|", { type: "bold" })).toBe("**|bold and more|**");

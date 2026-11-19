@@ -569,6 +569,132 @@ function editTable(view: EditorView, op: Extract<FormatCommand, { type: "table-e
   });
 }
 
+// ---------- List numbering after an indent change ----------
+
+/** A list item after its quote markers: indent, marker (bullet, or number and delimiter). */
+const ITEM_LINE = /^([ \t]*)(?:([-+*])|(\d{1,9})([.)]))(?=[ \t]|$)/;
+
+/** Width of leading whitespace, a tab counting to the next multiple of four. */
+function indentWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) width += ch === "\t" ? 4 - (width % 4) : 1;
+  return width;
+}
+
+const sameQuote = (a: string, b: string) => a.replace(/\s/g, "") === b.replace(/\s/g, "");
+
+/** How a line of the region reads: an item, other list content, or outside the list. */
+function listLineKind(text: string, quote: string): "item" | "inside" | "blank" | "outside" {
+  const lineQuote = QUOTE_MARKS.exec(text)![0];
+  if (!sameQuote(lineQuote, quote)) return "outside";
+  const body = text.slice(lineQuote.length);
+  if (!body.trim()) return "blank";
+  if (ITEM_LINE.test(body)) return "item";
+  return /^[ \t]/.test(body) ? "inside" : "outside";
+}
+
+/**
+ * Fixes the markers of the list around the `moved` lines (line numbers in `state`) after
+ * they changed level: each numbered item counts on from the item before it at its level,
+ * and a moved item takes the marker of the items it joined, or starts at 1 in a new level.
+ */
+function renumberAround(state: EditorState, moved: Set<number>, quote: string): ChangeSpec[] {
+  const { doc } = state;
+  const lines = [...moved];
+  const kind = (n: number) => listLineKind(doc.line(n).text, quote);
+  let first = Math.min(...lines);
+  let last = Math.max(...lines);
+  for (let n = first - 1, scanned = 0; n >= 1 && scanned < 500; n--, scanned++) {
+    const k = kind(n);
+    if (k === "outside") break;
+    if (k !== "blank") first = n;
+  }
+  for (let n = last + 1, scanned = 0; n <= doc.lines && scanned < 500; n++, scanned++) {
+    const k = kind(n);
+    if (k === "outside") break;
+    if (k !== "blank") last = n;
+  }
+
+  interface Level {
+    width: number;
+    bullet: string | null;
+    number: number;
+    delim: string;
+  }
+  const stack: Level[] = [];
+  const changes: ChangeSpec[] = [];
+  let afterMoved = false;
+  for (let n = first; n <= last; n++) {
+    const line = doc.line(n);
+    const lineQuote = QUOTE_MARKS.exec(line.text)![0];
+    const match = ITEM_LINE.exec(line.text.slice(lineQuote.length));
+    if (!match) continue;
+    const [, indent, bullet, digits, delim] = match;
+    const width = indentWidth(indent);
+    const isMoved = moved.has(n);
+    while (stack.length && stack[stack.length - 1].width > width) stack.pop();
+    const top = stack.length && stack[stack.length - 1].width === width ? stack[stack.length - 1] : null;
+    // Another bullet character or delimiter starts a new list, unless the item was moved here.
+    const sameList = !!top && (bullet ? top.bullet === bullet : top.bullet === null && top.delim === delim);
+    let level: Level;
+    if (top && (isMoved || sameList)) {
+      // A sibling: count on, and a moved item adopts its new neighbours' marker.
+      level = top.bullet !== null ? top : { ...top, number: top.number + 1 };
+      stack[stack.length - 1] = level;
+    } else {
+      if (top) stack.pop();
+      const startsAtOne = isMoved || (afterMoved && stack.length > 0);
+      level = bullet
+        ? { width, bullet, number: 0, delim: "" }
+        : { width, bullet: null, number: startsAtOne ? 1 : Number(digits), delim };
+      stack.push(level);
+    }
+    const marker = level.bullet ?? `${level.number}${level.delim}`;
+    const current = bullet ?? `${digits}${delim}`;
+    if (marker !== current) {
+      const from = line.from + lineQuote.length + indent.length;
+      changes.push({ from, to: from + current.length, insert: marker });
+    }
+    if (isMoved) afterMoved = true;
+  }
+  return changes;
+}
+
+/** Dispatches `changes` together with the renumbering they make necessary, as one step. */
+function dispatchWithRenumber(
+  view: EditorView,
+  changes: ChangeSpec[],
+  moved: Set<number>,
+  quote: string,
+  spec: { userEvent: string; cursorAtEndOf?: number },
+): void {
+  const { state } = view;
+  const first = state.changes(changes);
+  const next = state.update({ changes: first }).state;
+  const second = ChangeSet.of(renumberAround(next, moved, quote), first.newLength);
+  const selection =
+    spec.cursorAtEndOf !== undefined
+      ? EditorSelection.cursor(second.mapPos(next.doc.line(spec.cursorAtEndOf).to, 1))
+      : state.selection.map(first).map(second);
+  view.dispatch({ changes: first.compose(second), selection, scrollIntoView: true, userEvent: spec.userEvent });
+}
+
+/**
+ * The indent of the list item that holds the item on `line`, or null when the item is not
+ * nested. Only lines of the same quote count.
+ */
+function parentIndent(state: EditorState, line: Line, quote: string, width: number): string | null {
+  for (let n = line.number - 1, scanned = 0; n >= 1 && scanned < 500; n--, scanned++) {
+    const text = state.doc.line(n).text;
+    const k = listLineKind(text, quote);
+    if (k === "outside") return null;
+    if (k !== "item") continue;
+    const indent = ITEM_LINE.exec(text.slice(QUOTE_MARKS.exec(text)![0].length))![1];
+    if (indentWidth(indent) < width) return indent;
+  }
+  return null;
+}
+
 // ---------- Key handlers ----------
 
 function renumberFollowing(state: EditorState, line: Line, start: number): ChangeSpec[] {
@@ -611,6 +737,20 @@ export const continueMarkup: Command = (view) => {
     const contentStart = line.from + line.text.length - rest.length;
     if (range.head < contentStart || !nodeAround(state, range.head, ["ListItem"])) return false;
     if (!rest.trim() && range.empty) {
+      // An empty nested item moves out one level, as in Word and Typora; at the top level
+      // it ends the list.
+      // `quote` above also holds the indent: split them.
+      const quoteOnly = QUOTE_MARKS.exec(line.text)![0];
+      const ownIndent = /^[ \t]*/.exec(line.text.slice(quoteOnly.length))![0];
+      const outer = ownIndent ? parentIndent(state, line, quoteOnly, indentWidth(ownIndent)) : null;
+      if (outer !== null) {
+        const text = `${quoteOnly}${outer}${marker}${gap}${task ? "[ ] " : ""}`;
+        dispatchWithRenumber(view, [{ from: line.from, to: line.to, insert: text }], new Set([line.number]), quoteOnly, {
+          userEvent: "delete.dedent",
+          cursorAtEndOf: line.number,
+        });
+        return true;
+      }
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: quote },
         selection: { anchor: line.from + quote.length },
@@ -679,16 +819,22 @@ function indentListLines(view: EditorView, dir: 1 | -1): boolean {
   if (!lines.some((line) => LIST_LINE.test(line.text))) return false;
   if (!nodeAround(state, state.selection.main.head, ["ListItem"])) return false;
   const changes: ChangeSpec[] = [];
+  const moved = new Set<number>();
   for (const line of lines) {
-    if (!LIST_LINE.test(line.text)) continue;
+    if (!LIST_LINE.test(line.text) || moved.has(line.number)) continue;
     if (dir === 1) {
       changes.push({ from: line.from, insert: INDENT });
+      moved.add(line.number);
     } else {
       const leading = /^( {1,4}|\t)/.exec(line.text);
-      if (leading) changes.push({ from: line.from, to: line.from + leading[0].length });
+      if (leading) {
+        changes.push({ from: line.from, to: line.from + leading[0].length });
+        moved.add(line.number);
+      }
     }
   }
-  if (changes.length) view.dispatch({ changes, userEvent: dir === 1 ? "input.indent" : "delete.dedent" });
+  // The numbering of both levels follows the move.
+  if (changes.length) dispatchWithRenumber(view, changes, moved, "", { userEvent: dir === 1 ? "input.indent" : "delete.dedent" });
   return true;
 }
 
