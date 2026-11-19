@@ -134,7 +134,8 @@ function Picker<T extends string>({
         ref={btn}
         type="button"
         className="sb-btn"
-        aria-label={label}
+        // The name must carry the value: aria-label replaces the button's own text.
+        aria-label={`${label}: ${labels[value]}`}
         aria-haspopup="menu"
         aria-expanded={!!anchor}
         data-open={!!anchor}
