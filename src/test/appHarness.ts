@@ -13,6 +13,8 @@ export interface BootOptions {
   label?: string;
   /** Keep the fake backend's files, session and drafts from a previous boot. */
   keepDisk?: boolean;
+  /** Answers to yes/no questions asked while starting (see FakeDialogs.askAnswers). */
+  askAnswers?: boolean[];
 }
 
 /** The loader of the previous boot, so its pending timers can be silenced like a closed process. */
@@ -25,6 +27,7 @@ export async function bootApp(options: BootOptions = {}) {
   backend.calls = [];
   backend.failNext.clear();
   dialogs.reset();
+  dialogs.askAnswers = options.askAnswers ?? [];
   fakeWindow.reset(options.label ?? "main");
   localStorage.clear();
   if (options.settings) localStorage.setItem("notepadly.settings.v1", JSON.stringify(options.settings));

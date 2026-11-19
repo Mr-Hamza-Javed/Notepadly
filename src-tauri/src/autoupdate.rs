@@ -272,7 +272,9 @@ pub fn update_status(app: AppHandle) -> Status {
 /// "Check for updates" in Settings. Runs off the UI thread like the timed checks.
 #[tauri::command]
 pub async fn update_check_now(app: AppHandle) -> Status {
-    app.state::<AutoUpdate>().asked.store(true, Ordering::Relaxed);
+    app.state::<AutoUpdate>()
+        .asked
+        .store(true, Ordering::Relaxed);
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || tauri::async_runtime::block_on(check(&handle)))
         .await
@@ -280,10 +282,12 @@ pub async fn update_check_now(app: AppHandle) -> Status {
 }
 
 /// True when this launch is the hidden restart after a background update; the
-/// frontend then stays in the background instead of showing its window.
+/// frontend then stays in the background instead of showing its window. Only the
+/// first window starts hidden: a window opened later (a new launch, Ctrl+N) must
+/// show.
 #[tauri::command]
-pub fn launched_hidden(app: AppHandle) -> bool {
-    app.state::<AutoUpdate>().launched_hidden
+pub fn launched_hidden(app: AppHandle, window: tauri::WebviewWindow) -> bool {
+    app.state::<AutoUpdate>().launched_hidden && window.label() == crate::MAIN_WINDOW
 }
 
 #[cfg(test)]

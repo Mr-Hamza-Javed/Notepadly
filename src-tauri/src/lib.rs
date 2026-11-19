@@ -8,6 +8,7 @@ mod fonts;
 mod store;
 
 use files::{Encoding, FileChunk, FileScan, FileStamp, SaveRequest};
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +21,13 @@ use tauri_plugin_window_state::StateFlags;
 
 const MAIN_WINDOW: &str = "main";
 const OPEN_PATHS_EVENT: &str = "open-paths";
+/// Paths for a window that was waiting in the background: it opens them in a tab
+/// whatever "Open files in" says, since it is the only window.
+const OPEN_PATHS_HERE_EVENT: &str = "open-paths-here";
+/// How far a new window is moved from the window it was opened from, in logical px.
+const CASCADE: f64 = 32.0;
+/// Where a dragged-out tab sits in its new window, from the window's top-left corner.
+const DETACHED_TAB_OFFSET: (f64, f64) = (120.0, 18.0);
 /// What the window-state plugin remembers. VISIBLE must stay out: the frontend
 /// shows the window after first paint.
 const WINDOW_STATE_FLAGS: StateFlags = StateFlags::SIZE
@@ -94,6 +102,35 @@ async fn draft_delete(app: AppHandle, id: String) -> Result<(), String> {
     blocking(move || store::draft_delete(&base, &id)).await
 }
 
+#[derive(Serialize)]
+struct WindowSession {
+    key: String,
+    json: String,
+}
+
+/// Every window's stored session (sessions/<key>.json).
+#[tauri::command]
+async fn window_sessions_read(app: AppHandle) -> Result<Vec<WindowSession>, String> {
+    let base = data_dir(&app)?;
+    let list = blocking(move || store::window_sessions_read(&base)).await?;
+    Ok(list
+        .into_iter()
+        .map(|(key, json)| WindowSession { key, json })
+        .collect())
+}
+
+#[tauri::command]
+async fn window_session_write(app: AppHandle, key: String, json: String) -> Result<(), String> {
+    let base = data_dir(&app)?;
+    blocking(move || store::window_session_write(&base, &key, &json)).await
+}
+
+#[tauri::command]
+async fn window_session_delete(app: AppHandle, key: String) -> Result<(), String> {
+    let base = data_dir(&app)?;
+    blocking(move || store::window_session_delete(&base, &key)).await
+}
+
 #[tauri::command]
 async fn system_fonts() -> Result<Vec<String>, String> {
     blocking(|| Ok(fonts::system_fonts())).await
@@ -115,6 +152,20 @@ struct WindowPaths {
 struct PathsInner {
     pending: HashMap<String, Vec<String>>,
     ready: HashSet<String>,
+    /// What a new window starts with besides paths: a stored session to restore or
+    /// a tab dragged in from another window.
+    boot: HashMap<String, WindowBoot>,
+    /// The window that last had the focus: a second launch with files goes there.
+    focused: Option<String>,
+}
+
+#[derive(Default, Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowBoot {
+    /// Key of the stored window session this window takes over.
+    restore: Option<String>,
+    /// JSON of a tab moved here from another window (the frontend's TabTransfer).
+    transfer: Option<String>,
 }
 
 impl WindowPaths {
@@ -146,6 +197,41 @@ impl WindowPaths {
         let mut inner = self.lock();
         inner.pending.remove(label);
         inner.ready.remove(label);
+        inner.boot.remove(label);
+        if inner.focused.as_deref() == Some(label) {
+            inner.focused = None;
+        }
+    }
+
+    fn set_boot(&self, label: &str, boot: WindowBoot) {
+        if boot != WindowBoot::default() {
+            self.lock().boot.insert(label.to_owned(), boot);
+        }
+    }
+
+    fn take_boot(&self, label: &str) -> WindowBoot {
+        self.lock().boot.remove(label).unwrap_or_default()
+    }
+
+    fn set_focused(&self, label: &str) {
+        self.lock().focused = Some(label.to_owned());
+    }
+
+    fn focused(&self) -> Option<String> {
+        self.lock().focused.clone()
+    }
+
+    /// A label no window has: window-1, window-2, ...
+    fn new_label(&self, taken: impl Fn(&str) -> bool) -> String {
+        loop {
+            let label = format!(
+                "window-{}",
+                self.next_id.fetch_add(1, Ordering::Relaxed) + 1
+            );
+            if !taken(&label) {
+                return label;
+            }
+        }
     }
 }
 
@@ -154,14 +240,68 @@ fn take_pending_paths(window: WebviewWindow, state: State<'_, WindowPaths>) -> V
     state.take(window.label())
 }
 
+#[tauri::command]
+fn take_window_boot(window: WebviewWindow, state: State<'_, WindowPaths>) -> WindowBoot {
+    state.take_boot(window.label())
+}
+
 /// Async because building a window from a synchronous command deadlocks on
 /// Windows (WebView2 needs the main thread that command would be blocking).
+/// `restore` names a stored window session for it to take over, `transfer` is a
+/// tab dragged out of `window`, and `at_cursor` puts the new window under the
+/// mouse (for that drag); otherwise it opens a little below and right of `window`.
 #[tauri::command]
 async fn window_new(
     app: AppHandle,
-    state: State<'_, WindowPaths>,
+    window: WebviewWindow,
     paths: Vec<String>,
+    restore: Option<String>,
+    transfer: Option<String>,
+    at_cursor: Option<bool>,
 ) -> Result<(), String> {
+    let boot = WindowBoot { restore, transfer };
+    open_window(&app, paths, boot, Some(&window), at_cursor.unwrap_or(false))
+}
+
+/// Logical position and size for a new window next to `near`, or under the cursor.
+fn placement(near: &WebviewWindow, at_cursor: bool) -> Option<(f64, f64, Option<(f64, f64)>)> {
+    if !near.is_visible().unwrap_or(false) {
+        return None;
+    }
+    let scale = near.scale_factor().ok()?;
+    let size = if near.is_maximized().unwrap_or(false) {
+        None
+    } else {
+        let inner = near.inner_size().ok()?;
+        Some((inner.width as f64 / scale, inner.height as f64 / scale))
+    };
+    let (x, y) = if at_cursor {
+        let cursor = near.cursor_position().ok()?;
+        (
+            cursor.x / scale - DETACHED_TAB_OFFSET.0,
+            cursor.y / scale - DETACHED_TAB_OFFSET.1,
+        )
+    } else {
+        let pos = near.outer_position().ok()?;
+        (
+            pos.x as f64 / scale + CASCADE,
+            pos.y as f64 / scale + CASCADE,
+        )
+    };
+    Some((x, y, size))
+}
+
+/// Builds a window from the main window's config. Extra windows used to open at
+/// the config's 1280x800 every time (M18); they now take the size of the window
+/// they were opened from.
+fn open_window(
+    app: &AppHandle,
+    paths: Vec<String>,
+    boot: WindowBoot,
+    near: Option<&WebviewWindow>,
+    at_cursor: bool,
+) -> Result<(), String> {
+    let state = app.state::<WindowPaths>();
     let mut config = app
         .config()
         .app
@@ -170,16 +310,56 @@ async fn window_new(
         .find(|w| w.label == MAIN_WINDOW)
         .cloned()
         .ok_or("main window config is missing")?;
-    config.label = format!(
-        "window-{}",
-        state.next_id.fetch_add(1, Ordering::Relaxed) + 1
-    );
+    config.label = state.new_label(|label| app.get_webview_window(label).is_some());
+    if let Some((x, y, size)) = near.and_then(|w| placement(w, at_cursor)) {
+        config.x = Some(x);
+        config.y = Some(y);
+        config.center = false;
+        if let Some((width, height)) = size {
+            config.width = width;
+            config.height = height;
+        }
+    }
     state.store(&config.label, paths);
-    let built = WebviewWindowBuilder::from_config(&app, &config).and_then(|b| b.build());
+    state.set_boot(&config.label, boot);
+    let built = WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build());
     built.map(|w| use_sharp_icon(&w)).map_err(|e| {
         state.forget(&config.label);
         e.to_string()
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DropTarget {
+    label: String,
+    /// Where the cursor is inside that window, in its CSS pixels.
+    x: f64,
+    y: f64,
+}
+
+/// The other visible window under the mouse, for a tab dropped there (F2).
+#[tauri::command]
+fn tab_drop_target(window: WebviewWindow) -> Option<DropTarget> {
+    let cursor = window.cursor_position().ok()?;
+    let app = window.app_handle();
+    app.webview_windows()
+        .into_values()
+        .filter(|w| w.label() != window.label() && w.is_visible().unwrap_or(false))
+        .filter(|w| !w.is_minimized().unwrap_or(false))
+        .find_map(|w| {
+            let pos = w.inner_position().ok()?;
+            let size = w.inner_size().ok()?;
+            let scale = w.scale_factor().ok()?;
+            let (dx, dy) = (cursor.x - pos.x as f64, cursor.y - pos.y as f64);
+            let inside =
+                dx >= 0.0 && dy >= 0.0 && dx < size.width as f64 && dy < size.height as f64;
+            inside.then(|| DropTarget {
+                label: w.label().to_owned(),
+                x: dx / scale,
+                y: dy / scale,
+            })
+        })
 }
 
 /// Tauri gives a window one 256 px icon and Windows shrinks it for the taskbar and
@@ -225,23 +405,67 @@ fn use_sharp_icon(window: &WebviewWindow) {
 #[cfg(not(windows))]
 fn use_sharp_icon(_window: &WebviewWindow) {}
 
-/// Existing files named on a command line, made absolute against `cwd`.
+/// Files named on a command line, made absolute against `cwd`. A name that does
+/// not exist yet is kept when its folder exists (M11): the frontend offers to
+/// create it, like Notepad. Arguments starting with `-` are flags, unless a file
+/// by that name exists.
 fn paths_from_args(args: impl IntoIterator<Item = String>, cwd: &Path) -> Vec<String> {
     args.into_iter()
-        .filter(|arg| !arg.starts_with('-'))
-        .map(|arg| cwd.join(arg))
-        .filter(|path| path.is_file())
-        .map(|path| path.to_string_lossy().into_owned())
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| (arg.starts_with('-'), cwd.join(arg)))
+        .filter(|(flag, path)| {
+            if path.is_file() {
+                return true;
+            }
+            let new_file = !path.exists()
+                && path
+                    .parent()
+                    .is_some_and(|dir| dir.as_os_str().is_empty() || dir.is_dir());
+            !flag && new_file
+        })
+        .map(|(_, path)| path.to_string_lossy().into_owned())
         .collect()
 }
 
+/// A second launch. Like Notepad (F1), it opens a new window when windows are on
+/// screen; files go to the window that last had the focus, which follows "Open
+/// files in" and brings itself forward. With no window on screen, the window
+/// waiting in the background comes back.
 fn on_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
     let paths = paths_from_args(argv.into_iter().skip(1), Path::new(&cwd));
+    let state = app.state::<WindowPaths>();
+    let windows = app.webview_windows();
+    let on_screen = |w: &&WebviewWindow| w.is_visible().unwrap_or(false);
+    let focused = state
+        .focused()
+        .and_then(|label| windows.get(&label))
+        .filter(on_screen)
+        .or_else(|| windows.get(MAIN_WINDOW).filter(on_screen))
+        .or_else(|| windows.values().find(on_screen));
+    if let Some(window) = focused {
+        let label = window.label().to_owned();
+        if paths.is_empty() {
+            let app = app.clone();
+            let near = window.clone();
+            // Off the main thread, as window_new is (see there).
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) =
+                    open_window(&app, Vec::new(), WindowBoot::default(), Some(&near), false)
+                {
+                    eprintln!("Notepadly: could not open a new window: {error}");
+                }
+            });
+        } else if state.is_ready(&label) {
+            let _ = app.emit_to(EventTarget::webview_window(label), OPEN_PATHS_EVENT, paths);
+        } else {
+            state.store(&label, paths);
+        }
+        return;
+    }
     let window = app
         .get_webview_window(MAIN_WINDOW)
-        .or_else(|| app.webview_windows().into_values().next());
+        .or_else(|| windows.into_values().next());
     let Some(window) = window else { return };
-    let state = app.state::<WindowPaths>();
     let label = window.label().to_owned();
     // Waiting in the background after its last window closed: wake it first so
     // the page can take the paths, then show it below.
@@ -254,7 +478,11 @@ fn on_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
         return;
     }
     if !paths.is_empty() {
-        let _ = app.emit_to(EventTarget::webview_window(label), OPEN_PATHS_EVENT, paths);
+        let _ = app.emit_to(
+            EventTarget::webview_window(label),
+            OPEN_PATHS_HERE_EVENT,
+            paths,
+        );
     }
     let _ = window.unminimize();
     let _ = window.show();
@@ -306,6 +534,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             WindowEvent::Destroyed => window.state::<WindowPaths>().forget(window.label()),
+            WindowEvent::Focused(true) => window.state::<WindowPaths>().set_focused(window.label()),
             // Moving to a monitor with another scale needs icons of another size.
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(w) = window.app_handle().get_webview_window(window.label()) {
@@ -325,7 +554,12 @@ pub fn run() {
             draft_write,
             draft_delete,
             take_pending_paths,
+            take_window_boot,
             window_new,
+            window_sessions_read,
+            window_session_write,
+            window_session_delete,
+            tab_drop_target,
             system_fonts,
             reveal_in_explorer,
             background::is_last_window,
@@ -355,7 +589,11 @@ mod tests {
         let dir = std::env::temp_dir();
         let name = format!("notepadly-args-{}.md", std::process::id());
         std::fs::write(dir.join(&name), "x").unwrap();
-        let args = vec![name.clone(), "--flag".into(), "missing-file.md".into()];
+        let args = vec![
+            name.clone(),
+            "--flag".into(),
+            "missing-folder/missing-file.md".into(),
+        ];
         assert_eq!(
             paths_from_args(args, &dir),
             vec![dir.join(&name).to_string_lossy().into_owned()]
@@ -370,7 +608,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("sub folder")).unwrap();
         let spaced = dir.join("my notes اردو 😀.md");
         std::fs::write(&spaced, "x").unwrap();
-        let elsewhere = std::env::temp_dir();
+        // A folder that does not exist, so the relative name is not a new file there.
+        let elsewhere = std::env::temp_dir().join("notepadly-no-such-folder");
         let args = vec![
             spaced.to_string_lossy().into_owned(),
             "sub folder".into(),
@@ -399,6 +638,58 @@ mod tests {
         // Storing nothing does not create an entry.
         state.store("window-2", Vec::new());
         assert!(state.lock().pending.is_empty());
+    }
+
+    #[test]
+    fn args_keep_a_new_file_name_but_not_flags() {
+        let dir = std::env::temp_dir().join(format!("notepadly-args-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("-dash.md"), "x").unwrap();
+        let args = vec![
+            "new note.txt".into(),
+            "--flag".into(),
+            "-dash.md".into(),
+            "no-such-folder/x.md".into(),
+            String::new(),
+        ];
+        assert_eq!(
+            paths_from_args(args, &dir),
+            vec![
+                dir.join("new note.txt").to_string_lossy().into_owned(),
+                dir.join("-dash.md").to_string_lossy().into_owned(),
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn window_boot_is_taken_once_and_forgotten_with_the_window() {
+        let state = WindowPaths::default();
+        let boot = WindowBoot {
+            restore: Some("w1".into()),
+            transfer: None,
+        };
+        state.set_boot("window-1", boot.clone());
+        state.set_boot("window-2", WindowBoot::default());
+        assert!(!state.lock().boot.contains_key("window-2"));
+        assert_eq!(state.take_boot("window-1"), boot);
+        assert_eq!(state.take_boot("window-1"), WindowBoot::default());
+        state.set_boot("window-3", boot);
+        state.set_focused("window-3");
+        state.forget("window-3");
+        assert_eq!(state.take_boot("window-3"), WindowBoot::default());
+        assert_eq!(state.focused(), None);
+    }
+
+    #[test]
+    fn new_labels_skip_windows_that_exist() {
+        let state = WindowPaths::default();
+        assert_eq!(
+            state.new_label(|l| l == "window-1" || l == "window-2"),
+            "window-3"
+        );
+        assert_eq!(state.new_label(|_| false), "window-4");
     }
 
     #[test]
