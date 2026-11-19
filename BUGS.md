@@ -190,6 +190,55 @@ These were written on Linux and only type-checked, or only read. Do this before 
 - **Recommendation:** add a deny list for executable types (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`, `.vbs`, `.js`, `.msi`, `.lnk`, `.scr`…) in the capability, so a future frontend bug cannot launch a program. Check it on Windows.
 - **What the deny list does not change:** these files still open as text in Notepadly, as in Windows Notepad, through File > Open, Explorer, drag and drop, and links. The deny list only stops the app from asking Windows to *run* them with their default program.
 
+## Review: live preview
+
+PREV-1 to PREV-5 are fixed (see 2.3). Their tests are in `src/editor/livePreview/review.test.ts`.
+
+### Bugs
+
+#### PREV-6. Typing a list or quote marker at the start of a row in a table without outer pipes cuts the table ✅
+- **Steps:** a table without outer pipes (`a | b` / `--|--` / `c | d` / `e | f`). Click cell `e` and type `- ` at its start, so the row becomes `- e | f`.
+- **Actual:** the line now starts a list item, so the table ends above it. The cell being edited is removed from the page, focus is lost, and the next keys go nowhere. Seen in a jsdom probe: the table shrank and the cell's `isConnected` was false. `#`, `>`, `1.` and `+` do the same.
+- **Expected:** the text stays in the cell.
+- **Cause:** `TableController.writeCell` (`src/editor/livePreview/widgets.ts`) writes the cell text as it is. For the first cell of a row with no leading `|`, that text is also the start of the line.
+- **Fix:** when the first cell of a row without a leading pipe is written, rewrite the row with `formatRow` (this adds the pipes), or escape a leading block marker (`\-`, `\#`, `\>`).
+
+#### PREV-7. Relative images stay broken after the first save or Save As to another folder 📖
+- **Steps:** paste `![](pic.png)` into a new untitled tab, then save it next to `pic.png`. Or use Save As to move a note to another folder.
+- **Actual:** the image stays broken, or keeps showing the old folder's file, until the line scrolls out of view and back, or is edited.
+- **Cause:** `ImageWidget.toDOM` (`src/editor/livePreview/widgets.ts`) resolves the path once through `previewContext.baseDir()`. `ImageWidget.eq` compares the raw `src` only, so CodeMirror keeps the old `<img>`. Nothing tells the editor that the tab's path changed: `src/editor/api.ts` has no such hook, and `EditorEngine` never redraws on a rename.
+- **Fix:** add an `engine.pathChanged(tabId)` call from the save and rename actions that dispatches an effect. Let the inline plugin rebuild on that effect, and store the resolved src in the widget so `eq` sees the change.
+
+#### PREV-8. A leading-slash image path resolves against the document folder, but a leading-slash link resolves against the drive root ✅
+- **Steps:** a document in `C:\docs` with `![](/img/a.png)` and `[x](/img/a.md)`.
+- **Actual:** the image loads `C:\docs\\img\a.png`, but Ctrl+click on the link opens `C:\img\a.md`.
+- **Cause:** `joinBase` in `src/editor/livePreview/context.ts` joins any non-absolute path to the base. `classifyHref` in `src/state/logic.ts` uses `rootOf(baseDir)`.
+- **Fix:** pick one rule (the drive or share root, as for links) and use it in both places.
+
+#### PREV-9. Print still loads images from another computer's share 📖
+- This is the same problem as PREV-3, which is fixed for the live preview only.
+- **Cause:** `safeImageSrc` in `src/lib/print.ts` passes `file://server/...` and `\\server\...` to `convertFileSrc`. Printing a downloaded note then sends the user's NTLM credentials to that server.
+- **Fix:** move `networkHost` from `context.ts` to `src/state/logic.ts`, and apply the same rule in `print.ts`.
+
+#### PREV-10. A link in a table cell whose URL has parentheses is cut short ✅
+- **Steps:** a cell `[w](https://en.wikipedia.org/wiki/Foo_(bar))`.
+- **Actual:** `data-href` is `https://en.wikipedia.org/wiki/Foo_(bar`, and a stray `)` shows after the link. Outside tables, the same link works.
+- **Cause:** the link regex in `renderCellHtml` (`src/editor/livePreview/widgets.ts`) is `\(([^)\s]+)\)`.
+- **Fix:** allow one level of balanced parentheses: `\(((?:[^()\s]|\([^()\s]*\))+)\)`. This is best done together with TAB-3, by taking links out before the emphasis rules.
+
+### Improvements
+- **Typing speed in large tables:**
+  - Measured in jsdom: a keystroke in a cell of a 3,000-row table takes about 80 ms. Building the table takes about 0.8 s.
+  - `TableController.render` walks every cell (`querySelectorAll` plus `dataset` reads), and `parseTable` runs about 5 times per keystroke (`render`, `writeCell`, `syncSelection`, `bodyRows`, `columns`).
+  - **Suggestion:** cache the parsed rows per `source`, and re-render only the rows whose text changed. The whole table is also in the DOM even when off screen; consider rendering only the visible rows for very large tables.
+- **KaTeX limits:** `renderMath` (`src/editor/lazy.ts`) sets no `maxSize`. `\rule{99999em}{99999em}` builds an enormous box that breaks the layout. Set `maxSize: 100` (em) and keep `maxExpand` at its default.
+- **Widget offsets:** `MathWidget.eq` and `MermaidWidget.eq` ignore `sourceOffset`. After a change such as editing `` ```mermaid `` to `` ``` mermaid ``, the old DOM is kept, and double-click puts the cursor at the old offset (one character off). Compare `sourceOffset` in `eq`.
+- **Images in untitled tabs:** with no folder, `resolveImageSrc("pic.png")` gives the bare relative path. The asset protocol then reads it relative to the app's working folder. Return `""` when there is no base.
+- **Failed Mermaid renders are not cached:** a broken diagram is parsed again each time its widget is re-created, for example on scroll. Cache the error text too (keyed like the SVG).
+- **Test gaps:**
+  - IME composition inside a cell. CodeMirror ignores the composition events because `TableWidget.ignoreEvent` returns true, and `render` leaves the active cell's DOM alone while its text matches. This was checked by reading only, so it needs a WebView2 check with the Urdu and Chinese IMEs.
+  - A cell being edited while an external reload (`resetDoc`) or Replace All changes the table. Both were checked by reading only: focus is lost on reload, which is acceptable.
+
 ---
 
 # Part 2: Done
@@ -295,6 +344,11 @@ These were written on Linux and only type-checked, or only read. Do this before 
 | WIN-1 | After the hidden restart from an update, every later window hid itself | Only the first window starts hidden | `cb1f8a5` |
 | MERGE-1 | The startup draft clean-up deleted the drafts of other windows' stored sessions | `runInit` keeps the drafts of every stored session (a small risk remains, see Part 1) | `95c2f1b` |
 | — | Bitmap `.fon` fonts appeared as false families | Left out of the font list | `fec7557` |
+| PREV-1 | After a theme change, a tab that was in the background kept Mermaid diagrams in the old theme | The block field remembers its theme; the viewport reporter rescans on tab switch when it differs | `d12557d` |
+| PREV-2 | Enter in the header of a header-only table, then Ctrl+Z, lost keyboard focus | The rebuild refocuses the header instead of the delimiter row | `1938638` |
+| PREV-3 | Showing a document with `![](\\server\x.png)` (or `file://server/…`, `//server/…`) made Windows send the user's NTLM credentials to that server | Network images load only from the document's own server | `c393e1f` |
+| PREV-4 | `` `a \| b` `` in a table cell showed the backslash | `\|` is unescaped before code spans are taken out, as in GFM | `3131e22` |
+| PREV-5 | A NUL character followed by digits and NUL in a cell showed "undefined" | NUL is shown as U+FFFD | `f82320c` |
 
 ## 2.4 Features added
 
