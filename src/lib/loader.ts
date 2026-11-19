@@ -678,6 +678,61 @@ export function disposeTab(id: string): void {
   runtimes.delete(id);
 }
 
+/** What a tab moving to another window takes with it besides its TabMeta (F2). */
+export interface TabHandoff {
+  /** The loaded text; null when the tab has no editor state (it loads there). */
+  text: string | null;
+  snap: ScrollSnapshot | null;
+  hasDraft: boolean;
+  draftMeta: DraftMeta | null;
+  forceDirty: boolean;
+}
+
+/** Read together with the tab's TabMeta, in the same tick, so offsets match the text. */
+export function handOff(id: string): TabHandoff {
+  const rt = rtOf(id);
+  const hasDoc = engine.hasDoc(id);
+  return {
+    text: hasDoc ? engine.getText(id) : null,
+    snap: hasDoc ? engine.snapshot(id) : rt.snap,
+    hasDraft: rt.hasDraft,
+    draftMeta: rt.draftMeta,
+    forceDirty: rt.forceDirty,
+  };
+}
+
+/**
+ * Takes over a tab handed off by another window. `tab` is already in the store.
+ * Nothing is read from disk or saved: the text arrives as it was, unsaved edits
+ * stay unsaved, and the draft (keyed by the tab id) now belongs to this window.
+ */
+export function takeOver(tab: TabMeta, handoff: TabHandoff): void {
+  const rt = rtOf(tab.id);
+  rt.snap = handoff.snap;
+  rt.hasDraft = handoff.hasDraft;
+  rt.draftMeta = handoff.draftMeta;
+  if (handoff.text !== null) {
+    engine.createDoc(tab.id, handoff.text, tab.mode);
+    restoreView(tab.id, handoff.snap);
+    rt.snap = null;
+    // The new editor state starts clean; the tab is not.
+    rt.forceDirty = handoff.forceDirty || tab.dirty;
+    if (!tab.fullyLoaded) {
+      startScan(tab.id);
+      scheduleIdleLoad(tab.id);
+    }
+  }
+  if (tab.dirty) markDraftChanged(tab.id);
+  scheduleSessionWrite();
+}
+
+/** Drops a tab that moved to another window, keeping its draft for that window. */
+export function releaseTab(id: string): void {
+  const rt = runtimes.get(id);
+  if (rt) rt.hasDraft = false;
+  disposeTab(id);
+}
+
 export function registerRestored(session: SessionTab): void {
   const rt = rtOf(session.id);
   rt.snap = session.snap;
@@ -792,13 +847,26 @@ export function startHibernation(): void {
 // ---- Drafts and session ------------------------------------------------------
 
 let persistence = false;
+/** Which stored window session this window writes; null is the old single session.json. */
+let sessionKey: string | null = null;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 /** When the oldest change not yet written was made. */
 let pendingSince: number | null = null;
 let flushChain: Promise<void> = Promise.resolve();
 const changedDrafts = new Set<string>();
 
-/** On only in the main window with `startup: "continue"`. */
+/** Each window stores its own session under its key (C5, M18). */
+export function setSessionKey(key: string | null): void {
+  sessionKey = key;
+}
+
+export const getSessionKey = (): string | null => sessionKey;
+
+function writeSession(json: string): Promise<void> {
+  return sessionKey === null ? ipc.sessionWrite(json) : ipc.windowSessionWrite(sessionKey, json);
+}
+
+/** On in every window while `startup` is "continue". */
 export function setPersistence(enabled: boolean): void {
   if (enabled === persistence) return;
   persistence = enabled;
@@ -901,7 +969,7 @@ async function doFlush(): Promise<void> {
       changedDrafts.add(id);
     }
   }
-  await ipc.sessionWrite(JSON.stringify(buildSession()));
+  await writeSession(JSON.stringify(buildSession()));
   if (failure) throw failure;
 }
 
@@ -918,9 +986,10 @@ export function flushPersistence(): Promise<void> {
  * Deletes drafts no tab owns (left by a crash or a corrupt session, BUGS.md L16).
  * Runs on the flush chain, so a draft written by this run is never pruned.
  */
-export function pruneDrafts(): Promise<void> {
+/** `alsoKeep`: drafts owned by other windows' stored sessions. */
+export function pruneDrafts(alsoKeep: string[] = []): Promise<void> {
   const run = flushChain.catch(noop).then(() => {
-    const keep = useApp.getState().tabs.filter((t) => rtOf(t.id).hasDraft).map((t) => t.id);
+    const keep = [...useApp.getState().tabs.filter((t) => rtOf(t.id).hasDraft).map((t) => t.id), ...alsoKeep];
     return ipc.draftsPrune(keep);
   });
   flushChain = run.catch(noop);
@@ -941,5 +1010,6 @@ export async function discardCurrentSession(): Promise<void> {
   flushTimer = null;
   const ids = useApp.getState().tabs.filter((t) => rtOf(t.id).hasDraft).map((t) => t.id);
   await Promise.all(ids.map((id) => ipc.draftDelete(id).catch(noop)));
-  await ipc.sessionWrite(JSON.stringify({ v: 1, activeId: "", tabs: [] }));
+  if (sessionKey === null) await ipc.sessionWrite(JSON.stringify({ v: 1, activeId: "", tabs: [] }));
+  else await ipc.windowSessionDelete(sessionKey);
 }

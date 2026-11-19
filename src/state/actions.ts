@@ -4,7 +4,8 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { engine } from "../editor";
 import type { CursorInfo, EditorConfig, EditorEngine, EditorHost, FormatContext, FormatMode } from "../editor/api";
-import { ipc, OPEN_PATHS_EVENT, type Encoding, type Eol } from "../lib/ipc";
+import { ipc, OPEN_PATHS_EVENT, OPEN_PATHS_HERE_EVENT, type Encoding, type Eol, type WindowBoot } from "../lib/ipc";
+import { dropIndexAt } from "../lib/tabDrag";
 import * as loader from "../lib/loader";
 import { installShortcuts } from "../lib/shortcuts";
 import {
@@ -29,6 +30,7 @@ import {
   resolveRelative,
   saveFilters,
   suggestedFileName,
+  type SessionFile,
   tabFromSession,
   chosenSavePath,
   wrapIndex,
@@ -39,6 +41,7 @@ import {
   getTab,
   makeUntitledTab,
   newTabId,
+  onSharedSettings,
   patchTab,
   showMessage,
   useApp,
@@ -55,7 +58,18 @@ const MOUNT_SELECTOR =
 const state = () => useApp.getState();
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-let isMainWindow = false;
+/** This window's label. "main" is the window the app starts with. */
+let windowLabel = "main";
+const isFirstWindow = () => windowLabel === "main";
+/** Every window keeps its tabs as drafts and a session while this is on. */
+const keepsSession = () => state().settings.startup === "continue";
+
+/** Window events between windows of this app. */
+const EXIT_EVENT = "exit-app";
+const TAB_INCOMING_EVENT = "tab-incoming";
+const TAB_RECEIVED_EVENT = "tab-received";
+/** How long a tab being moved waits for the other window to take it. */
+const MOVE_TIMEOUT_MS = 10_000;
 
 // ---- Engine host and mounting ------------------------------------------------
 
@@ -159,7 +173,8 @@ export const editorHost: EditorHost = {
     const base = editorHost.baseDir(state().activeId);
     const target = classifyHref(href, base);
     if (target.kind === "web") openExternal(target.url).catch(reportError("Could not open link"));
-    else if (target.kind === "file") void actions.openPaths([target.path]);
+    // A link opens next to the document it is in, whatever "Open files in" says (M10).
+    else if (target.kind === "file") void openHere([target.path]);
     else if (target.kind === "external") openWithDefaultApp(target.path).catch(reportError("Could not open link"));
   },
   baseDir: (id) => {
@@ -371,13 +386,67 @@ async function openHere(input: string[]): Promise<void> {
   }
 }
 
+/** One untitled, empty tab and nothing else: a file may as well open here. */
+function windowIsPristine(): boolean {
+  const { tabs } = state();
+  return tabs.length === 1 && isPristine(tabs[0]);
+}
+
 async function openPaths(paths: string[]): Promise<void> {
   if (paths.length === 0) return;
-  if (state().settings.openFilesIn !== "window") return openHere(paths);
+  // An empty window takes the file instead of leaving itself behind (M10).
+  if (state().settings.openFilesIn !== "window" || windowIsPristine()) return openHere(paths);
   const fresh = dedupePaths(paths).filter((p) => !findOpen(p));
   const open = paths.map(findOpen).filter((t): t is TabMeta => !!t);
-  if (open.length > 0) await activate(open[open.length - 1].id);
+  if (open.length > 0) {
+    await activate(open[open.length - 1].id);
+    await bringToFront();
+  }
   if (fresh.length > 0) await ipc.newWindow(fresh).catch(reportError("Could not open a new window"));
+}
+
+async function bringToFront(): Promise<void> {
+  const win = getCurrentWindow();
+  await win.unminimize().catch(() => {});
+  await win.show().catch(() => {});
+  await win.setFocus().catch(() => {});
+}
+
+/**
+ * M11: a name given on the command line that does not exist yet. Like Notepad,
+ * ask whether to create it; an empty file is written on yes.
+ */
+async function createMissing(paths: string[]): Promise<string[]> {
+  const stats = await Promise.all(paths.map((p) => ipc.stat(p).catch(() => undefined)));
+  const kept: string[] = [];
+  for (const [index, path] of paths.entries()) {
+    if (stats[index] !== null) {
+      kept.push(path);
+      continue;
+    }
+    const { ask } = await import("@tauri-apps/plugin-dialog");
+    const create = await ask(`Cannot find the ${fileNameOf(path)} file.\n\nDo you want to create a new file?`, {
+      title: "Notepadly",
+      kind: "warning",
+    });
+    if (!create) continue;
+    try {
+      await ipc.save({ path, text: "", eol: "CRLF", encoding: "utf-8", tailOffset: null, expectedStamp: null });
+      kept.push(path);
+    } catch (error) {
+      showMessage("Could not create file", `${fileNameOf(path)}: ${errorText(error)}`);
+    }
+  }
+  return kept;
+}
+
+/** Files from a second launch, sent to this window because it had the focus. */
+async function openFromLaunch(paths: string[]): Promise<void> {
+  const wanted = await createMissing(paths);
+  if (wanted.length === 0) return;
+  if (state().settings.openFilesIn === "window" && !windowIsPristine()) return openPaths(wanted);
+  await openHere(wanted);
+  await bringToFront();
 }
 
 async function openDialog(): Promise<void> {
@@ -538,10 +607,12 @@ async function resolveDirtyTab(id: string): Promise<boolean> {
   return answer === "save" ? save(id) : true;
 }
 
-function removeFromList(id: string): void {
+/** `moved`: the tab went to another window, which now owns its draft. */
+function removeFromList(id: string, moved = false): void {
   useApp.setState((s) => ({ tabs: s.tabs.filter((t) => t.id !== id) }));
   engine.dropDoc(id); // also forgets the undo history of a hibernated tab
-  loader.disposeTab(id);
+  if (moved) loader.releaseTab(id);
+  else loader.disposeTab(id);
   const pending = titleTimers.get(id);
   if (pending !== undefined) clearTimeout(pending);
   titleTimers.delete(id);
@@ -591,14 +662,19 @@ async function closeMany(ids: string[]): Promise<void> {
 
 let closeInProgress = false;
 
-/** Decides whether this window may go. True means every tab has been answered for. */
-async function prepareWindowClose(): Promise<boolean> {
+/**
+ * Decides whether this window may go. True means every tab has been answered for.
+ * With "continue previous session", the last window (or every window on Exit)
+ * keeps its tabs as drafts without asking; a window closed while others stay
+ * open asks about its unsaved tabs, like Notepad, and its session is removed.
+ */
+async function prepareWindowClose(exiting = false): Promise<boolean> {
   if (closeInProgress) return false;
   closeInProgress = true;
   try {
     flushPersistedPrefs();
     flushTitles();
-    if (isMainWindow && state().settings.startup === "continue") {
+    if (keepsSession() && (exiting || (await ipc.isLastWindow().catch(() => true)))) {
       try {
         await loader.flushPersistence();
         return true;
@@ -610,7 +686,7 @@ async function prepareWindowClose(): Promise<boolean> {
     for (const { id } of state().tabs.filter((t) => t.dirty)) {
       if (getTab(id)?.dirty && !(await resolveDirtyTab(id))) return false;
     }
-    if (isMainWindow) await loader.discardCurrentSession().catch(() => {});
+    await loader.discardCurrentSession().catch(() => {});
     return true;
   } finally {
     closeInProgress = false;
@@ -624,25 +700,136 @@ async function prepareWindowClose(): Promise<boolean> {
  */
 async function resetForBackground(): Promise<void> {
   useApp.setState({ view: "editor", dialog: null, find: { open: false, replace: false } });
-  if (isMainWindow && state().settings.startup === "continue") return; // the session is what comes back
+  if (keepsSession()) return; // the session is what comes back
   const old = state().tabs.map((t) => t.id);
   await newTab();
-  old.forEach(removeFromList);
+  old.forEach((id) => removeFromList(id));
 }
 
 async function closeWindow(): Promise<void> {
   await getCurrentWindow().close();
 }
 
+/** Stores (or asks about) this window's tabs and closes it for good, even in background mode. */
+async function exitThisWindow(): Promise<void> {
+  if (!(await prepareWindowClose(true))) return;
+  await getCurrentWindow().destroy();
+}
+
+/**
+ * File > Exit (M17): every window stores or resolves its own tabs and closes; the
+ * app ends when the last one is gone. With "continue previous session" all of
+ * them come back on the next start.
+ */
 async function exit(): Promise<void> {
   try {
-    const { getAllWebviewWindows } = await import("@tauri-apps/api/webviewWindow");
-    const self = getCurrentWindow().label;
-    for (const win of await getAllWebviewWindows()) if (win.label !== self) await win.close();
+    await getCurrentWebviewWindow().emit(EXIT_EVENT, { from: windowLabel });
   } catch (error) {
-    console.error("Notepadly: could not close other windows", error);
+    console.error("Notepadly: could not tell the other windows to close", error);
   }
-  await closeWindow();
+  await exitThisWindow();
+}
+
+// ---- Moving tabs between windows (F2) ------------------------------------------
+
+export interface TabTransfer {
+  /** Label of the window the tab comes from; it waits for TAB_RECEIVED_EVENT. */
+  from: string;
+  tab: TabMeta;
+  handoff: loader.TabHandoff;
+}
+
+const receipts = new Map<string, () => void>();
+
+function waitForReceipt(id: string): { done: Promise<boolean>; cancel: () => void } {
+  let cancel = () => {};
+  const done = new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => finish(false), MOVE_TIMEOUT_MS);
+    const finish = (ok: boolean) => {
+      clearTimeout(timer);
+      receipts.delete(id);
+      resolve(ok);
+    };
+    receipts.set(id, () => finish(true));
+    cancel = () => finish(false);
+  });
+  return { done, cancel };
+}
+
+/**
+ * Moves a tab dragged out of the tab strip: onto the window under the mouse, or
+ * into a new window there. The tab is removed here only once the other window
+ * has it, so a failed move leaves it where it was. Nothing is saved or reloaded.
+ */
+async function moveTabOut(id: string): Promise<void> {
+  if (!getTab(id)) return;
+  const target = await ipc.tabDropTarget().catch(() => null);
+  await loader.settleTabIo(id);
+  const tab = getTab(id);
+  if (!tab) return;
+  const { tabs, activeId } = state();
+  // The text is read now; switching away first keeps typing out of a tab in transit.
+  if (activeId === id && tabs.length > 1) {
+    const next = neighbourAfterClose(tabs.map((t) => t.id), id);
+    if (next) await activate(next);
+  }
+  const current = getTab(id);
+  if (!current) return;
+  const transfer: TabTransfer = { from: windowLabel, tab: current, handoff: loader.handOff(id) };
+  const receipt = waitForReceipt(id);
+  try {
+    if (target) {
+      await getCurrentWebviewWindow().emitTo(target.label, TAB_INCOMING_EVENT, { transfer, x: target.x, y: target.y });
+    } else {
+      await ipc.newWindow([], { transfer: JSON.stringify(transfer), atCursor: true });
+    }
+  } catch (error) {
+    receipt.cancel();
+    showMessage("Could not move the tab", errorText(error));
+    return;
+  }
+  if (!(await receipt.done)) {
+    showMessage("Could not move the tab", "The other window did not take the tab, so it stays here.");
+    return;
+  }
+  if (state().tabs.length > 1) {
+    removeFromList(id, true);
+    return;
+  }
+  // The last tab left: the window goes with it instead of staying empty.
+  await newTab();
+  removeFromList(id, true);
+  await loader.discardCurrentSession().catch(() => {});
+  await getCurrentWindow().destroy();
+}
+
+/** Takes a tab moved here from another window, at `index` (null: at the end). */
+async function receiveTab(transfer: TabTransfer, index: number | null): Promise<void> {
+  const { from, handoff } = transfer;
+  const tab: TabMeta = { ...transfer.tab, hibernated: handoff.text === null && transfer.tab.path !== null };
+  const answer = () =>
+    getCurrentWebviewWindow()
+      .emitTo(from, TAB_RECEIVED_EVENT, { id: tab.id })
+      .catch((error: unknown) => console.error("Notepadly: could not confirm a moved tab", error));
+  if (getTab(tab.id)) {
+    await answer();
+    return;
+  }
+  const pristine = windowIsPristine() ? state().tabs[0] : null;
+  useApp.setState((s) => {
+    const list = s.tabs.slice();
+    list.splice(Math.max(0, Math.min(index ?? list.length, list.length)), 0, tab);
+    return { tabs: list };
+  });
+  loader.takeOver(tab, handoff);
+  await answer();
+  await activate(tab.id);
+  if (pristine && pristine.id !== tab.id) removeFromList(pristine.id);
+}
+
+function parseTransfer(raw: unknown): TabTransfer | null {
+  const t = (typeof raw === "string" ? JSON.parse(raw) : raw) as TabTransfer | null;
+  return t && typeof t.from === "string" && t.tab && typeof t.tab.id === "string" && t.handoff ? t : null;
 }
 
 // ---- Settings ----------------------------------------------------------------
@@ -652,17 +839,42 @@ function syncWindowTheme(): void {
   getCurrentWindow().setTheme(theme === "system" ? null : theme).catch(() => {});
 }
 
+/** Each tab's view before Formatting was turned off, so turning it on brings it back (M19). */
+const modeBeforeFormattingOff = new Map<string, FormatMode>();
+
 function applyFormattingSetting(formatting: boolean): void {
   for (const tab of state().tabs) {
     if (tab.path !== null && !isMarkdownPath(tab.path)) continue;
-    if (formatting ? tab.mode === "plain" : tab.mode !== "plain") {
-      applyMode(tab.id, formatting ? "formatted" : "plain");
+    if (!formatting && tab.mode !== "plain") {
+      modeBeforeFormattingOff.set(tab.id, tab.mode);
+      applyMode(tab.id, "plain");
+    } else if (formatting && tab.mode === "plain") {
+      applyMode(tab.id, modeBeforeFormattingOff.get(tab.id) ?? "formatted");
     }
   }
+  if (formatting) modeBeforeFormattingOff.clear();
+}
+
+/**
+ * The status bar's mode button (M19): Formatted and Markdown syntax for Markdown;
+ * any other file (a .txt) can also be shown formatted and goes back to Plain text.
+ */
+function nextMode(): void {
+  const tab = getActiveTab();
+  if (!tab) return;
+  const markdownOnly = tab.path === null || isMarkdownPath(tab.path);
+  const next: FormatMode =
+    tab.mode === "plain" ? "formatted" : tab.mode === "formatted" ? "syntax" : markdownOnly ? "formatted" : "plain";
+  applyMode(tab.id, next);
 }
 
 function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void {
   useApp.setState((s) => ({ settings: { ...s.settings, [key]: value } }));
+  applySetting(key, value, true);
+}
+
+/** Makes a changed setting take effect. `own` is false for a change made in another window. */
+function applySetting<K extends keyof Settings>(key: K, value: Settings[K], own: boolean): void {
   switch (key) {
     case "wordWrap":
     case "spellcheck":
@@ -680,16 +892,23 @@ function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void 
       applyFormattingSetting(value as boolean);
       break;
     case "recentFiles":
-      if (!value) useApp.setState({ recent: [] });
+      if (own && !value) useApp.setState({ recent: [] });
       break;
     case "startup":
-      loader.setPersistence(isMainWindow && value === "continue");
+      loader.setPersistence(value === "continue");
       break;
     case "autoUpdate":
-      ipc.updateConfigure(value as boolean).catch(() => {});
+      if (own) ipc.updateConfigure(value as boolean).catch(() => {});
       break;
   }
 }
+
+/** H12: settings changed in another window take effect here too. */
+onSharedSettings((before, after) => {
+  for (const key of Object.keys(after) as (keyof Settings)[]) {
+    if (before[key] !== after[key]) applySetting(key, after[key], false);
+  }
+});
 
 async function ensureFullyLoaded(id: string): Promise<void> {
   try {
@@ -736,24 +955,62 @@ async function reopenWithEncoding(encoding: Encoding): Promise<void> {
 
 // ---- Startup -----------------------------------------------------------------
 
-function wireWindowEvents(): void {
+/**
+ * Registers every listener before Rust may send anything (M9): Rust counts the
+ * window as ready once it took its pending paths, so the listeners come first.
+ * What arrives before init finished waits for `ready`.
+ */
+async function wireWindowEvents(ready: Promise<void>): Promise<void> {
   const win = getCurrentWindow();
+  const webviewWindow = getCurrentWebviewWindow();
   const warn = (what: string) => (error: unknown) => console.error(`Notepadly: ${what}`, error);
+  const later = (run: () => Promise<void>) => void ready.then(run).catch(warn("window event failed"));
 
-  // Rust sends this with emit_to(webview_window(label)), which only reaches
+  // Rust sends these with emit_to(webview_window(label)), which only reaches
   // listeners registered with that exact target kind.
-  getCurrentWebviewWindow()
-    .listen<string[]>(OPEN_PATHS_EVENT, (event) => void openPaths(event.payload))
-    .catch(warn("open-paths listener failed"));
+  const listeners = [
+    webviewWindow
+      .listen<string[]>(OPEN_PATHS_EVENT, (event) => later(() => openFromLaunch(event.payload)))
+      .catch(warn("open-paths listener failed")),
+    webviewWindow
+      .listen<string[]>(OPEN_PATHS_HERE_EVENT, (event) =>
+        later(async () => openHere(await createMissing(event.payload))),
+      )
+      .catch(warn("open-paths-here listener failed")),
+    webviewWindow
+      .listen<{ from: string }>(EXIT_EVENT, (event) => {
+        if (event.payload?.from !== windowLabel) later(exitThisWindow);
+      })
+      .catch(warn("exit listener failed")),
+    webviewWindow
+      .listen<{ transfer: TabTransfer; x: number; y: number }>(TAB_INCOMING_EVENT, (event) =>
+        later(async () => {
+          const transfer = parseTransfer(event.payload?.transfer);
+          if (!transfer) return;
+          const index = typeof document === "undefined" ? null : dropIndexAt(event.payload.x, event.payload.y);
+          await receiveTab(transfer, index);
+          await bringToFront();
+        }),
+      )
+      .catch(warn("tab listener failed")),
+    webviewWindow
+      .listen<{ id: string }>(TAB_RECEIVED_EVENT, (event) => receipts.get(event.payload?.id)?.())
+      .catch(warn("tab receipt listener failed")),
+  ];
 
   getCurrentWebview()
     .onDragDropEvent((event) => {
-      if (event.payload.type === "drop") void openPaths(event.payload.paths);
+      if (event.payload.type === "drop") {
+        const paths = event.payload.paths;
+        later(() => openPaths(paths));
+      }
     })
     .catch(warn("drag and drop listener failed"));
 
-  win
+  const closeListener = win
     .onCloseRequested(async (event) => {
+      // A close before startup finished waits for it, instead of skipping the drafts.
+      await ready.catch(() => {});
       if (!(await prepareWindowClose())) {
         event.preventDefault();
         return;
@@ -780,10 +1037,11 @@ function wireWindowEvents(): void {
     .isFocused()
     .then((focused) => loader.setWindowFocused(focused))
     .catch(() => loader.setWindowFocused(document.hasFocus()));
+
+  await Promise.all([...listeners, closeListener]);
 }
 
-async function restoreSession(raw: string | null): Promise<boolean> {
-  const session = parseSession(raw);
+async function restoreSession(session: SessionFile | null): Promise<boolean> {
   if (!session || session.tabs.length === 0) return false;
   session.tabs.forEach(loader.registerRestored);
   useApp.setState({ tabs: session.tabs.map(tabFromSession), activeId: session.activeId });
@@ -791,21 +1049,87 @@ async function restoreSession(raw: string | null): Promise<boolean> {
   return true;
 }
 
+interface StoredSession {
+  /** null for the old single session.json. */
+  key: string | null;
+  session: SessionFile;
+}
+
+/** Every stored window session with tabs in it; the old session.json first. */
+async function readStoredSessions(): Promise<StoredSession[]> {
+  const [legacy, keyed] = await Promise.all([
+    ipc.sessionRead().catch(() => null),
+    ipc.windowSessionsRead().catch(() => []),
+  ]);
+  const found: StoredSession[] = [];
+  const old = parseSession(legacy);
+  if (old && old.tabs.length > 0) found.push({ key: null, session: old });
+  for (const { key, json } of keyed) {
+    const session = parseSession(json);
+    if (session && session.tabs.length > 0) found.push({ key, session });
+  }
+  return found;
+}
+
+/** `startup: "new"` promises to discard the previous session's unsaved text, in every window. */
+async function discardStoredSessions(stored: StoredSession[]): Promise<void> {
+  await loader.discardSession(stored.find((s) => s.key === null)?.session ?? null);
+  for (const { key, session } of stored) {
+    if (key === null) continue;
+    await Promise.all(session.tabs.filter((t) => t.hasDraft).map((t) => ipc.draftDelete(t.id).catch(() => {})));
+    await ipc.windowSessionDelete(key).catch(() => {});
+  }
+}
+
+/**
+ * Picks up the session this window should show (C5, M18). The first window takes
+ * one stored session and opens a window for each other one. A window opened for
+ * a stored session takes that one. Returns the keys merged into this window.
+ */
+async function adoptSession(boot: WindowBoot): Promise<{ restored: boolean; merged: string[] }> {
+  const none = { restored: false, merged: [] as string[] };
+  if (!isFirstWindow()) {
+    loader.setSessionKey(boot.restore ?? `w${newTabId()}`);
+    if (!boot.restore || !keepsSession()) return none;
+    const mine = (await readStoredSessions()).find((s) => s.key === boot.restore);
+    return { restored: await restoreSession(mine?.session ?? null), merged: [] };
+  }
+  const stored = await readStoredSessions();
+  if (!keepsSession()) {
+    discardStoredSessions(stored).catch(() => {});
+    return none;
+  }
+  if (stored.length === 0) return none;
+  const [mine, ...others] = stored;
+  loader.setSessionKey(mine.key);
+  // The hidden restart after an update shows no windows: keep every tab in this one.
+  if (others.length > 0 && (await ipc.launchedHidden().catch(() => false))) {
+    const seen = new Set(mine.session.tabs.map((t) => t.id));
+    const tabs = [...mine.session.tabs];
+    for (const other of others) for (const t of other.session.tabs) if (!seen.has(t.id) && seen.add(t.id)) tabs.push(t);
+    return { restored: await restoreSession({ ...mine.session, tabs }), merged: others.map((o) => o.key as string) };
+  }
+  for (const other of others) {
+    await ipc.newWindow([], { restore: other.key as string }).catch(reportError("Could not open a window"));
+  }
+  return { restored: await restoreSession(mine.session), merged: [] };
+}
+
 async function runInit(): Promise<void> {
-  isMainWindow = getCurrentWindow().label === "main";
+  windowLabel = getCurrentWindow().label;
   installShortcuts();
   syncWindowTheme();
-  await waitForEditorParent();
+  let markReady: () => void = () => {};
+  const ready = new Promise<void>((resolve) => {
+    markReady = resolve;
+  });
+  await Promise.all([waitForEditorParent(), wireWindowEvents(ready)]);
 
-  const continueSession = isMainWindow && state().settings.startup === "continue";
-  const [rawSession, pending] = await Promise.all([
-    isMainWindow ? ipc.sessionRead().catch(() => null) : Promise.resolve(null),
+  const [pending, boot] = await Promise.all([
     ipc.takePendingPaths().catch(() => [] as string[]),
+    ipc.takeWindowBoot().catch((): WindowBoot => ({ restore: null, transfer: null })),
   ]);
-
-  let restored = false;
-  if (continueSession) restored = await restoreSession(rawSession);
-  else if (isMainWindow && rawSession) loader.discardSession(parseSession(rawSession)).catch(() => {});
+  const { restored, merged } = await adoptSession(boot);
 
   const { activeId } = state();
   if (!restored) engine.createDoc(activeId, "", getTab(activeId)?.mode ?? "plain");
@@ -813,13 +1137,31 @@ async function runInit(): Promise<void> {
     engine.activate(activeId);
     engine.focus();
   }
-  // Only the main window owns drafts; clear out those no restored tab owns.
-  if (isMainWindow) loader.pruneDrafts().catch(() => {});
-  loader.setPersistence(continueSession);
+  // The first window clears out drafts that no stored session owns. Drafts of
+  // the other stored sessions are kept: their windows are restoring them now.
+  if (isFirstWindow() && keepsSession()) {
+    readStoredSessions()
+      .then((stored) => loader.pruneDrafts(stored.flatMap((s) => s.session.tabs.filter((t) => t.hasDraft).map((t) => t.id))))
+      .catch(() => {});
+  }
+  loader.setPersistence(keepsSession());
   initFinished = true;
 
-  await openHere(pending);
-  wireWindowEvents();
+  if (merged.length > 0) {
+    // Stored once in this window's session, the merged ones can go.
+    await loader.flushPersistence().catch(() => {});
+    await Promise.all(merged.map((key) => ipc.windowSessionDelete(key).catch(() => {})));
+  }
+  const transfer = boot.transfer ? (() => {
+    try {
+      return parseTransfer(boot.transfer);
+    } catch {
+      return null;
+    }
+  })() : null;
+  if (transfer) await receiveTab(transfer, null);
+  await openHere(await createMissing(pending));
+  markReady();
   loader.startHibernation();
   // The checker thread waits for this before it ever contacts GitHub.
   ipc.updateConfigure(state().settings.autoUpdate).catch(() => {});
@@ -850,6 +1192,7 @@ export const actions = {
   },
   closeWindow,
   exit,
+  moveTabOut,
 
   activate,
   moveTab: (fromIndex: number, toIndex: number) => {
@@ -875,6 +1218,7 @@ export const actions = {
   keepMine: (id: string) => loader.keepMine(id),
 
   setMode: applyMode,
+  nextMode,
   toggleSyntax: () => {
     const tab = getActiveTab();
     if (tab && tab.mode !== "plain") applyMode(tab.id, tab.mode === "formatted" ? "syntax" : "formatted");

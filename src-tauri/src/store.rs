@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 const SESSION_FILE: &str = "session.json";
 const DRAFTS_DIR: &str = "drafts";
+/// One session file per window that is open (or waiting in the background).
+const SESSIONS_DIR: &str = "sessions";
 const RESERVED_NAMES: &[&str] = &["CON", "PRN", "AUX", "NUL"];
 
 pub fn session_read(base: &Path) -> Result<Option<String>, String> {
@@ -30,6 +32,50 @@ pub fn draft_delete(base: &Path, id: &str) -> Result<(), String> {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.to_string()),
         _ => Ok(()),
     }
+}
+
+/// The stored session of every window, as (key, json) pairs. A file that cannot
+/// be read is left out rather than failing the whole list.
+pub fn window_sessions_read(base: &Path) -> Result<Vec<(String, String)>, String> {
+    let entries = match fs::read_dir(base.join(SESSIONS_DIR)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut sessions = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(key) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if check_id(key).is_err() {
+            continue;
+        }
+        if let Ok(Some(json)) = read_optional(&path) {
+            sessions.push((key.to_owned(), json));
+        }
+    }
+    sessions.sort();
+    Ok(sessions)
+}
+
+pub fn window_session_write(base: &Path, key: &str, json: &str) -> Result<(), String> {
+    write_atomic(&window_session_path(base, key)?, json)
+}
+
+pub fn window_session_delete(base: &Path, key: &str) -> Result<(), String> {
+    match fs::remove_file(window_session_path(base, key)?) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
+fn window_session_path(base: &Path, key: &str) -> Result<PathBuf, String> {
+    check_id(key).map_err(|_| format!("invalid session key: {key:?}"))?;
+    Ok(base.join(SESSIONS_DIR).join(format!("{key}.json")))
 }
 
 /// Deletes every draft whose id is not in `keep`, and temp files left by an
@@ -62,6 +108,13 @@ pub fn drafts_prune(base: &Path, keep: &[String]) -> Result<(), String> {
 /// Ids are a single path component of `[A-Za-z0-9_-]`, so a hostile or corrupt
 /// id cannot leave the drafts folder or name a Windows device.
 fn draft_path(base: &Path, id: &str) -> Result<PathBuf, String> {
+    check_id(id)?;
+    Ok(base.join(DRAFTS_DIR).join(format!("{id}.txt")))
+}
+
+/// Ids are a single path component of `[A-Za-z0-9_-]`, so a hostile or corrupt
+/// id cannot leave its folder or name a Windows device.
+fn check_id(id: &str) -> Result<(), String> {
     let safe_chars = id
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
@@ -73,7 +126,7 @@ fn draft_path(base: &Path, id: &str) -> Result<PathBuf, String> {
     if id.is_empty() || id.len() > 128 || !safe_chars || device {
         return Err(format!("invalid draft id: {id:?}"));
     }
-    Ok(base.join(DRAFTS_DIR).join(format!("{id}.txt")))
+    Ok(())
 }
 
 fn read_optional(path: &Path) -> Result<Option<String>, String> {
@@ -233,6 +286,29 @@ mod tests {
             "non-ASCII ids are rejected"
         );
         assert!(draft_path(base, "a b").is_err());
+    }
+
+    #[test]
+    fn window_sessions_are_listed_written_and_deleted_by_key() {
+        let base = TempBase::new("windows");
+        assert!(window_sessions_read(&base.0).unwrap().is_empty());
+        window_session_write(&base.0, "wb", "{\"b\":1}").unwrap();
+        window_session_write(&base.0, "wa", "{\"a\":1}").unwrap();
+        // Stray files in the folder are ignored.
+        fs::write(base.0.join("sessions").join("wa.tmp"), "half").unwrap();
+        fs::write(base.0.join("sessions").join("bad name.json"), "x").unwrap();
+        assert_eq!(
+            window_sessions_read(&base.0).unwrap(),
+            vec![
+                ("wa".to_owned(), "{\"a\":1}".to_owned()),
+                ("wb".to_owned(), "{\"b\":1}".to_owned())
+            ]
+        );
+        window_session_delete(&base.0, "wa").unwrap();
+        window_session_delete(&base.0, "wa").unwrap();
+        assert_eq!(window_sessions_read(&base.0).unwrap().len(), 1);
+        assert!(window_session_write(&base.0, "../session", "x").is_err());
+        assert!(window_session_delete(&base.0, "NUL").is_err());
     }
 
     #[test]

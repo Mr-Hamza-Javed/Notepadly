@@ -78,9 +78,24 @@ export const ipc = {
   /** Deletes every draft whose id is not in `keep`. */
   draftsPrune: (keep: string[]) => invoke<void>("drafts_prune", { keep }),
 
+  /** Every window's stored session (one per window, see loader.setSessionKey). */
+  windowSessionsRead: () => invoke<WindowSession[]>("window_sessions_read"),
+  windowSessionWrite: (key: string, json: string) => invoke<void>("window_session_write", { key, json }),
+  windowSessionDelete: (key: string) => invoke<void>("window_session_delete", { key }),
+
   /** Paths from argv for this window; drained on first call. */
   takePendingPaths: () => invoke<string[]>("take_pending_paths"),
-  newWindow: (paths: string[]) => invoke<void>("window_new", { paths }),
+  /** What this window was opened for besides paths; drained on first call. */
+  takeWindowBoot: () => invoke<WindowBoot>("take_window_boot"),
+  /**
+   * Opens a window next to this one. `restore` makes it take over a stored window
+   * session; `transfer` hands it a tab dragged out of this window (a JSON
+   * TabTransfer), placed under the mouse when `atCursor` is set.
+   */
+  newWindow: (paths: string[], options: { restore?: string; transfer?: string; atCursor?: boolean } = {}) =>
+    invoke<void>("window_new", { paths, ...options }),
+  /** The other window under the mouse, for a tab dropped on it. */
+  tabDropTarget: () => invoke<DropTarget | null>("tab_drop_target"),
   systemFonts: () => invoke<string[]>("system_fonts"),
   revealInExplorer: (path: string) => invoke<void>("reveal_in_explorer", { path }),
 
@@ -98,6 +113,23 @@ export const ipc = {
   launchedHidden: () => invoke<boolean>("launched_hidden"),
 };
 
+export interface WindowSession {
+  key: string;
+  json: string;
+}
+
+export interface WindowBoot {
+  restore: string | null;
+  transfer: string | null;
+}
+
+export interface DropTarget {
+  label: string;
+  /** Mouse position inside that window, in its CSS pixels. */
+  x: number;
+  y: number;
+}
+
 export type UpdatePhase = "idle" | "checking" | "upToDate" | "downloading" | "ready" | "available" | "error";
 
 export interface UpdateStatus {
@@ -113,3 +145,5 @@ export interface UpdateStatus {
 
 /** Event carrying string[] of paths when a second launch forwards its argv. */
 export const OPEN_PATHS_EVENT = "open-paths";
+/** Same, for the window that was waiting in the background: open them in a tab. */
+export const OPEN_PATHS_HERE_EVENT = "open-paths-here";

@@ -119,8 +119,14 @@ export class FakeBackend {
   /** Folders that exist. Writing a file creates its folders; saving does not. */
   dirs = new Set<string>();
   session: string | null = null;
+  /** Per-window sessions (store.rs `window_session_*`), by key. */
+  windowSessions = new Map<string, string>();
   drafts = new Map<string, string>();
   pendingPaths: string[] = [];
+  /** What `take_window_boot` hands the next window that boots; drained once. */
+  boot: { restore: string | null; transfer: string | null } = { restore: null, transfer: null };
+  /** Answer of `tab_drop_target`: the other window under the mouse. */
+  dropTarget: { label: string; x: number; y: number } | null = null;
   /** Every command name, in order. */
   calls: { cmd: string; args: Record<string, unknown> }[] = [];
   /** Next error for a command, by name; consumed once. */
@@ -134,8 +140,11 @@ export class FakeBackend {
     this.files.clear();
     this.dirs.clear();
     this.session = null;
+    this.windowSessions.clear();
     this.drafts.clear();
     this.pendingPaths = [];
+    this.boot = { restore: null, transfer: null };
+    this.dropTarget = null;
     this.calls = [];
     this.failNext.clear();
     this.unreadable.clear();
@@ -219,6 +228,23 @@ export class FakeBackend {
         for (const id of [...this.drafts.keys()]) if (!keep.includes(id)) this.drafts.delete(id);
         return null;
       }
+      case "window_sessions_read":
+        return [...this.windowSessions].sort().map(([key, json]) => ({ key, json }));
+      case "window_session_write":
+      case "window_session_delete": {
+        const key = args.key as string;
+        if (!validDraftId(key)) throw `invalid session key: ${JSON.stringify(key)}`;
+        if (cmd === "window_session_write") this.windowSessions.set(key, args.json as string);
+        else this.windowSessions.delete(key);
+        return null;
+      }
+      case "take_window_boot": {
+        const boot = this.boot;
+        this.boot = { restore: null, transfer: null };
+        return boot;
+      }
+      case "tab_drop_target":
+        return this.dropTarget;
       case "draft_read":
       case "draft_write":
       case "draft_delete": {
@@ -341,12 +367,31 @@ export class FakeWindow {
   /** Outcome of each close request: true when the page allowed the window to close. */
   closes: boolean[] = [];
   destroyed = false;
+  /** Event listeners of this window, by event name. */
+  listeners = new Map<string, (event: { payload: unknown }) => void>();
+  /** How many backend calls had been made when each listener was registered. */
+  listenedAt = new Map<string, number>();
+  /** Events this window sent: to "*" (every window) or to one window label. */
+  emitted: { target: string; event: string; payload: unknown }[] = [];
+  /** Times the window was brought to the front (unminimize + show + focus). */
+  focused = 0;
 
   reset(label = "main"): void {
     this.label = label;
     this.closeHandler = null;
     this.closes = [];
     this.destroyed = false;
+    this.listeners.clear();
+    this.listenedAt.clear();
+    this.emitted = [];
+    this.focused = 0;
+  }
+
+  /** Delivers an event to this window, as Rust or another window would. */
+  deliver(event: string, payload: unknown): void {
+    const listener = this.listeners.get(event);
+    if (!listener) throw new Error(`no listener for ${event}`);
+    listener({ payload });
   }
 
   async close(): Promise<void> {
@@ -367,6 +412,9 @@ export class FakeDialogs {
   messages: { title?: string; body: string }[] = [];
   /** Files handed to the default app (`openPath`). */
   openedPaths: string[] = [];
+  /** Answers for yes/no questions (`ask`), consumed in order; false when empty. */
+  askAnswers: boolean[] = [];
+  asked: string[] = [];
 
   reset(): void {
     this.saveAnswers = [];
@@ -376,6 +424,8 @@ export class FakeDialogs {
     this.messageAnswers = [];
     this.messages = [];
     this.openedPaths = [];
+    this.askAnswers = [];
+    this.asked = [];
   }
 }
 
@@ -406,6 +456,11 @@ export const tauriMocks = {
         fakeWindow.destroyed = true;
       },
       setTheme: async () => {},
+      unminimize: async () => {},
+      show: async () => {},
+      setFocus: async () => {
+        fakeWindow.focused++;
+      },
       onCloseRequested: async (handler: FakeWindow["closeHandler"]) => {
         fakeWindow.closeHandler = handler;
         return () => {};
@@ -418,7 +473,19 @@ export const tauriMocks = {
     getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
   }),
   webviewWindow: () => ({
-    getCurrentWebviewWindow: () => ({ listen: async () => () => {} }),
+    getCurrentWebviewWindow: () => ({
+      listen: async (event: string, handler: (event: { payload: unknown }) => void) => {
+        fakeWindow.listeners.set(event, handler);
+        fakeWindow.listenedAt.set(event, backend.calls.length);
+        return () => {};
+      },
+      emit: async (event: string, payload: unknown) => {
+        fakeWindow.emitted.push({ target: "*", event, payload });
+      },
+      emitTo: async (target: string, event: string, payload: unknown) => {
+        fakeWindow.emitted.push({ target, event, payload });
+      },
+    }),
     getAllWebviewWindows: async () => [],
   }),
   dialog: () => ({
@@ -430,6 +497,10 @@ export const tauriMocks = {
     message: async (body: string, options?: { title?: string }) => {
       dialogs.messages.push({ title: options?.title, body });
       return dialogs.messageAnswers.shift() ?? "Cancel";
+    },
+    ask: async (message: string) => {
+      dialogs.asked.push(message);
+      return dialogs.askAnswers.shift() ?? false;
     },
   }),
   opener: () => ({

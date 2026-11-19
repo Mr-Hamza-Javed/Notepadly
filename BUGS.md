@@ -69,7 +69,7 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - **Cause:** `src/state/store.ts:149`: `showMessage` sets `dialog` directly. `actions.showDialog` handles this case, `showMessage` does not.
 - **Fix:** in `showMessage`, resolve a pending `confirm-close` as `cancel` first, or queue messages.
 
-### C5. If the main window is closed first, the session does not come back next time 📖
+### C5. If the main window is closed first, the session does not come back next time 📖 — fixed (cb1f8a5)
 - **What happens (background mode on, the default):** open 2 windows. Close the **main** one first, then the other. The second window hides in the background. Open Notepadly again: an empty "Untitled", no previous tabs, no unsaved notes.
 - **Cause:** only the window labelled `main` restores the session. It has been destroyed, and `src-tauri/src/lib.rs:242` wakes any window that is left. That window has `isMainWindow = false`, so it neither restores nor writes drafts (`src/state/actions.ts:489`, `:515`).
 - The notes are still on disk and return after a PC restart, but until then they look lost. New notes written in that window get no draft either.
@@ -157,12 +157,12 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - **Cause:** these blocks are replaced by widgets; highlight marks inside them are not drawn.
 - **Fix:** open the source or highlight the cell when the match is inside a widget.
 
-### H12. Settings and the Recent list are not shared between windows 📖
+### H12. Settings and the Recent list are not shared between windows 📖 — fixed (dd7e4c3)
 - Change the theme, font or startup option in one window: the other open window does not change.
 - Each window writes the whole settings object, so the next change in an older window **wipes out** the first window's changes. Same for recent files.
 - **Cause:** `src/state/store.ts:111`; there is no `storage` event listener.
 
-### H13. Turning off "Update automatically" does not stop an update that is already downloaded 📖
+### H13. Turning off "Update automatically" does not stop an update that is already downloaded 📖 — fixed (3f47212)
 - If an update is "ready" and the user turns the setting off, it still installs on close.
 - **Cause:** `src-tauri/src/autoupdate.rs:208` (`install_if_ready`) does not check `enabled`.
 
@@ -217,16 +217,16 @@ Cause: `src/state/logic.ts:145-161` (`decodeURI` leaves reserved characters enco
 ### M8. `.mdx` is Markdown in the installer but plain text in the app ✅ — fixed (ebb2058)
 `src-tauri/windows/hooks.nsh` registers `.mdx` as a main Markdown type; `src/state/logic.ts:117` does not list it. It is missing from the Open/Save filters too.
 
-### M9. A file opened during startup can be lost 📖
+### M9. A file opened during startup can be lost 📖 — fixed (cb1f8a5)
 The `open-paths` listener is added **after** `openHere(pending)` (`src/state/actions.ts:689-690`), while Rust already counts the window as ready. A file opened from Explorer in that gap silently does not open. The close handler is added late as well.
 
-### M10. Odd results with "Open in a new window" 📖
+### M10. Odd results with "Open in a new window" 📖 — fixed except the last point (cb1f8a5)
 - Open a file from Explorer: a new window appears **and** the main window comes to the front too (when woken from the background, the empty or old-session window shows as well).
 - File > Open in an empty window also opens a new window and leaves the empty one.
 - Clicking a wikilink opens a new window.
 - A file open in another window is not noticed, so one file can be open in two windows.
 
-### M11. Giving a new file name on the command line does nothing 📖
+### M11. Giving a new file name on the command line does nothing 📖 — fixed (cb1f8a5)
 `notepadly newfile.txt` (file does not exist) → empty Untitled. Notepad asks "create a new file?". Launching again while the app runs only focuses the old window; no new tab or window. File names that start with `-` cannot be opened. Cause: `src-tauri/src/lib.rs:229`.
 
 ### M12. Hibernation wipes the Undo history 📖 — fixed (72e2d01)
@@ -247,13 +247,13 @@ Find, Replace, Select all, Ctrl+End, Print, Save As, Go to line and changing the
 ### M16. Edit > Cut deletes the text even when the clipboard write fails 📖 — fixed (d532e03)
 `src/editor/index.ts:611` does not wait for `writeText`. `paste()` (`:623`) has no error handling; if it fails nothing happens and nothing is shown.
 
-### M17. "Exit" does not quit, and the wrong window can be left over 📖
+### M17. "Exit" does not quit, and the wrong window can be left over 📖 — fixed (cb1f8a5)
 With background mode on, File > Exit only hides the window. With several windows there is a race: sometimes the main window is destroyed and another is left (then C5 applies).
 
-### M18. Extra windows do not remember their session or size 📖
+### M18. Extra windows do not remember their session or size 📖 — fixed (cb1f8a5)
 Only the `main` window writes the session and drafts and remembers size and position (`src-tauri/src/lib.rs:285`). Tabs in other windows do not return; every new window opens at 1280×800.
 
-### M19. The Formatting toggle changes every tab; a `.txt` can never be Formatted 📖
+### M19. The Formatting toggle changes every tab; a `.txt` can never be Formatted 📖 — fixed (22e2983)
 - View > Formatting off then on loses the "Markdown syntax" choice of each tab.
 - Save an Untitled (Formatted) note as `.txt`: the mode becomes Plain and the status bar cannot switch it back. Markdown inside `.txt`, `.log` and similar files cannot be viewed formatted at all.
 
@@ -277,7 +277,7 @@ When another program has locked the file, the tab opens empty (partial, offset 0
 | L3 | In `if a==b or c==d`, "b or c" is highlighted and the `==` are hidden | ✅ — fixed (389e22f) |
 | L4 | Time/Date (F5) is always US format `3:05 PM 11/10/2026`, not the system format | ✅ — fixed (71d6fdf) |
 | L5 | "characters" counts UTF-16 units (an emoji is 2). The total of a partly loaded unsaved file is stale | 📖 — second part fixed (42e6a30) |
-| L6 | The font list has false families ("Montserrat Extra"); "Inter" is always listed even when not installed | 📖 |
+| L6 | The font list has false families ("Montserrat Extra"); "Inter" is always listed even when not installed | 📖 — fixed (`ea5c821`, `fec7557`, 7968f33) |
 | L7 | After 400 undo steps, undoing back to the saved state no longer clears the unsaved dot (`index.ts:57`) | 📖 — fixed (7ea4fbd) |
 | L8 — fixed in part (7d40ede; rest is TAB-2) | In table cells `2 * 3 * 4` turns italic; `_x_`, maths, images and wikilinks are not rendered | 📖 |
 | L9 — fixed (1887e02) | In a table without padding (`\|a\|b\|`), a `\` typed at the end of a cell merges it with the next cell | 📖 |
@@ -302,7 +302,7 @@ These look likely from the code but need a run on WebView2.
 | W1 | Selected text cannot be dragged to move it inside the editor | `dragDropEnabled: true` in `tauri.conf.json`; on Windows Tauri then turns off HTML5 drag and drop |
 | W2 | Edit > Paste shows a permission popup the first time, or does nothing | `navigator.clipboard.readText()`; clipboard access is not enabled |
 | W3 | Right-click on a table border, maths, diagram, image or checkbox shows the WebView2 page menu ("Refresh", "Back", "Save as") | `shortcuts.ts:62` treats everything inside `.cm-content` as text. "Refresh" can drop unsaved work |
-| W4 | With Settings, Help or a dialog open, F3 opens WebView2's own find bar | F3 is not in the suppressed list (`shortcuts.ts:45`) |
+| W4 | With Settings, Help or a dialog open, F3 opens WebView2's own find bar — fixed (09913d5) | F3 is not in the suppressed list (`shortcuts.ts:45`) |
 | W5 | Hovering the maximize button does not show Windows 11 Snap Layouts | Custom caption buttons |
 | W6 | The "Autocorrect" setting has no effect | The `autocorrect` attribute does nothing in Chromium |
 | W7 | A file that is one line of several MB (minified JSON) is very slow with word wrap | CodeMirror is weak on very long lines; not measured here |
@@ -409,6 +409,16 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 | H8 | The draft debounce grows with the document (800 ms up to 1 MB, about +2 s per MB, max 30 s; a draft is never older than 60 s). Save still sends the whole text over IPC | `1123dea` |
 | L5 (second part) | The character total of a partly loaded file counts edits and later chunks (`tailChars` replaces `totalChars`). Emoji still count as 2 | `42e6a30` |
 | L16 (first part) | At startup the main window deletes drafts no restored tab owns, and leftover `.tmp` files (new Rust command `drafts_prune`, not compiled here). A draft that cannot be read is still deleted | `90c52a9` |
+| H13 | A downloaded update installs only while "Update automatically" is on, or the user pressed "Check for updates" since turning it off | `3f47212` |
+| H12 | Windows listen for storage events and take in settings, Recent and page setup from other windows; each write merges only this window's own changes | `dd7e4c3` |
+| C5, M18 | Every window stores its own session (`sessions/<key>.json`) and drafts; the first window restores one stored session and opens a window for each other one; new windows take the size of the window they open from | `cb1f8a5` |
+| M17 | File > Exit closes every window for good (each stores or resolves its tabs), so the app quits even in background mode | `cb1f8a5` |
+| M9 | Window listeners are registered before the start-up paths are taken; early events and close requests wait for init | `cb1f8a5` |
+| M10 | A second launch's files go to the last focused window only (no extra window raised); an empty window takes the file; links open in their own window. "One file open in two windows" is still not detected | `cb1f8a5` |
+| M11 | A file name that does not exist asks "create a new file?"; names starting with `-` open when such a file exists | `cb1f8a5` |
+| M19 | Formatting off/on keeps each tab's Markdown syntax choice; the status bar's mode button cycles Plain text, Formatted, Markdown syntax for non-Markdown files | `22e2983` |
+| L6 (rest) | "Inter" is listed only when installed or chosen; a chosen font that is not installed is marked | `7968f33` |
+| W4 | F3 / Shift+F3 are suppressed, so WebView2's find bar never opens | `09913d5` |
 
 ### Fixed on this branch (new)
 
@@ -462,14 +472,16 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 
 These are not bugs in existing code: Windows Notepad does these things and Notepadly does not. Add them together with the window bugs they touch.
 
-### F1. Launching the app again only brings back the old window; it should open a new window 📖
+### F1. Launching the app again only brings back the old window; it should open a new window 📖 — done (cb1f8a5)
 - **What happens:** while Notepadly is running, starting it again from the Start menu, taskbar, a shortcut or the command line does not open anything new. The running window is shown and focused again.
 - **Expected (as in Notepad):** every new launch opens a **new window**. The windows that are already open stay as they are.
 - **Cause:** the app uses `tauri-plugin-single-instance` (`src-tauri/src/lib.rs:276`). `on_second_instance` (`src-tauri/src/lib.rs:238`) only sends the paths to the main window, then runs `unminimize`, `show` and `set_focus`.
 - **To do:** in `on_second_instance`, open a new window when there are no paths, the same way `window_new` does. When a file is opened from Explorer, still follow the "Open files in" setting (`openFilesIn`: tab or window). Keep the single process, so drafts, the session and settings stay in one place.
 - **Related:** M10, M11, M17 and M18 (extra windows do not remember their session or size). Once every launch makes a window, M18 and H12 (settings and Recent not shared between windows) matter much more, so fix them with this.
+- **Done (cb1f8a5):** with a window on screen, a launch without files opens a new window (cascaded from the last focused one, same size). Files go to the window that last had the focus; it follows "Open files in" and brings itself to the front. With no window on screen, the background window comes back as before (files open there in a tab). One process is kept. Type-checked for Windows (`cargo check --target x86_64-pc-windows-msvc`), not run.
+- **Still to check on Windows:** that the new window gets the foreground (the second process calls `AllowSetForegroundWindow`), and how windows cascade near the screen edge.
 
-### F2. Tabs cannot be dragged out to a new window or between windows 📖
+### F2. Tabs cannot be dragged out to a new window or between windows 📖 — mostly done (cb1f8a5, 3b621a9)
 - **What happens:** tabs can only be reordered or used inside their own window.
 - **Expected (as in Notepad):**
   - Drag a tab out of the tab bar and drop it outside the window: that tab opens in a **new window** of its own and leaves the old window.
@@ -482,6 +494,16 @@ These are not bugs in existing code: Windows Notepad does these things and Notep
   - Use the drag position on screen to tell a drop outside every window (new window) from a drop on another window's tab bar (move).
   - Make sure the moved tab's draft and session entry belong to the new window, so nothing is lost or duplicated on restart.
 - **Related:** M18, C5 and H12. Test the move with a dirty tab, a partly loaded big file and an untitled tab.
+- **Done:**
+  - Gesture (`TitleBar.tsx`, geometry in `src/lib/tabDrag.ts`, tested): pulling a tab 32 px above or below the strip, or out of the window, dims it and stops reordering; releasing there moves it. The tab element takes pointer capture so the drag goes on outside the window.
+  - Rust: `tab_drop_target` finds the other visible window under the cursor (`cursor_position`) and gives the drop point in its CSS pixels; `window_new` takes `transfer` and `atCursor` and opens the new window under the mouse.
+  - Frontend (`actions.ts` `moveTabOut` / `receiveTab`, loader `handOff` / `takeOver` / `releaseTab`): the tab's meta, loaded text, cursor and scroll, encoding, line ending, mode, dirty state and draft go over in one message. Nothing is saved or read from disk; a partly loaded file goes on loading from its offset. The draft keeps its id and now belongs to the new window's session. The source removes the tab only after the target confirms (10 s timeout, then the tab stays and a message says so), so a failed move loses nothing. A drop on a tab bar goes between the tabs under the mouse; elsewhere in the window it goes at the end. The last tab dragged out takes the window with it (the old window closes, no empty window is left).
+  - Tests in `actions.test.ts` "moving tabs between windows (F2)": dirty file tab to another window and to a new window, no answer, last tab, partly loaded file.
+- **Still open:**
+  - Undo history does not travel (CodeMirror state is not serialised); the moved tab starts with an empty undo stack.
+  - With one tab, the window does not follow the mouse live during the drag; on release a new window opens under the mouse and the old one closes (a short flash). Moving the window natively (`startDragging`) would lose the drop-on-another-window case.
+  - `tab_drop_target` does not know the z-order: with overlapping windows the first match wins.
+  - Needs a check on Windows: pointer capture outside the window in WebView2, `cursor_position` on mixed-DPI monitors, and dropping onto a minimised or covered window.
 
 ### New (tables)
 
@@ -540,3 +562,24 @@ These are not bugs in existing code: Windows Notepad does these things and Notep
 - **M14** (Find scans the whole file per keystroke): needs an incremental or background count in `src/editor/find.ts` with an async result in the find bar; it overlaps the Find counter work (H10). Left open.
 - **L5, first part** (an emoji counts as 2): the count is UTF-16 units on purpose in both `engine` (`doc.length`) and Rust `files.rs` `scan()`; counting code points needs an incremental count per document and a Rust change.
 - **L16, second part** (a draft that cannot be read is deleted): `materialise` in `src/lib/loader.ts` treats a read error like a missing draft, loads the file clean, and the next flush deletes the draft. Keeping it needs a "draft unreadable" state that neither overwrites nor deletes the draft and tells the user.
+
+### New (windows)
+
+#### WIN-1. A window opened after the hidden restart from an update hides itself at once 📖 — fixed (cb1f8a5)
+- **What happened:** after an update installed from the background, the app restarts hidden (`launched_hidden`). For the rest of that run, every window that boots asks `launched_hidden`, gets `true` and goes straight to the background: Ctrl+N, File > New window, and (with F1) a new launch showed nothing.
+- **Cause:** `src-tauri/src/autoupdate.rs` `launched_hidden` returned the process-wide flag; `src/main.tsx` calls it for every window.
+- **Fix:** it is true only for the first window (`main`).
+
+#### WIN-2. Closing one of several windows now asks about its unsaved tabs (behaviour change, by design) 📖
+- With "Continue previous session", a window closed while other windows stay open asks "save changes?" for its unsaved tabs and removes its session, like Notepad. The last window, and every window on File > Exit, keep their tabs as drafts without asking. Before, only the `main` window kept its tabs (and only it was restored); other windows always asked.
+- If a different rule is wanted (for example keeping closed windows' tabs), it is decided in `prepareWindowClose` (`src/state/actions.ts`).
+
+#### WIN-3. One file can still be open in two windows 📖
+- The last point of M10 is not fixed: a window does not know which files the other windows have open, so opening a file that is open in another window opens a second copy (saving in one then gets "changed on disk" in the other, which is safe). Needs a shared list of open paths (in Rust, updated as tabs open and close).
+
+### Found while merging
+
+#### MERGE-1. The startup draft clean-up (L16) deleted the drafts of other windows' stored sessions ✅ — fixed in the merge commit
+- **What happened:** with C5/M18, every window stores its own session. On start the first window restores one session and opens a window for each other one, then pruned every draft its own tabs did not own, so the other windows found their unsaved text gone.
+- **Fix:** `runInit` (`src/state/actions.ts`) passes the draft ids of every stored session to `loader.pruneDrafts`. Test: `actions.test.ts` "L16 with several windows...".
+- **Remaining risk:** a window opened at start that writes a draft for a brand-new tab before the first window's clean-up runs could still lose it; the window is very short.

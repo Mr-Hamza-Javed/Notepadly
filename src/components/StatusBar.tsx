@@ -60,7 +60,17 @@ const ModeCell = memo(function ModeCell() {
   if (mode === "plain") {
     return (
       <div className="sb-cell sb-mode div">
-        <span className="sb-btn static">Plain text</span>
+        <button
+          type="button"
+          className="sb-btn"
+          aria-label="Plain text, switch to Formatted"
+          onClick={() => {
+            actions.nextMode();
+            focusEditorSoon();
+          }}
+        >
+          Plain text
+        </button>
       </div>
     );
   }
@@ -78,10 +88,10 @@ const ModeCell = memo(function ModeCell() {
             ? `${reason} Switch to Markdown syntax`
             : formatted
               ? "Formatted, switch to Markdown syntax"
-              : "Markdown syntax, switch to Formatted"
+              : "Markdown syntax, switch view"
         }
         onClick={() => {
-          actions.toggleSyntax();
+          actions.nextMode();
           focusEditorSoon();
         }}
       >

@@ -134,10 +134,19 @@ describe("opening files", () => {
     app = await bootApp({ settings: { openFilesIn: "window" } });
     backend.write(A, "a");
     backend.write(B, "b");
+    app.type("a note");
     await app.actions.openPaths([A, B]);
     const call = backend.calls.find((c) => c.cmd === "window_new");
     expect(call?.args).toEqual({ paths: [A, B] });
     expect(app.state().tabs).toHaveLength(1);
+  });
+
+  it("M10: an empty window takes the file instead of opening another window", async () => {
+    app = await bootApp({ settings: { openFilesIn: "window" } });
+    backend.write(A, "a");
+    await app.actions.openPaths([A]);
+    expect(backend.count("window_new")).toBe(0);
+    expect(app.state().tabs.map((t) => t.title)).toEqual(["a.md"]);
   });
 
   it("opens from the Open dialog", async () => {
@@ -773,6 +782,30 @@ describe("settings", () => {
     expect(app.tabByName("b.txt").mode).toBe("plain");
   });
 
+  it("M19: Formatting off and on again keeps each tab's Markdown syntax choice", async () => {
+    await app.actions.activate(app.tabByName("a.md").id);
+    app.actions.toggleSyntax();
+    expect(app.tabByName("a.md").mode).toBe("syntax");
+    app.actions.setSetting("formatting", false);
+    expect(app.tabByName("a.md").mode).toBe("plain");
+    app.actions.setSetting("formatting", true);
+    expect(app.tabByName("a.md").mode).toBe("syntax");
+  });
+
+  it("M19: a .txt file can be shown formatted from the status bar and back to plain", async () => {
+    await app.actions.activate(app.tabByName("b.txt").id);
+    const modes = [app.tab().mode];
+    for (let i = 0; i < 3; i++) {
+      app.actions.nextMode();
+      modes.push(app.tab().mode);
+    }
+    expect(modes).toEqual(["plain", "formatted", "syntax", "plain"]);
+    await app.actions.activate(app.tabByName("a.md").id);
+    app.actions.nextMode();
+    app.actions.nextMode();
+    expect(app.tab().mode).toBe("formatted");
+  });
+
   it("zooms in steps and clamps to 10..500", () => {
     app.actions.zoomBy(10);
     expect(app.state().settings.zoom).toBe(110);
@@ -794,6 +827,16 @@ describe("settings", () => {
     app.actions.setSetting("wordWrap", false);
     app.store.flushPersistedPrefs();
     expect(JSON.parse(localStorage.getItem("notepadly.settings.v1")!).wordWrap).toBe(false);
+  });
+
+  it("H12: a setting changed in another window takes effect in this one", async () => {
+    const setConfig = vi.spyOn(app.engine, "setConfig");
+    const settings = { ...app.state().settings, formatting: false, wordWrap: false };
+    localStorage.setItem("notepadly.settings.v1", JSON.stringify(settings));
+    window.dispatchEvent(new StorageEvent("storage", { key: "notepadly.settings.v1" }));
+    expect(app.state().settings).toMatchObject({ formatting: false, wordWrap: false });
+    expect(app.tabByName("a.md").mode).toBe("plain");
+    expect(setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ wordWrap: false }));
   });
 
   it("tells the backend when automatic updates are switched", async () => {
@@ -989,7 +1032,7 @@ describe("closing the window and restoring the session", () => {
     expect(app.tab().title).toBe("Untitled");
   });
 
-  it("only the main window restores and stores the session", async () => {
+  it("a new window does not take the main window's session, but stores its own (M18)", async () => {
     backend.reset();
     backend.session = JSON.stringify({
       v: 1,
@@ -1000,7 +1043,11 @@ describe("closing the window and restoring the session", () => {
     expect(app.tab().id).not.toBe("t1");
     app.type("second window text");
     await app.loader.flushPersistence();
-    expect(backend.drafts.size).toBe(0);
+    expect([...backend.drafts.values()]).toEqual(["second window text"]);
+    const [stored] = [...backend.windowSessions.values()];
+    expect(JSON.parse(stored).tabs[0]).toMatchObject({ id: app.tab().id, dirty: true, hasDraft: true });
+    // The main window's session is untouched.
+    expect(JSON.parse(backend.session!).tabs[0].id).toBe("t1");
   });
 
   // BUGS.md H16: a file deleted while the app was closed comes back as an
@@ -1113,5 +1160,263 @@ describe("encodings and line endings", () => {
     app.type("?");
     await app.actions.save();
     expect(saves()).toEqual([false, true, false]);
+  });
+});
+
+describe("several windows", () => {
+  /** Runs one window, leaves its text as a draft and closes it as the last window. */
+  async function windowWithDraft(label: string, text: string) {
+    app = await bootApp({ keepDisk: true, label });
+    app.type(text);
+    await waitFor(() => app.tab().title === text);
+    await app.actions.closeWindow();
+    return app.loader.getSessionKey();
+  }
+
+  it("C5: a window that was not the main one still brings its unsaved text back", async () => {
+    backend.reset();
+    const key = await windowWithDraft("window-1", "from the second window");
+    expect(key).not.toBeNull();
+    // Next start: the first window takes that window's session.
+    app = await bootApp({ keepDisk: true });
+    expect(app.tab()).toMatchObject({ title: "from the second window", dirty: true });
+    expect(app.text()).toBe("from the second window");
+    expect(app.loader.getSessionKey()).toBe(key);
+  });
+
+  it("restores every window that was open: one here, a new window for each other one", async () => {
+    backend.reset();
+    await windowWithDraft("main", "first");
+    const second = await windowWithDraft("window-1", "second");
+    app = await bootApp({ keepDisk: true });
+    expect(app.text()).toBe("first");
+    const opened = backend.calls.filter((c) => c.cmd === "window_new").map((c) => c.args);
+    expect(opened).toEqual([{ paths: [], restore: second }]);
+
+    // That window boots and takes exactly that session.
+    backend.boot = { restore: second, transfer: null };
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    expect(app.text()).toBe("second");
+    expect(app.loader.getSessionKey()).toBe(second);
+  });
+
+  it("L16 with several windows: the first window's draft clean-up keeps the drafts of the other stored sessions", async () => {
+    backend.reset();
+    await windowWithDraft("main", "first");
+    await windowWithDraft("window-1", "second");
+    backend.drafts.set("orphan-from-a-crash", "lost text");
+    app = await bootApp({ keepDisk: true });
+    await waitFor(() => !backend.drafts.has("orphan-from-a-crash"));
+    // The second window has not booted yet; its draft must still be there for it.
+    expect([...backend.drafts.values()].sort()).toEqual(["first", "second"]);
+  });
+
+  it("a window closed while others stay open asks about its unsaved tabs and leaves no session", async () => {
+    backend.reset();
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    app.type("note");
+    await app.loader.flushPersistence();
+    expect(backend.windowSessions.size).toBe(1);
+    backend.isLastWindow = false;
+    const closing = app.actions.closeWindow();
+    await app.answerClose("discard");
+    await closing;
+    expect(fakeWindow.closes).toEqual([true]);
+    expect(backend.windowSessions.size).toBe(0);
+    expect(backend.drafts.size).toBe(0);
+  });
+
+  it("start new session discards every window's session", async () => {
+    backend.reset();
+    await windowWithDraft("window-1", "old");
+    app = await bootApp({ keepDisk: true, settings: { startup: "new" } });
+    await waitFor(() => backend.windowSessions.size === 0 && backend.drafts.size === 0);
+    expect(app.tab().title).toBe("Untitled");
+  });
+
+  it("M17: Exit closes every window for good and keeps their sessions", async () => {
+    app = await bootApp();
+    app.type("kept");
+    await app.actions.exit();
+    expect(fakeWindow.emitted).toContainEqual({ target: "*", event: "exit-app", payload: { from: "main" } });
+    expect(fakeWindow.destroyed).toBe(true);
+    expect(fakeWindow.closes).toEqual([]); // not hidden in the background
+    expect([...backend.drafts.values()]).toEqual(["kept"]);
+  });
+
+  it("M17: another window's Exit closes this one too, storing its tabs", async () => {
+    app = await bootApp({ label: "window-1" });
+    app.type("mine");
+    backend.isLastWindow = false;
+    fakeWindow.deliver("exit-app", { from: "main" });
+    await waitFor(() => fakeWindow.destroyed);
+    expect(app.state().dialog).toBeNull();
+    expect([...backend.drafts.values()]).toEqual(["mine"]);
+    expect(backend.windowSessions.size).toBe(1);
+  });
+
+  it("M9: listens for files from a second launch before taking its start-up files", async () => {
+    app = await bootApp();
+    const taken = backend.calls.findIndex((c) => c.cmd === "take_pending_paths");
+    expect(taken).toBeGreaterThanOrEqual(0);
+    expect(fakeWindow.listenedAt.get("open-paths")).toBeLessThanOrEqual(taken);
+    expect(fakeWindow.listenedAt.get("open-paths-here")).toBeLessThanOrEqual(taken);
+  });
+
+  it("files from a second launch open in this window and bring it forward", async () => {
+    app = await bootApp();
+    backend.write(A, "a");
+    fakeWindow.deliver("open-paths", [A]);
+    await waitFor(() => app.tab().title === "a.md");
+    await waitFor(() => fakeWindow.focused > 0);
+  });
+
+  it("files from a second launch go to a new window when that setting is on and this one is in use", async () => {
+    app = await bootApp({ settings: { openFilesIn: "window" } });
+    app.type("busy");
+    backend.write(A, "a");
+    fakeWindow.deliver("open-paths", [A]);
+    await waitFor(() => backend.count("window_new") === 1);
+    expect(app.state().tabs).toHaveLength(1);
+  });
+
+  it("M11: a new file name on the command line asks to create the file", async () => {
+    backend.reset();
+    backend.mkdir("C:\\notes");
+    backend.pendingPaths = ["C:\\notes\\new.txt", "C:\\notes\\no.txt"];
+    app = await bootApp({ keepDisk: true, askAnswers: [true, false] });
+    expect(dialogs.asked).toHaveLength(2);
+    expect(dialogs.asked[0]).toContain("new.txt");
+    expect(backend.exists("C:\\notes\\new.txt")).toBe(true);
+    expect(backend.exists("C:\\notes\\no.txt")).toBe(false);
+    expect(app.state().tabs.map((t) => t.title)).toEqual(["new.txt"]);
+    expect(app.state().dialog).toBeNull();
+  });
+});
+
+describe("moving tabs between windows (F2)", () => {
+  type Transfer = import("./actions").TabTransfer;
+
+  /** Source window with an unsaved file tab and an untitled one; returns what it sent. */
+  async function sendDirtyTab(target: { label: string; x: number; y: number } | null) {
+    backend.reset();
+    backend.write(A, "on disk");
+    app = await bootApp({ keepDisk: true });
+    await app.actions.openPaths([A]);
+    app.type(" + unsaved");
+    const moved = app.tab().id;
+    await app.actions.newTab();
+    app.type("stays");
+    await waitFor(() => app.tab().title === "stays");
+    await app.loader.flushPersistence();
+    expect(backend.drafts.has(moved)).toBe(true);
+    backend.dropTarget = target;
+    const moving = app.actions.moveTabOut(moved);
+    let transfer: Transfer | undefined;
+    await waitFor(() => {
+      const sent = fakeWindow.emitted.find((e) => e.event === "tab-incoming");
+      const opened = backend.calls.find((c) => c.cmd === "window_new");
+      if (sent) transfer = (sent.payload as { transfer: Transfer }).transfer;
+      else if (opened) transfer = JSON.parse(opened.args.transfer as string);
+      return !!transfer;
+    });
+    return { moving, moved, transfer: transfer! };
+  }
+
+  it("moves an unsaved tab onto another window and keeps its text and draft", async () => {
+    const { moving, moved, transfer } = await sendDirtyTab({ label: "window-1", x: 10, y: 400 });
+    expect(transfer).toMatchObject({ from: "main", tab: { id: moved, path: A, dirty: true } });
+    expect(transfer.handoff.text).toBe("on disk + unsaved");
+    // Not removed until the other window confirms.
+    expect(app.state().tabs).toHaveLength(2);
+    fakeWindow.deliver("tab-received", { id: moved });
+    await moving;
+    expect(app.state().tabs.map((t) => t.title)).toEqual(["stays"]);
+    await app.loader.flushPersistence();
+    expect(backend.drafts.has(moved)).toBe(true); // the draft now belongs to the other window
+    expect(JSON.parse(backend.session!).tabs.map((t: { id: string }) => t.id)).not.toContain(moved);
+
+    // The other window takes it.
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    app.type("x");
+    fakeWindow.deliver("tab-incoming", { transfer, x: 10, y: 400 });
+    await waitFor(() => app.state().activeId === moved);
+    expect(app.state().tabs).toHaveLength(2);
+    expect(app.state().tabs[1].id).toBe(moved);
+    expect(app.tab()).toMatchObject({ id: moved, dirty: true, path: A });
+    expect(app.text()).toBe("on disk + unsaved");
+    expect(fakeWindow.emitted).toContainEqual({ target: "main", event: "tab-received", payload: { id: moved } });
+    await app.loader.flushPersistence();
+    const stored = JSON.parse([...backend.windowSessions.values()][0]);
+    expect(stored.tabs.find((t: { id: string }) => t.id === moved)).toMatchObject({ dirty: true, hasDraft: true });
+    // Nothing was written to the file, and it saves normally from here.
+    expect(backend.text(A)).toBe("on disk");
+    await app.actions.save();
+    expect(backend.text(A)).toBe("on disk + unsaved");
+    expect(app.tab().dirty).toBe(false);
+  });
+
+  it("dropped outside every window, the tab opens in a new window under the mouse", async () => {
+    const { moving, moved, transfer } = await sendDirtyTab(null);
+    const call = backend.calls.find((c) => c.cmd === "window_new")!;
+    expect(call.args).toMatchObject({ paths: [], atCursor: true });
+    fakeWindow.deliver("tab-received", { id: moved });
+    await moving;
+
+    backend.boot = { restore: null, transfer: JSON.stringify(transfer) };
+    app = await bootApp({ keepDisk: true, label: "window-2" });
+    // It replaced the empty tab a new window starts with.
+    expect(app.state().tabs.map((t) => t.id)).toEqual([moved]);
+    expect(app.text()).toBe("on disk + unsaved");
+    expect(app.tab().dirty).toBe(true);
+  });
+
+  it("keeps the tab when the other window never answers", async () => {
+    const { moving } = await sendDirtyTab({ label: "window-1", x: 0, y: 0 });
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(11_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await moving;
+    expect(app.state().tabs).toHaveLength(2);
+    expect(app.message()?.title).toBe("Could not move the tab");
+  });
+
+  it("moving the last tab closes its window instead of leaving it empty", async () => {
+    backend.reset();
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    app.type("only tab");
+    const moved = app.tab().id;
+    backend.dropTarget = { label: "main", x: 0, y: 0 };
+    const moving = app.actions.moveTabOut(moved);
+    await waitFor(() => fakeWindow.emitted.some((e) => e.event === "tab-incoming"));
+    fakeWindow.deliver("tab-received", { id: moved });
+    await moving;
+    expect(fakeWindow.destroyed).toBe(true);
+    expect(backend.windowSessions.size).toBe(0);
+  });
+
+  it("a partly loaded file moves without being read again from the start", async () => {
+    backend.reset();
+    const big = "line\n".repeat(600_000); // 3 MB: only the first chunk loads at once
+    backend.write(B, big);
+    app = await bootApp({ keepDisk: true });
+    await app.actions.openPaths([B]);
+    const partial = app.tab();
+    expect(partial.fullyLoaded).toBe(false);
+    const transfer = { from: "main", tab: partial, handoff: app.loader.handOff(partial.id) };
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    backend.calls = [];
+    fakeWindow.deliver("tab-incoming", { transfer, x: 0, y: 0 });
+    await waitFor(() => app.state().activeId === partial.id);
+    expect(app.text()).toBe(transfer.handoff.text);
+    expect(app.tab()).toMatchObject({ loadedOffset: partial.loadedOffset, fullyLoaded: false, dirty: false });
+    // The rest still loads from where the other window stopped.
+    await app.actions.ensureFullyLoaded(partial.id);
+    expect(app.text()).toBe(big);
+    const reads = backend.calls.filter((c) => c.cmd === "file_read_chunk").map((c) => c.args.offset as number);
+    expect(Math.min(...reads)).toBe(partial.loadedOffset);
   });
 });

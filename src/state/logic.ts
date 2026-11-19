@@ -95,6 +95,19 @@ export function fontStack(family: string): string {
   return `${quoted}, "Segoe UI Variable Text", "Segoe UI", sans-serif`;
 }
 
+/**
+ * The font list in Settings (L6): installed fonts plus the current one. The
+ * default "Inter" is not bundled, so it is listed only when installed or chosen,
+ * and a chosen font that is not installed says so once the list is known.
+ */
+export function fontOptions(current: string, installed: string[]): { value: string; label: string }[] {
+  const has = (name: string) => installed.some((f) => f.toLowerCase() === name.toLowerCase());
+  const names = [current, ...installed.filter((f) => f.toLowerCase() !== current.toLowerCase())];
+  return Array.from(new Set(names))
+    .sort((a, b) => a.localeCompare(b))
+    .map((n) => ({ value: n, label: n === current && installed.length > 0 && !has(n) ? `${n} (not installed)` : n }));
+}
+
 // ---- Paths ----------------------------------------------------------------
 
 export function fileNameOf(path: string): string {
@@ -311,6 +324,33 @@ export function formatDateTime(d: Date, locale?: string): string {
 
 export function pushRecent(list: string[], path: string): string[] {
   return [path, ...list.filter((p) => !pathsEqual(p, path))].slice(0, MAX_RECENT);
+}
+
+/**
+ * H12: several windows share one settings record. A window writes only the keys
+ * it changed itself since its last write, on top of what another window stored.
+ */
+export function mergeSettings(stored: Settings, written: Settings, mine: Settings): Settings {
+  const merged = { ...stored } as Record<keyof Settings, unknown>;
+  for (const key of Object.keys(mine) as (keyof Settings)[]) {
+    if (mine[key] !== written[key]) merged[key] = mine[key];
+  }
+  return merged as unknown as Settings;
+}
+
+/**
+ * The Recent list version of mergeSettings: the paths this window moved up or
+ * added go in front, the ones it removed go away, the rest keep the stored order.
+ */
+export function mergeRecent(stored: string[], written: string[], mine: string[]): string[] {
+  const indexIn = (list: string[], path: string) => list.findIndex((p) => pathsEqual(p, path));
+  const removed = written.filter((p) => indexIn(mine, p) < 0);
+  const front = mine.filter((p, i) => {
+    const before = indexIn(written, p);
+    return before < 0 || i < before;
+  });
+  const rest = stored.filter((p) => indexIn(front, p) < 0 && indexIn(removed, p) < 0);
+  return [...front, ...rest].slice(0, MAX_RECENT);
 }
 
 // ---- Tabs -----------------------------------------------------------------

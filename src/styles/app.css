@@ -176,6 +176,7 @@ a { color: var(--link); }
 .tab[data-active="true"]::before { left: -4px; --fx: 0; }
 .tab[data-active="true"]::after { right: -4px; --fx: 100%; }
 .tab.dragging { z-index: 3; transition: none; opacity: 0.94; }
+.tab.detaching { opacity: 0.5; cursor: grabbing; }
 .tab-list.no-anim .tab { transition: none; }
 
 .tab-title {
