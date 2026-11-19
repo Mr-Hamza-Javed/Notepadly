@@ -8,14 +8,13 @@ use tauri_plugin_window_state::AppHandleExt;
 use crate::WINDOW_STATE_FLAGS;
 
 /// True when no other window of the app is on screen, so closing this one would
-/// otherwise end the app.
+/// otherwise end the app. A window that was just opened and has not shown itself
+/// yet counts as on screen (RUST-5); a window that is closing does not. Two
+/// windows closing at once should use `window_closing` instead, which decides
+/// atomically (STATE-8).
 #[tauri::command]
 pub fn is_last_window(window: WebviewWindow) -> bool {
-    window
-        .app_handle()
-        .webview_windows()
-        .values()
-        .all(|w| w.label() == window.label() || !w.is_visible().unwrap_or(false))
+    crate::is_last_window(&window)
 }
 
 /// Hides the window and puts its webview to sleep instead of closing it.
@@ -24,6 +23,8 @@ pub fn enter_background(app: AppHandle, window: WebviewWindow) -> Result<(), Str
     // A hidden window is never "closed", so the plugin would not save its size.
     let _ = app.save_window_state(WINDOW_STATE_FLAGS);
     window.hide().map_err(|e| e.to_string())?;
+    app.state::<crate::WindowPaths>()
+        .entered_background(window.label());
     set_asleep(&window, true);
     // Every tab is stored now, so this is the safe moment for a downloaded update.
     // The new version comes back up hidden, exactly where this one is going.
