@@ -80,6 +80,23 @@ test("M2: pasting with Ctrl+V and with Edit > Paste cannot break the row", async
   await expect.poll(() => docText(page).then((t) => t.split("\n").length)).toBe(TABLE.split("\n").length);
 });
 
+for (const via of ["keyboard", "Edit menu"] as const) {
+  test(`cutting the last word of a cell and pasting it back keeps the space (${via})`, async ({ page }) => {
+    const edit = async (name: "Cut" | "Paste") => {
+      if (via === "keyboard") return page.keyboard.press(name === "Cut" ? "Control+x" : "Control+v");
+      await page.locator(".menu-head[data-head=edit]").click();
+      await page.getByRole("menuitem", { name: new RegExp(`^${name}`) }).click();
+    };
+    await clickCell(page, "apple pie");
+    await page.keyboard.press("End");
+    for (let i = 0; i < 3; i++) await page.keyboard.press("Shift+ArrowLeft");
+    await edit("Cut");
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("pie");
+    await edit("Paste");
+    await expect.poll(() => row(page, 4)).toBe("| apple pie | 2 |");
+  });
+}
+
 test("M2: Ctrl+K turns the cell selection into a link", async ({ page }) => {
   await clickCell(page, "apple pie");
   await page.keyboard.press("End");

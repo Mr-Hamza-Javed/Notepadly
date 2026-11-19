@@ -319,6 +319,16 @@ class TableController {
   private source = "";
   private shape = "";
   private active: CellRef | null = null;
+  /** The cell that last lost focus with text only on screen (see `resumeParked`). */
+  private parked: {
+    ref: CellRef;
+    shown: string;
+    markdown: string;
+    anchor: number;
+    head: number;
+    docAnchor: number;
+    docHead: number;
+  } | null = null;
   private pendingFocus: (CellRef & { atEnd: boolean }) | null = null;
   private rebuilding = false;
   /** An IME composition is running in a cell: its text is written once, when it ends. */
@@ -591,6 +601,7 @@ class TableController {
   focusAt(anchor: number, head: number): void {
     const cell = this.cellFor(Math.min(anchor, head));
     if (!cell) return;
+    if (this.resumeParked()) return;
     const { from, length } = this.cellRange(this.refOf(cell));
     const clamp = (pos: number) => Math.min(length, Math.max(0, pos - from));
     this.focusCell(cell, { anchor: clamp(anchor), head: clamp(head) });
@@ -733,12 +744,49 @@ class TableController {
     if (!cell) return;
     cell.classList.remove("is-editing");
     const ref = this.refOf(cell);
+    const text = cellText(this.parsed[ref.row], ref.col);
+    this.parked = null;
     if (this.isActive(ref)) {
       this.active = null;
       document.removeEventListener("selectionchange", this.onSelectionChange);
+      // Keep the caret, and a space at the cell's edge that is only on screen (the markdown is
+      // trimmed), for when focus comes straight back, as for an Edit menu command.
+      const shown = cell.textContent ?? "";
+      const selected = cellSelection(cell);
+      if (selected && escapeCellText(shown).trim() === text) {
+        const main = this.view.state.selection.main;
+        this.parked = { ref, shown, markdown: text, ...selected, docAnchor: main.anchor, docHead: main.head };
+      }
     }
-    const text = cellText(this.parsed[ref.row], ref.col);
     setCellHtml(cell, text);
+  }
+
+  /**
+   * Focuses the cell that last lost focus again, with the text and caret it had, when nothing
+   * changed since: the document, and the editor selection that mirrored the cell. Menus take
+   * focus from the cell, and an Edit menu Cut then Paste at the cell's edge lost the space
+   * between the words (BUGS.md 1.0b). False when there is nothing to resume.
+   */
+  resumeParked(): boolean {
+    const parked = this.parked;
+    this.parked = null;
+    if (!parked || !this.wrap.isConnected || this.hasFocus()) return false;
+    const cell = this.cellAt(parked.ref.row, parked.ref.col);
+    const main = this.view.state.selection.main;
+    if (
+      !cell ||
+      cellText(this.parsed[parked.ref.row], parked.ref.col) !== parked.markdown ||
+      this.view.state.selection.ranges.length !== 1 ||
+      main.anchor !== parked.docAnchor ||
+      main.head !== parked.docHead
+    ) {
+      return false;
+    }
+    cell.focus({ preventScroll: true });
+    cell.textContent = parked.shown;
+    selectText(cell, parked.anchor, parked.head);
+    this.syncSelection();
+    return true;
   }
 
   private onInput(event: Event): void {
@@ -997,6 +1045,14 @@ function tablesOf(view: EditorView): TableController[] {
 /** The table whose cell has focus, if any. */
 export function focusedTable(view: EditorView): TableController | null {
   return tablesOf(view).find((table) => table.hasFocus()) ?? null;
+}
+
+/**
+ * The focused table, or one whose cell lost focus to a menu and is focused again here, with
+ * its text and caret, if nothing changed since (`TableController.resumeParked`).
+ */
+export function focusedOrResumedTable(view: EditorView): TableController | null {
+  return focusedTable(view) ?? tablesOf(view).find((table) => table.resumeParked()) ?? null;
 }
 
 /** The rendered table that contains a document position, if any. */

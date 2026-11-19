@@ -51,7 +51,7 @@ import { FIND_COUNT_LIMIT, FindController, findExtension } from "./find";
 import { CALLOUT_LINE, blockField, blockPreview, rebuildBlocks, toggleCalloutFold } from "./livePreview/block";
 import { documentPathChanged, previewContext, resolveHref } from "./livePreview/context";
 import { ctrlClick, inlinePreview } from "./livePreview/inline";
-import { escapeCellText, focusedTable, tableAt } from "./livePreview/widgets";
+import { escapeCellText, focusedOrResumedTable, tableAt } from "./livePreview/widgets";
 import { markdownSupport, parseAhead } from "./markdown";
 import { editorRootClass, lineDirections, tokenClasses, watchTheme } from "./theme";
 import { wheelZoomHandler } from "./wheelZoom";
@@ -956,21 +956,21 @@ class Engine implements EditorEngine {
   }
 
   deleteSelection(): void {
-    if (this.view && focusedTable(this.view)?.editInCell(null)) return;
+    if (this.view && focusedOrResumedTable(this.view)?.editInCell(null)) return;
     this.view?.dispatch(this.view.state.replaceSelection(""), { userEvent: "delete.selection", scrollIntoView: true });
   }
 
   selectAll(): void {
     if (!this.view) return;
     // In a table cell, Select All selects the cell's text, as in any text box (BUGS.md M1).
-    if (focusedTable(this.view)?.selectActiveCell()) return;
+    if (focusedOrResumedTable(this.view)?.selectActiveCell()) return;
     selectAll(this.view);
   }
 
   insertText(text: string): void {
     const view = this.view;
     if (!view) return;
-    if (view.state.selection.ranges.length === 1 && focusedTable(view)?.editInCell(text)) return;
+    if (view.state.selection.ranges.length === 1 && focusedOrResumedTable(view)?.editInCell(text)) return;
     // Text for a table cell (Paste, F5, a link) must not break the row with a newline or pipe.
     // Decided per cursor: with several, only those in a table get escaped text (BUGS.md EDIT-11).
     const spec = view.state.changeByRange((range) => {
