@@ -419,9 +419,16 @@ export class FakeBackend {
     if (parent && !this.dirs.has(parent)) throw "The system cannot find the path specified. (os error 3)";
     if (req.tailOffset !== null) {
       // files.rs `append_tail`: a missing source is an I/O error, a short one is STALE.
-      if (!existing) throw "The system cannot find the file specified. (os error 2)";
-      if (req.tailOffset > existing.bytes.length) throw "STALE";
-      parts.push(existing.bytes.subarray(req.tailOffset));
+      // `tailPath`: Save As streams the rest of another file (M13).
+      const source = req.tailPath ? this.files.get(key(req.tailPath)) : existing;
+      if (req.tailPath) {
+        const tailStamp = this.stampOf(req.tailPath);
+        const want = req.tailStamp;
+        if (want && (!tailStamp || tailStamp.size !== want.size || tailStamp.mtimeMs !== want.mtimeMs)) throw "STALE";
+      }
+      if (!source) throw "The system cannot find the file specified. (os error 2)";
+      if (req.tailOffset > source.bytes.length) throw "STALE";
+      parts.push(source.bytes.subarray(req.tailOffset));
     }
     this.files.set(key(req.path), { bytes: concat(...parts), mtimeMs: (this.clock += 1000) });
     return this.stampOf(req.path) as FakeStamp;
@@ -493,6 +500,8 @@ interface SaveArgs {
   allowLossy?: boolean;
   normalizeEol?: boolean;
   originalEncoding?: string;
+  tailPath?: string | null;
+  tailStamp?: FakeStamp | null;
 }
 
 /** The current window, as far as actions.ts uses it. */

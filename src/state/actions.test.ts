@@ -575,10 +575,32 @@ describe("large files", () => {
     expect(await app.actions.save()).toBe(true);
   });
 
-  it("loads the whole file before writing it somewhere else", async () => {
+  // BUGS.md M13: Save As loaded the whole file into memory first.
+  it("M13: Save As copies the unloaded rest without loading it, and loading goes on from the new file", async () => {
+    backend.mkdir("C:\\notes");
+    const loaded = app.tab().loadedOffset;
+    app.engine.restore(app.tab().id, { anchor: 0, head: 0, scrollTop: 0 });
+    app.engine.insertText("EDIT\n");
+    const reads = backend.count("file_read_chunk");
     dialogs.saveAnswers.push("C:\\notes\\copy.md");
     expect(await app.actions.saveAs()).toBe(true);
-    expect(backend.text("C:\\notes\\copy.md")).toBe(big);
+    expect(backend.count("file_read_chunk")).toBe(reads);
+    expect(backend.text("C:\\notes\\copy.md")).toBe("EDIT\n" + big);
+    expect(backend.text(A)).toBe(big);
+    expect(app.tab()).toMatchObject({ path: "C:\\notes\\copy.md", dirty: false, fullyLoaded: false, loadedOffset: loaded + 5 });
+    await app.actions.ensureFullyLoaded(app.tab().id);
+    expect(app.text()).toBe("EDIT\n" + big);
+  });
+
+  it("M13: Save As refuses to stream from an old file changed since it was read", async () => {
+    backend.mkdir("C:\\notes");
+    const original = app.tab().stamp;
+    backend.write(A, "replaced");
+    // Not yet noticed by polling: the stamp still names the old file, so Rust says STALE.
+    expect(app.tab().stamp).toEqual(original);
+    dialogs.saveAnswers.push("C:\\notes\\copy.md");
+    expect(await app.actions.saveAs()).toBe(false);
+    expect(backend.exists("C:\\notes\\copy.md")).toBe(false);
   });
 
   it("loads a small file completely in the background", async () => {

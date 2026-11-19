@@ -582,6 +582,17 @@ export interface WriteOptions {
   allowLossy?: boolean;
 }
 
+/**
+ * Whether Save As can write this partly loaded tab without loading the rest: the rest of
+ * its file is still the one read (unchanged on disk) and in the encoding it will be saved in.
+ */
+export function canStreamSaveAs(id: string): boolean {
+  const tab = getTab(id);
+  const rt = runtimes.get(id);
+  if (!tab || !rt || tab.fullyLoaded || !tab.path || !tab.stamp || rt.unreadable) return false;
+  return tailUsable(tab, rt) && (rt.diskEncoding === null || rt.diskEncoding === tab.encoding);
+}
+
 /** Serialised with loads and reloads, so byte offsets can never be read mid-rewrite. */
 export function writeTab(id: string, targetPath: string, options: WriteOptions = {}): Promise<WriteResult> {
   const rt = rtOf(id);
@@ -610,7 +621,10 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
   const samePath = pathsEqual(tab.path, targetPath);
   const loadedOnly = !!options.loadedOnly && !samePath;
   const partial = !tab.fullyLoaded && !loadedOnly;
-  if (partial && (!samePath || !tab.stamp)) {
+  // Save As of a partly loaded file: Rust copies the rest of the old file into the new one,
+  // so it never has to be loaded (M13).
+  const streamFrom = partial && !samePath && canStreamSaveAs(id) ? (tab.path as string) : null;
+  if (partial && (!(samePath || streamFrom) || !tab.stamp)) {
     return { ok: false, stale: partial && samePath, message: "Only part of this file is loaded." };
   }
   const tailOffset = partial ? tab.loadedOffset : null;
@@ -633,6 +647,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
       // Mixed line endings are only kept when rewriting the same file.
       normalizeEol: rt.eolChosen || !samePath,
       ...(samePath && rt.diskEncoding ? { originalEncoding: rt.diskEncoding } : {}),
+      ...(streamFrom ? { tailPath: streamFrom, tailStamp: tab.stamp as FileStamp } : {}),
     });
   } catch (error) {
     rt.ioSeq++;

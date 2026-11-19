@@ -651,7 +651,9 @@ async function saveAs(tabId?: string): Promise<boolean> {
     return false;
   }
   let loadedOnly = false;
-  if (movesFile) {
+  // A partly loaded file is saved under the new name with its unloaded rest copied by Rust,
+  // without loading it into memory (M13).
+  if (movesFile && !loader.canStreamSaveAs(id)) {
     try {
       await loader.ensureFullyLoaded(id);
     } catch (error) {
