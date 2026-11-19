@@ -519,8 +519,9 @@ export interface MarginBoxes {
   right: string;
 }
 
+/** A CSS string ends at CR, LF and form feed, so every control character becomes a space. */
 const cssString = (s: string) =>
-  `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ")}"`;
+  `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\u0000-\u001f\u007f]+/g, " ")}"`;
 
 /**
  * Turns a Notepad-style header spec into CSS `content` values. Codes:
