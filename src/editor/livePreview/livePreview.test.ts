@@ -301,6 +301,16 @@ describe("link and image targets", () => {
     previewContext.baseDir = () => null;
   });
 
+  // BUGS.md SEC-2 / PREV-3: an image on another network host must not be fetched
+  // when the document is shown (Windows would send the NTLM hash to that host).
+  it("SEC-2: does not resolve an image on another network host", () => {
+    previewContext.baseDir = () => "C:\\notes";
+    for (const src of ["\\\\evil.example\\s\\x.png", "file://evil.example/s/x.png", "\\\\?\\UNC\\evil.example\\s\\x.png"]) {
+      expect(resolveImageSrc(src), src).not.toMatch(/^\\\\/);
+    }
+    previewContext.baseDir = () => null;
+  });
+
   it("recognises image files by extension", () => {
     for (const path of ["a.png", "b.JPG", "c.jpeg", "d.svg", "e.webp#frag", "f.avif "]) {
       expect(isImagePath(path), path).toBe(true);

@@ -42,11 +42,20 @@ export function resolveWikiTarget(target: string): string {
  * The server of a network path (`\\server\share`, `//server/share`, `\\?\UNC\server\...`),
  * lower-cased, or null for a local path. Device paths (`\\.\pipe\x`) give "." and are never local.
  */
-function networkHost(path: string): string | null {
+export function networkHost(path: string): string | null {
   if (!/^[\\/]{2}/.test(path)) return null;
   if (/^[\\/]{2}\?[\\/][a-z]:([\\/]|$)/i.test(path)) return null;
   const unc = /^[\\/]{2}\?[\\/]UNC[\\/]([^\\/]*)/i.exec(path);
   return (unc ? unc[1] : /^[\\/]{2}([^\\/]*)/.exec(path)![1]).toLowerCase();
+}
+
+/**
+ * False for a network path on a server other than the one the document is on: reading
+ * `\\server\x.png` makes Windows send the user's NTLM credentials there (BUGS.md PREV-3, SEC-2).
+ */
+export function mayLoadImageFrom(path: string, baseDir: string | null): boolean {
+  const host = networkHost(path);
+  return host === null || (baseDir !== null && networkHost(baseDir) === host);
 }
 
 export function resolveImageSrc(src: string): string {
@@ -56,11 +65,7 @@ export function resolveImageSrc(src: string): string {
   // Opening a document must not make Windows connect to a server it names: reading
   // `\\server\x.png` sends the user's NTLM credentials there (BUGS.md PREV-3). Images on the
   // document's own server still load.
-  const host = networkHost(path);
-  if (host !== null) {
-    const base = previewContext.baseDir();
-    if (!base || networkHost(base) !== host) return "";
-  }
+  if (!mayLoadImageFrom(path, previewContext.baseDir())) return "";
   return "__TAURI_INTERNALS__" in window ? convertFileSrc(path) : path;
 }
 

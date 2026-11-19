@@ -159,8 +159,11 @@ export type HrefTarget =
 /**
  * Linked files that are not text, so they must not open in a tab. Only these reach
  * the system's default app: a link to a program or script still opens as text.
+ * The opener capability (`src-tauri/capabilities/default.json`) also denies
+ * programs and scripts, so a bug here cannot launch one; none of these may be in
+ * its deny list (checked by `openerScope.test.ts`).
  */
-const EXTERNAL_EXTENSIONS = new Set(
+export const EXTERNAL_EXTENSIONS: ReadonlySet<string> = new Set(
   (
     ".pdf .png .jpg .jpeg .gif .webp .bmp .svg .avif .ico .tif .tiff .heic " +
     ".mp3 .wav .ogg .flac .m4a .mp4 .mkv .webm .mov .avi .wmv " +
@@ -516,8 +519,9 @@ export interface MarginBoxes {
   right: string;
 }
 
+/** A CSS string ends at CR, LF and form feed, so every control character becomes a space. */
 const cssString = (s: string) =>
-  `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ")}"`;
+  `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\u0000-\u001f\u007f]+/g, " ")}"`;
 
 /**
  * Turns a Notepad-style header spec into CSS `content` values. Codes:

