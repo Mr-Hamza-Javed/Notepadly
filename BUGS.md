@@ -1,6 +1,6 @@
 # Notepadly: bug list and status
 
-**Updated:** 19 November 2026 · **Branch:** `ccr-a918fa2a-qfstem`
+**Updated:** 20 November 2026 · **Branch:** `ccr-a918fa2a-qfstem`
 
 **Status:**
 - The first report (10 November 2026, commit `c578712`) listed 70 issues.
@@ -9,7 +9,7 @@
 - The full first report, with the original steps for every bug, is in git history (`git show 28f46c2:BUGS.md`).
 
 **Tests:**
-- `npm test`: 536 tests pass, none skipped.
+- `npm test`: 594 tests pass, none skipped (after the code review of 19-20 November).
 - `npm run typecheck` is clean.
 - The Rust code (`src-tauri`) does not build on Linux, so the Rust changes on this branch were made by careful reading and have **not been compiled or run on Windows yet**. See section 1.4.
 
@@ -607,7 +607,7 @@ Reviewed `src/editor/index.ts`, `markdown.ts`, `commands.ts`, `find.ts`, `tableM
 - **Still open:** see Part 1.3.
 
 ## 2.5 Test work done
-- **Test count:** 30 tests at the first report; **536** now, none skipped. Every test that was skipped (`it.skip`) or `#[ignore]` for a known bug now runs and passes:
+- **Test count:** 30 tests at the first report; **594** now, none skipped. Every test that was skipped (`it.skip`) or `#[ignore]` for a known bug now runs and passes:
   - H5, H7, H16, M4, M7, M12, L2, L3, L8 (Vitest).
   - H14, M15 (Rust).
 - **New test files:**
