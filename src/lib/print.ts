@@ -339,6 +339,14 @@ async function renderPart(part: PrintPart, baseDir: string | null, holder: Node)
   }
 }
 
+/** Puts the alt text in place of each http(s) image that `allowed` refuses. */
+export function dropRemoteImages(root: HTMLElement, allowed: (src: string) => boolean): void {
+  for (const image of Array.from(root.querySelectorAll("img"))) {
+    const src = image.getAttribute("src") ?? "";
+    if (/^https?:/i.test(src.trim()) && !allowed(src.trim())) image.replaceWith(image.alt);
+  }
+}
+
 /** Replaces the placeholders of `preparePrint` with rendered maths, diagrams and the rest. */
 export async function renderParts(root: HTMLElement, parts: PrintPart[], baseDir: string | null): Promise<void> {
   if (!parts.length) return;
@@ -444,6 +452,8 @@ async function preparePage(id: string): Promise<boolean> {
   style.id = STYLE_ID;
   style.textContent = buildStyle(tab);
   document.head.appendChild(style);
+  // Remote images the editor has not been allowed to load are left out (Load remote images).
+  dropRemoteImages(root, (src) => engine.remoteImageAllowed?.(id, src) ?? true);
   document.body.appendChild(root);
   await imagesReady(root);
 

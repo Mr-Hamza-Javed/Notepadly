@@ -19,6 +19,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autocorrect: true,
   statusBar: true,
   zoom: 100,
+  remoteImages: "ask",
 };
 
 export const DEFAULT_PAGE_SETUP: PageSetup = {
@@ -61,6 +62,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     autocorrect: bool(r.autocorrect, d.autocorrect),
     statusBar: bool(r.statusBar, d.statusBar),
     zoom: clampZoom(num(r.zoom, d.zoom)),
+    remoteImages: oneOf(r.remoteImages, ["always", "ask", "never"] as const, d.remoteImages),
   };
 }
 

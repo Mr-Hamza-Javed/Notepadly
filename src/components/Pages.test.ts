@@ -89,6 +89,23 @@ describe("Settings page", () => {
     expect(radios()[0].getAttribute("aria-checked")).toBe("true");
   });
 
+  it("Load remote images offers Always, Ask per document and Never, stored like other settings", async () => {
+    const { default: Settings } = await import("./Settings");
+    const el = await render(Settings);
+    await act(async () => byText(el, ".card-head", "Load remote images").click());
+    const group = el.querySelector<HTMLElement>("[role='radiogroup'][aria-label='Load remote images']")!;
+    const radios = [...group.querySelectorAll<HTMLElement>("[role='radio']")];
+    expect(radios.map((r) => r.textContent)).toEqual(["Always", "Ask per document", "Never"]);
+    expect(radios[1].getAttribute("aria-checked")).toBe("true");
+    await act(async () => radios[2].click());
+    expect(app.state().settings.remoteImages).toBe("never");
+    expect(app.engine.remoteImageAllowed?.(app.tab().id, "https://a.b/c.png")).toBe(false);
+    await act(async () => radios[0].click());
+    expect(app.engine.remoteImageAllowed?.(app.tab().id, "https://a.b/c.png")).toBe(true);
+    app.store.flushPersistedPrefs();
+    expect(JSON.parse(localStorage.getItem("notepadly.settings.v1")!).remoteImages).toBe("always");
+  });
+
   it("a switch changes its setting and says so", async () => {
     const { default: Settings } = await import("./Settings");
     const el = await render(Settings);

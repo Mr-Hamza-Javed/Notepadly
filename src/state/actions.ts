@@ -86,6 +86,7 @@ export function currentEditorConfig(): EditorConfig {
     fontSizePt: s.fontSizePt,
     spellcheck: s.spellcheck,
     autocorrect: s.autocorrect,
+    remoteImages: s.remoteImages,
   };
 }
 
@@ -1068,6 +1069,7 @@ function applySetting<K extends keyof Settings>(key: K, value: Settings[K], own:
     case "fontFamily":
     case "fontStyle":
     case "fontSizePt":
+    case "remoteImages":
       engine.setConfig(currentEditorConfig());
       break;
     case "theme":

@@ -10,6 +10,8 @@ export interface EditorConfig {
   fontSizePt: number;
   spellcheck: boolean;
   autocorrect: boolean;
+  /** When http(s) images load; "always" when not given. See Settings.remoteImages. */
+  remoteImages?: "always" | "ask" | "never";
 }
 
 export interface CursorInfo {
@@ -140,6 +142,8 @@ export interface EditorEngine {
    */
   adoptDoc?(tabId: string, text: string | null, mode: FormatMode, carried: CarriedDocState): boolean;
   hasDoc(tabId: string): boolean;
+  /** Whether this http(s) image may load in the tab, by the setting and what the user allowed. */
+  remoteImageAllowed?(tabId: string, src: string): boolean;
   activate(tabId: string): void;
   /** Shows an empty, read-only placeholder instead of the active tab until the next activate. */
   park(): void;

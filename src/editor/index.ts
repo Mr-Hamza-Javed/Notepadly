@@ -233,6 +233,8 @@ class Engine implements EditorEngine {
   private configSerial = 0;
   private readonly docs = new Map<string, DocRecord>();
   private readonly sleeping = new Map<string, SleepRecord>();
+  /** Remote images the user loaded, by tab: all of them ("ask"), or the ones clicked ("never"). */
+  private readonly remoteAllowed = new Map<string, Set<string> | "all">();
   private activeId: string | null = null;
   private readonly finder = new FindController(() => this.view);
 
@@ -253,6 +255,8 @@ class Engine implements EditorEngine {
     previewContext.baseDir = () => (this.activeId ? host.baseDir(this.activeId) : null);
     previewContext.openLink = (href) => host.openLink(href);
     previewContext.isFullyLoaded = () => (this.activeId ? (host.isFullyLoaded?.(this.activeId) ?? true) : true);
+    previewContext.remoteImageAllowed = (src) => this.remoteImageAllowed(this.activeId ?? "", src);
+    previewContext.allowRemoteImage = (src) => this.allowRemoteImage(src);
 
     const view = new EditorView({ parent, state: this.placeholderState() });
     this.view = view;
@@ -282,6 +286,33 @@ class Engine implements EditorEngine {
     this.activeId = null;
     this.docs.clear();
     this.sleeping.clear();
+    this.remoteAllowed.clear();
+  }
+
+  remoteImageAllowed(tabId: string, src: string): boolean {
+    const policy = this.config.remoteImages ?? "always";
+    if (policy === "always") return true;
+    const allowed = this.remoteAllowed.get(tabId);
+    return allowed === "all" || !!allowed?.has(src);
+  }
+
+  /** A click on a blocked image: "ask" loads the document's remote images, "never" this one. */
+  private allowRemoteImage(src: string): void {
+    const tabId = this.activeId;
+    if (!tabId || !src) return;
+    if (this.config.remoteImages === "ask") {
+      this.remoteAllowed.set(tabId, "all");
+    } else {
+      const allowed = this.remoteAllowed.get(tabId);
+      if (allowed === "all") return;
+      this.remoteAllowed.set(tabId, new Set([...(allowed ?? []), src]));
+    }
+    this.redrawImages();
+  }
+
+  /** Draws the active tab's images again; background tabs draw theirs when shown. */
+  private redrawImages(): void {
+    this.view?.dispatch({ effects: documentPathChanged.of(null) });
   }
 
   // ---------- State construction ----------
@@ -888,6 +919,7 @@ class Engine implements EditorEngine {
     const wrapChanged = config.wordWrap !== previous.wordWrap;
     const attributesChanged =
       config.spellcheck !== previous.spellcheck || config.autocorrect !== previous.autocorrect;
+    if (config.remoteImages !== previous.remoteImages) this.redrawImages();
     if (wrapChanged || attributesChanged) {
       this.configSerial++;
       const active = this.activeDoc();
