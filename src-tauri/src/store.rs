@@ -2,7 +2,7 @@
 
 use crate::files::open_shared;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 const SESSION_FILE: &str = "session.json";
@@ -146,7 +146,17 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let temp = path.with_extension("tmp");
-    fs::write(&temp, text).map_err(|e| e.to_string())?;
+    // Flushed before the rename: NTFS journals the rename but not the data, so
+    // after a power cut an unflushed temp file can replace the old draft with
+    // zeros or nothing.
+    let written = fs::File::create(&temp).and_then(|mut file| {
+        file.write_all(text.as_bytes())?;
+        file.sync_all()
+    });
+    written.map_err(|e| {
+        let _ = fs::remove_file(&temp);
+        e.to_string()
+    })?;
     fs::rename(&temp, path).map_err(|e| {
         let _ = fs::remove_file(&temp);
         e.to_string()
