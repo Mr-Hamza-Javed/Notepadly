@@ -72,6 +72,8 @@ interface TabRuntime {
   cleanDelete: number | null;
   /** The file could not be read, so the editor does not hold its text: never save over it. */
   unreadable: boolean;
+  /** Characters read from the file into the editor; null when unknown (restored draft). */
+  diskChars: number | null;
   /** The file state a hibernated tab's kept undo history belongs to. */
   sleep: { stamp: FileStamp | null; encoding: Encoding } | null;
 }
@@ -101,6 +103,7 @@ function rtOf(id: string): TabRuntime {
       cleanDelete: null,
       unreadable: false,
       sleep: null,
+      diskChars: null,
     };
     runtimes.set(id, rt);
   }
@@ -149,7 +152,10 @@ function startScan(id: string): void {
     .then((result) => {
       if (rt.gen !== gen || rt.ioSeq !== ioSeq) return;
       const current = getTab(id);
-      if (current && !current.fullyLoaded) patchTab(id, { totalChars: result.chars });
+      if (!current || current.fullyLoaded) return;
+      // A restored draft's loaded part is not a known slice of the file: estimate.
+      const loaded = rt.diskChars ?? engine.length(id);
+      patchTab(id, { tailChars: Math.max(0, result.chars - loaded) });
     })
     .catch(noop);
 }
@@ -200,11 +206,13 @@ function loadStep(id: string, maxBytes: number): Promise<void> {
     }
     if (chunk.nextOffset <= offset && !chunk.eof) throw new Error("The file could not be read any further.");
     if (chunk.text) engine.appendText(id, chunk.text);
+    if (rt.diskChars !== null) rt.diskChars += chunk.text.length;
     patchTab(id, {
       loadedOffset: chunk.nextOffset,
       fullyLoaded: chunk.eof,
       stamp: chunk.stamp,
-      totalChars: chunk.eof ? null : current.totalChars,
+      tailChars:
+        chunk.eof || current.tailChars === null ? null : Math.max(0, current.tailChars - chunk.text.length),
     });
     if (current.dirty) markDraftChanged(id);
     if (!chunk.eof) startScan(id);
@@ -339,7 +347,7 @@ async function applyFromDisk(
     encoding: read.encoding,
     loadedOffset: read.nextOffset,
     fullyLoaded: read.eof,
-    totalChars: null,
+    tailChars: null,
     dirty: false,
     externalChange: null,
     hibernated: false,
@@ -349,6 +357,7 @@ async function applyFromDisk(
   rt.unreadable = false;
   rt.dismissed = null;
   rt.scanStarted = false;
+  rt.diskChars = read.text.length;
   rt.ioSeq++;
   rt.snap = null;
   markDraftChanged(id);
@@ -393,6 +402,7 @@ export function materialise(id: string): Promise<void> {
       if (!getTab(id) || engine.hasDoc(id)) return;
       if (draft !== null) {
         engine.createDoc(id, draft, tab.mode);
+        rt.diskChars = null;
         restoreView(id, rt.snap);
         rt.snap = null;
         rt.forceDirty = true;
@@ -526,7 +536,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string): Promise<
     externalChange: null,
   };
   if (tailOffset === null) {
-    patchTab(id, { ...shared, loadedOffset: stamp.size, fullyLoaded: true, totalChars: null });
+    patchTab(id, { ...shared, loadedOffset: stamp.size, fullyLoaded: true, tailChars: null });
   } else {
     const next = loadedOffsetAfterPartialSave(stamp.size, oldSize, tailOffset);
     if (next === null) {
@@ -534,7 +544,8 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string): Promise<
       patchTab(id, shared);
       await applyFromDisk(id, tailOffset, engine.snapshot(id), false);
     } else {
-      patchTab(id, { ...shared, loadedOffset: next, totalChars: null });
+      patchTab(id, { ...shared, loadedOffset: next, tailChars: null });
+      rt.diskChars = text.length;
       rt.scanStarted = false;
       startScan(id);
     }

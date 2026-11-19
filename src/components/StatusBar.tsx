@@ -28,17 +28,17 @@ const CursorCells = memo(function CursorCells() {
   const count = useApp((s) => s.cursor.chars);
   const selected = useApp((s) => s.cursor.selected);
   const fullyLoaded = useApp((s) => activeTab(s)?.fullyLoaded ?? true);
-  const totalChars = useApp((s) => activeTab(s)?.totalChars ?? null);
+  const tailChars = useApp((s) => activeTab(s)?.tailChars ?? null);
   const progress = useLoadProgress();
 
   let text: string;
   if (progress) {
     const pct = progress.total > 0 ? Math.min(99, Math.floor((progress.loaded / progress.total) * 100)) : 0;
     text = `Loading… ${pct}%`;
-  } else if (!fullyLoaded && totalChars === null) {
+  } else if (!fullyLoaded && tailChars === null) {
     text = "Loading…";
   } else {
-    const total = fullyLoaded ? count : (totalChars ?? count);
+    const total = fullyLoaded ? count : count + (tailChars ?? 0);
     text = selected > 0 ? `${fmt(selected)} of ${chars(total)}` : chars(total);
   }
 

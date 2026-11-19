@@ -370,7 +370,7 @@ export function tabFromSession(s: SessionTab): TabMeta {
     stamp: s.stamp,
     loadedOffset: s.loadedOffset,
     fullyLoaded: s.fullyLoaded,
-    totalChars: null,
+    tailChars: null,
     externalChange: null,
     hibernated: !(s.dirty && s.hasDraft) && s.path !== null,
   };

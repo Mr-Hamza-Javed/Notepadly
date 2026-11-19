@@ -330,7 +330,7 @@ async function openHere(input: string[]): Promise<void> {
       stamp,
       loadedOffset: 0,
       fullyLoaded: false,
-      totalChars: null,
+      tailChars: null,
       externalChange: null,
       hibernated: true,
     };

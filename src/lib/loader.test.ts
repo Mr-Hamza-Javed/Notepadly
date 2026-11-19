@@ -27,9 +27,28 @@ describe("loading a big file in chunks", () => {
   });
 
   it("counts the characters of the whole file in the background while partial", async () => {
-    await waitFor(() => app.tab().totalChars !== null);
-    expect(app.tab().totalChars).toBe(big.length);
+    await waitFor(() => app.tab().tailChars !== null);
+    expect(app.text().length + app.tab().tailChars!).toBe(big.length);
     expect(app.tab().fullyLoaded).toBe(false);
+  });
+
+  it("L5: the total of a partly loaded file includes the user's edits and later chunks", async () => {
+    await waitFor(() => app.tab().tailChars !== null);
+    const total = () => app.text().length + app.tab().tailChars!;
+    app.type("12345");
+    expect(total()).toBe(big.length + 5);
+    const before = app.tab().loadedOffset;
+    app.loader.onNearEnd(app.tab().id);
+    await waitFor(() => app.tab().loadedOffset > before);
+    expect(total()).toBe(big.length + 5);
+  });
+
+  it("L5: the total stays right after saving a partly loaded file", async () => {
+    app.engine.restore(app.tab().id, { anchor: 0, head: 0, scrollTop: 0 });
+    app.engine.insertText("EDIT\n");
+    expect(await app.actions.save()).toBe(true);
+    await waitFor(() => app.tab().tailChars !== null);
+    expect(app.text().length + app.tab().tailChars!).toBe(big.length + 5);
   });
 
   it("loads one more chunk when the view nears the end", async () => {
