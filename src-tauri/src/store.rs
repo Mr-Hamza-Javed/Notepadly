@@ -4,12 +4,24 @@ use crate::files::open_shared;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime};
 
 const SESSION_FILE: &str = "session.json";
 const DRAFTS_DIR: &str = "drafts";
 /// One session file per window that is open (or waiting in the background).
 const SESSIONS_DIR: &str = "sessions";
 const RESERVED_NAMES: &[&str] = &["CON", "PRN", "AUX", "NUL"];
+/// A draft or temp file changed this recently may belong to a window that is
+/// writing it right now, so the clean-up leaves it alone.
+const PRUNE_GRACE: Duration = Duration::from_secs(60);
+
+/// When this process started (first call wins; `lib.rs` calls it at launch).
+pub fn process_start() -> SystemTime {
+    static START: OnceLock<SystemTime> = OnceLock::new();
+    *START.get_or_init(SystemTime::now)
+}
 
 pub fn session_read(base: &Path) -> Result<Option<String>, String> {
     read_optional(&base.join(SESSION_FILE))
@@ -81,7 +93,25 @@ fn window_session_path(base: &Path, key: &str) -> Result<PathBuf, String> {
 /// Deletes every draft whose id is not in `keep`, and temp files left by an
 /// interrupted write. Drafts orphaned by a crash or a corrupt session would
 /// otherwise stay forever. Files that cannot be removed are left for next time.
+///
+/// Only files from before this run are drafts of a past session: a draft
+/// written since the app started belongs to a window of this run that may not
+/// have stored its session yet (MERGE-1), and a temp file younger than a minute
+/// may be a write in progress in another window.
 pub fn drafts_prune(base: &Path, keep: &[String]) -> Result<(), String> {
+    let now = SystemTime::now();
+    let recent = now.checked_sub(PRUNE_GRACE).unwrap_or(now);
+    drafts_prune_before(base, keep, process_start().min(recent), recent)
+}
+
+/// `drafts_prune` with explicit cut-offs: drafts modified at or after
+/// `drafts_cutoff`, and temp files at or after `temp_cutoff`, are kept.
+fn drafts_prune_before(
+    base: &Path,
+    keep: &[String],
+    drafts_cutoff: SystemTime,
+    temp_cutoff: SystemTime,
+) -> Result<(), String> {
     let entries = match fs::read_dir(base.join(DRAFTS_DIR)) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -93,9 +123,15 @@ pub fn drafts_prune(base: &Path, keep: &[String]) -> Result<(), String> {
             continue;
         }
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let older_than = |cutoff: SystemTime| {
+            entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|modified| modified < cutoff)
+        };
         let orphan = match path.extension().and_then(|e| e.to_str()) {
-            Some("txt") => !keep.iter().any(|id| id == stem),
-            Some("tmp") => true,
+            Some("txt") => !keep.iter().any(|id| id == stem) && older_than(drafts_cutoff),
+            Some("tmp") => older_than(temp_cutoff),
             _ => false,
         };
         if orphan {
@@ -140,12 +176,22 @@ fn read_optional(path: &Path) -> Result<Option<String>, String> {
     Ok(Some(text))
 }
 
+/// A temp name of its own for each write (`<name>.<pid>-<n>.tmp`), so two writes
+/// of one draft or session at once (two windows, or two processes) never share
+/// a temp file and interleave.
+fn unique_temp(path: &Path) -> PathBuf {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    path.with_file_name(format!("{stem}.{}-{seq}.tmp", std::process::id()))
+}
+
 /// A crash mid-write must not destroy the previous draft or session.
 fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let temp = path.with_extension("tmp");
+    let temp = unique_temp(path);
     // Flushed before the rename: NTFS journals the rename but not the data, so
     // after a power cut an unflushed temp file can replace the old draft with
     // zeros or nothing.
@@ -249,6 +295,11 @@ mod tests {
         }
     }
 
+    fn age(path: &Path, by: Duration) {
+        let file = fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(SystemTime::now() - by).unwrap();
+    }
+
     #[test]
     fn pruning_keeps_listed_drafts_and_removes_the_rest() {
         let base = TempBase::new("prune");
@@ -257,6 +308,10 @@ mod tests {
         draft_write(&base.0, "orphan", "old").unwrap();
         fs::write(base.0.join("drafts").join("keep.tmp"), "half").unwrap();
         fs::write(base.0.join("drafts").join("notes.md"), "not ours").unwrap();
+        let hour = Duration::from_secs(3600);
+        for name in ["keep.txt", "orphan.txt", "keep.tmp", "notes.md"] {
+            age(&base.0.join("drafts").join(name), hour);
+        }
         drafts_prune(&base.0, &["keep".to_string()]).unwrap();
         let mut names: Vec<_> = fs::read_dir(base.0.join("drafts"))
             .unwrap()
@@ -264,7 +319,10 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, ["keep.txt", "notes.md"]);
-        assert_eq!(draft_read(&base.0, "keep").unwrap().as_deref(), Some("kept"));
+        assert_eq!(
+            draft_read(&base.0, "keep").unwrap().as_deref(),
+            Some("kept")
+        );
     }
 
     #[test]
@@ -327,5 +385,74 @@ mod tests {
         session_write(&base.0, "keep").unwrap();
         assert!(draft_delete(&base.0, "../session").is_err());
         assert_eq!(session_read(&base.0).unwrap().as_deref(), Some("keep"));
+    }
+
+    // BUGS.md MERGE-1: a draft written by a window of this run before it stored
+    // its session was deleted by the start-up clean-up.
+    #[test]
+    fn pruning_spares_drafts_from_this_run_and_temp_files_being_written() {
+        let base = TempBase::new("prune-new");
+        let drafts = base.0.join("drafts");
+        draft_write(&base.0, "brand-new", "typed just now").unwrap();
+        draft_write(&base.0, "old-orphan", "from a crash").unwrap();
+        fs::write(drafts.join("brand-new.123-0.tmp"), "half").unwrap();
+        fs::write(drafts.join("old.123-1.tmp"), "half").unwrap();
+        let day = Duration::from_secs(24 * 3600);
+        age(&drafts.join("old-orphan.txt"), day);
+        age(&drafts.join("old.123-1.tmp"), day);
+        drafts_prune(&base.0, &[]).unwrap();
+        let mut names: Vec<_> = fs::read_dir(&drafts)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["brand-new.123-0.tmp", "brand-new.txt"]);
+
+        // A draft from before the start of this run but written within the last
+        // minute (a window of another process) is kept too.
+        let start = SystemTime::now() - day;
+        drafts_prune_before(&base.0, &[], start, SystemTime::now() - PRUNE_GRACE).unwrap();
+        assert!(drafts.join("brand-new.txt").exists());
+        // Once both are older than the cut-offs, they go.
+        let later = SystemTime::now() + PRUNE_GRACE;
+        drafts_prune_before(&base.0, &[], later, later).unwrap();
+        assert_eq!(fs::read_dir(&drafts).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_process_start_is_fixed_once() {
+        let first = process_start();
+        assert!(first <= SystemTime::now());
+        assert_eq!(process_start(), first);
+    }
+
+    // BUGS.md "Review: Rust backend": every write of one draft used `<id>.tmp`.
+    #[test]
+    fn concurrent_writes_of_one_draft_never_share_a_temp_file() {
+        let base = TempBase::new("concurrent");
+        assert_ne!(
+            unique_temp(&base.0.join("a.txt")),
+            unique_temp(&base.0.join("a.txt"))
+        );
+        let texts: Vec<String> = (0..8).map(|i| format!("{i}").repeat(10_000 + i)).collect();
+        std::thread::scope(|scope| {
+            for text in &texts {
+                let base = &base.0;
+                scope.spawn(move || {
+                    for _ in 0..10 {
+                        // Losing a rename race to another writer is fine (Windows can
+                        // refuse a rename onto a file being replaced); a mix is not.
+                        let _ = draft_write(base, "shared", text);
+                    }
+                });
+            }
+        });
+        let saved = draft_read(&base.0, "shared").unwrap().unwrap();
+        assert!(texts.contains(&saved), "the draft is a mix of two writes");
+        let names: Vec<_> = fs::read_dir(base.0.join("drafts"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["shared.txt"], "temp file left behind");
     }
 }
