@@ -352,20 +352,6 @@ describe("editor engine: modes and large documents", () => {
     expect(document.querySelector(".cm-editor")?.className).toContain("cm-mode-plain");
   });
 
-  it("falls back to syntax-level styling for a document with a very long line", () => {
-    engine.createDoc("a", "x".repeat(20_001), "formatted");
-    engine.activate("a");
-    expect(document.querySelector(".cm-editor")?.className).toContain("cm-mode-syntax");
-    expect(document.querySelector(".cm-editor")?.className).not.toContain("cm-mode-formatted");
-  });
-
-  it("degrades when an appended chunk makes the last line too long", () => {
-    engine.createDoc("a", "short start ", "formatted");
-    engine.activate("a");
-    engine.appendText("a", "y".repeat(20_000));
-    expect(document.querySelector(".cm-editor")?.className).toContain("cm-mode-syntax");
-  });
-
   it("keeps a document of many short lines fully formatted", () => {
     engine.createDoc("a", "short line\n".repeat(5_000), "formatted");
     engine.activate("a");
@@ -549,15 +535,56 @@ describe("editor engine: Ctrl+click on links in every mode", () => {
   });
 });
 
-// BUGS.md H6: one long line turned live preview off for good.
-describe("editor engine: live preview comes back after a long line is gone", () => {
+// BUGS.md H6: one long line turned live preview off for the whole document. Now only that
+// line shows as source; only a document over 20 MB turns preview off.
+describe("editor engine: a long line only shows itself as source", () => {
   const editorClass = () => document.querySelector(".cm-editor")?.className ?? "";
+  const strongTexts = () => [...document.querySelectorAll(".cm-md-strong")].map((el) => el.textContent ?? "");
 
-  it("turns preview off for a pasted long line, says so, and back on after Undo", async () => {
+  it("keeps live preview for the other lines when a long line is pasted", async () => {
+    const { log } = mountEngine();
+    engine.createDoc("a", "# Title\n**bold**\n", "formatted");
+    engine.activate("a");
+    engine.restore("a", { anchor: 17, head: 17, scrollTop: 0 });
+    engine.insertText(`**x** ${"y".repeat(20_001)}`);
+    engine.restore("a", { anchor: 0, head: 0, scrollTop: 0 });
+    await nextFrame();
+    expect(editorClass()).toContain("cm-mode-formatted");
+    expect(log.cursor.at(-1)?.[1].previewLimited).toBe(false);
+    // Line 2 is rendered; the long line's `**x**` is not parsed as bold.
+    expect(strongTexts()).toEqual(["bold"]);
+  });
+
+  it("keeps a file opened with a long line in Formatted mode", () => {
+    mountEngine();
+    engine.createDoc("a", "x".repeat(20_001), "formatted");
+    engine.activate("a");
+    expect(editorClass()).toContain("cm-mode-formatted");
+  });
+
+  it("stays formatted when an appended chunk makes the last line long", () => {
+    mountEngine();
+    engine.createDoc("a", "short start ", "formatted");
+    engine.activate("a");
+    engine.appendText("a", "y".repeat(20_000));
+    expect(editorClass()).toContain("cm-mode-formatted");
+  });
+
+  it("does not render a table with an overlong row as a widget", () => {
+    mountEngine();
+    engine.createDoc("a", `| a | b |\n| - | - |\n| ${"c".repeat(10_001)} | d |\n\ntext\n`, "formatted");
+    engine.activate("a");
+    engine.restore("a", { anchor: 0, head: 0, scrollTop: 0 });
+    expect(document.querySelector(".cm-md-table")).toBeNull();
+    engine.resetDoc("a", "| a | b |\n| - | - |\n| c | d |\n\ntext\n");
+    expect(document.querySelector(".cm-md-table")).not.toBeNull();
+  });
+
+  it("turns preview off for a document over 20 MB, says so, and back on after Undo", async () => {
     const { log } = mountEngine();
     engine.createDoc("a", "# Title\n", "formatted");
     engine.activate("a");
-    engine.insertText("x".repeat(20_001));
+    engine.insertText("line of text\n".repeat(1_700_000));
     await nextFrame();
     expect(editorClass()).toContain("cm-mode-syntax");
     expect(log.cursor.at(-1)?.[1].previewLimited).toBe(true);
@@ -567,50 +594,5 @@ describe("editor engine: live preview comes back after a long line is gone", () 
     await nextFrame();
     expect(editorClass()).toContain("cm-mode-formatted");
     expect(log.cursor.at(-1)?.[1].previewLimited).toBe(false);
-  });
-
-  it("stays off while another long line remains", async () => {
-    mountEngine();
-    const long = "y".repeat(20_001);
-    engine.createDoc("a", `${long}\n${long}`, "formatted");
-    engine.activate("a");
-    engine.restore("a", { anchor: 0, head: long.length, scrollTop: 0 });
-    engine.deleteSelection();
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(editorClass()).toContain("cm-mode-syntax");
-  });
-
-  it("turns preview on for a file opened with a long line once it is deleted", async () => {
-    mountEngine();
-    engine.createDoc("a", `short\n${"z".repeat(20_001)}`, "formatted");
-    engine.activate("a");
-    expect(editorClass()).toContain("cm-mode-syntax");
-    engine.restore("a", { anchor: 5, head: 20_007, scrollTop: 0 });
-    engine.deleteSelection();
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(editorClass()).toContain("cm-mode-formatted");
-  });
-
-  it("EDIT-1: a long line pasted in Markdown syntax mode is caught when switching to Formatted", async () => {
-    const { log } = mountEngine();
-    engine.createDoc("a", "short", "syntax");
-    engine.activate("a");
-    engine.insertText("x".repeat(20_001));
-    engine.setMode("a", "formatted");
-    await nextFrame();
-    expect(editorClass()).toContain("cm-mode-syntax");
-    expect(log.cursor.at(-1)?.[1].previewLimited).toBe(true);
-  });
-
-  it("EDIT-1: a long line deleted in Markdown syntax mode no longer limits Formatted", () => {
-    mountEngine();
-    const long = "z".repeat(20_001);
-    engine.createDoc("a", `short\n${long}`, "formatted");
-    engine.activate("a");
-    engine.setMode("a", "syntax");
-    engine.restore("a", { anchor: 5, head: 6 + long.length, scrollTop: 0 });
-    engine.deleteSelection();
-    engine.setMode("a", "formatted");
-    expect(editorClass()).toContain("cm-mode-formatted");
-  });
+  }, 30_000);
 });

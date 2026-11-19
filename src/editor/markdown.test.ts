@@ -317,3 +317,25 @@ describe("markdown extensions: edge cases", () => {
     expect(texts("$x$, $y$ and $a+b$.", "InlineMath")).toEqual(["$x$", "$y$", "$a+b$"]);
   });
 });
+
+// BUGS.md H6 and the Lezer long-line cost: `[a](` repeated took 300-400 ms per 19,600-character line.
+describe("overlong lines", () => {
+  const long = "**b** [a](x) ".repeat(800); // 10,400 characters
+  const short = "**b** [a](x) ".repeat(700); // 9,100 characters
+
+  it("are not parsed for inline syntax, while shorter lines around them are", () => {
+    expect(nodeNames(notepadlyParser.parse(long)).has("StrongEmphasis")).toBe(false);
+    expect(nodeNames(notepadlyParser.parse(long)).has("Link")).toBe(false);
+    expect(nodeNames(notepadlyParser.parse(short)).has("Link")).toBe(true);
+    // The next line of the same paragraph is still parsed.
+    const names = nodeNames(notepadlyParser.parse(`${long}\n**c**`));
+    expect(names.has("StrongEmphasis")).toBe(true);
+    expect(names.has("Link")).toBe(false);
+  });
+
+  it("parse `[a](` repeated over 40,000 characters quickly", () => {
+    const start = performance.now();
+    notepadlyParser.parse("[a](".repeat(10_000));
+    expect(performance.now() - start).toBeLessThan(300);
+  });
+});

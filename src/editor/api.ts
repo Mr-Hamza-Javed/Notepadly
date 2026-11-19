@@ -22,8 +22,8 @@ export interface CursorInfo {
   canUndo: boolean;
   canRedo: boolean;
   /**
-   * A Formatted tab shown as Markdown syntax because a line is over 20,000 characters
-   * or the document is over 20 MB. Clears when that is no longer so.
+   * A Formatted tab shown as Markdown syntax because the document is over 20 MB (a line
+   * over 10,000 characters only shows that line as source). Clears when that is no longer so.
    */
   previewLimited?: boolean;
 }

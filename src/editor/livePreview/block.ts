@@ -15,6 +15,7 @@ import {
 } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
+import { MAX_PREVIEW_LINE } from "../markdown";
 import { isDarkTheme } from "../theme";
 import {
   HorizontalRuleWidget,
@@ -134,6 +135,14 @@ function nestOf(state: EditorState, node: SyntaxNodeRef, prefix: string): Nest {
   return { classes, indent };
 }
 
+function hasLongLine(doc: EditorState["doc"], first: number, last: number): boolean {
+  if (doc.line(last).to - doc.line(first).from <= MAX_PREVIEW_LINE) return false;
+  for (const iter = doc.iterLines(first, last + 1); !iter.next().done; ) {
+    if (iter.value.length > MAX_PREVIEW_LINE) return true;
+  }
+  return false;
+}
+
 function collectBlocks(state: EditorState, span: Span, toggled: readonly number[]): Range<Decoration>[] {
   const found: Range<Decoration>[] = [];
   const { doc } = state;
@@ -150,6 +159,8 @@ function collectBlocks(state: EditorState, span: Span, toggled: readonly number[
       const prefix = doc.sliceString(startLine.from, node.from);
       const nested = prefix.length > 0;
       if (nested && !/^[ \t>]*$/.test(prefix) && node.name !== "Blockquote") return false;
+      // A block with an overlong line stays source, like the line itself (BUGS.md H6).
+      if (node.name !== "Blockquote" && hasLongLine(doc, startLine.number, endLine.number)) return false;
       const nest = nested ? nestOf(state, node, prefix) : TOP_LEVEL;
       const replace = (widget: Decoration["spec"]["widget"], reveal: RevealMode = "explicit") =>
         found.push(Decoration.replace({ widget, block: true, reveal }).range(startLine.from, endLine.to));

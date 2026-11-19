@@ -45,6 +45,26 @@ const CH_BACKSLASH = 92;
 const CH_NEWLINE = 10;
 const CH_SPACE = 32;
 
+/**
+ * Lines longer than this get no inline parsing (no emphasis, links, maths…) and no block
+ * widget: they show as plain source while the rest of the document keeps live preview
+ * (BUGS.md H6). Lezer's link resolution is quadratic: `[a](` repeated over 19,600
+ * characters took 300-400 ms per parse, over 10,000 about 90 ms.
+ */
+export const MAX_PREVIEW_LINE = 10_000;
+
+/**
+ * Runs first at every inline position. At the start of an overlong line it consumes the
+ * whole line without adding nodes, so no other inline parser ever sees it.
+ */
+function skipLongLine(cx: InlineContext, _next: number, pos: number): number {
+  if (cx.end - pos <= MAX_PREVIEW_LINE) return -1;
+  if (pos !== cx.offset && cx.char(pos - 1) !== CH_NEWLINE) return -1;
+  const lineEnd = cx.text.indexOf("\n", pos - cx.offset);
+  const end = lineEnd < 0 ? cx.end : cx.offset + lineEnd;
+  return end - pos > MAX_PREVIEW_LINE ? end : -1;
+}
+
 /** Upper bound for an inline construct, so a stray opener cannot scan far. */
 const MAX_INLINE_SCAN = 4000;
 
@@ -416,6 +436,7 @@ const NotepadlyMarkdown: MarkdownConfig = {
     { name: "FrontmatterMark", style: t.processingInstruction },
   ],
   parseInline: [
+    { name: "LongLine", parse: skipLongLine, before: "Escape" },
     { name: "Highlight", parse: parseHighlight, after: "Emphasis" },
     { name: "CalloutTag", parse: parseCalloutTag, before: "Link" },
     { name: "FootnoteRef", parse: parseFootnoteRef, before: "Link" },

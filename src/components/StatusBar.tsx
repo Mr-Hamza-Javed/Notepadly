@@ -51,7 +51,7 @@ const CursorCells = memo(function CursorCells() {
 });
 
 const PREVIEW_LIMITED =
-  "Live preview is off: a line is longer than 20,000 characters or the file is over 20 MB.";
+  "Live preview is off: the file is over 20 MB.";
 
 const ModeCell = memo(function ModeCell() {
   const mode = useApp((s) => activeTab(s)?.mode ?? "plain");

@@ -57,7 +57,6 @@ import "./editor.css";
 
 export { FIND_COUNT_LIMIT };
 
-const MAX_LINE_FOR_PREVIEW = 20000;
 const MAX_DOC_FOR_PREVIEW = 20 * 1024 * 1024;
 const NEAR_END_THROTTLE_MS = 120;
 /** Wait after an edit that shortened a degraded document before checking it again. */
@@ -137,24 +136,12 @@ interface SleepRecord {
 
 let versionCounter = 0;
 
-/** Whether a document still needs the plain fallback; walks lines without joining the text. */
-function needsDegrade(doc: EditorState["doc"]): boolean {
-  if (doc.length > MAX_DOC_FOR_PREVIEW) return true;
-  if (doc.length <= MAX_LINE_FOR_PREVIEW) return false;
-  for (let iter = doc.iterLines(); !iter.next().done; ) {
-    if (iter.value.length > MAX_LINE_FOR_PREVIEW) return true;
-  }
-  return false;
-}
-
-function hasLongLine(text: string): boolean {
-  let start = 0;
-  for (;;) {
-    const end = text.indexOf("\n", start);
-    if (end < 0) return text.length - start > MAX_LINE_FOR_PREVIEW;
-    if (end - start > MAX_LINE_FOR_PREVIEW) return true;
-    start = end + 1;
-  }
+/**
+ * Whether a document is too large for live preview. A very long line no longer turns it off
+ * for the whole document: that line alone shows as source (markdown.ts MAX_PREVIEW_LINE, H6).
+ */
+function needsDegrade(length: number): boolean {
+  return length > MAX_DOC_FOR_PREVIEW;
 }
 
 function sameFormatContext(a: FormatContext | null, b: FormatContext): boolean {
@@ -311,7 +298,7 @@ class Engine implements EditorEngine {
   }
 
   private newRecord(id: string, text: string, mode: FormatMode): DocRecord {
-    const degraded = text.length > MAX_DOC_FOR_PREVIEW || hasLongLine(text);
+    const degraded = needsDegrade(text.length);
     const effective = mode === "formatted" && degraded ? "syntax" : mode;
     const version = ++versionCounter;
     return {
@@ -399,24 +386,11 @@ class Engine implements EditorEngine {
   private checkDegrade(doc: DocRecord, update: ViewUpdate): void {
     if (doc.mode !== "formatted") return;
     if (doc.degraded) {
-      // Deleting the long line (or undoing its paste) brings live preview back.
-      let removed = false;
-      update.changes.iterChangedRanges((fromA, toA) => {
-        if (toA > fromA) removed = true;
-      });
-      if (removed) this.scheduleRecheck(doc);
+      // Deleting text (or undoing a paste) below the size limit brings live preview back.
+      if (!needsDegrade(update.state.doc.length)) this.scheduleRecheck(doc);
       return;
     }
-    const { state } = update;
-    let degrade = state.doc.length > MAX_DOC_FOR_PREVIEW;
-    if (!degrade) {
-      update.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
-        if (degrade) return;
-        if (state.doc.lineAt(fromB).length > MAX_LINE_FOR_PREVIEW) degrade = true;
-        else if (state.doc.lineAt(toB).length > MAX_LINE_FOR_PREVIEW) degrade = true;
-        else if (toB - fromB > MAX_LINE_FOR_PREVIEW && hasLongLine(state.sliceDoc(fromB, toB))) degrade = true;
-      });
-    }
+    const degrade = needsDegrade(update.state.doc.length);
     if (!degrade) return;
     doc.degraded = true;
     queueMicrotask(() => {
@@ -426,14 +400,14 @@ class Engine implements EditorEngine {
     });
   }
 
-  /** Debounced: a full line scan runs once after a burst of deletions, not per keystroke. */
+  /** Debounced: preview comes back once after a burst of deletions, not per keystroke. */
   private scheduleRecheck(doc: DocRecord): void {
     clearTimeout(this.recheckTimer);
     this.recheckTimer = window.setTimeout(() => {
       this.recheckTimer = 0;
       const view = this.view;
       if (!view || this.activeId !== doc.id || !doc.degraded || doc.mode !== "formatted") return;
-      if (needsDegrade(view.state.doc)) return;
+      if (needsDegrade(view.state.doc.length)) return;
       doc.degraded = false;
       view.dispatch({ effects: modeCompartment.reconfigure(modeExtensions.formatted) });
       this.scheduleCursor();
@@ -574,14 +548,7 @@ class Engine implements EditorEngine {
     if (!doc || !text) return;
     const state = this.stateOf(doc);
     const length = state.doc.length;
-    const firstBreak = text.indexOf("\n");
-    const joinedLine = state.doc.lineAt(length).length + (firstBreak < 0 ? text.length : firstBreak);
-    if (
-      !doc.degraded &&
-      (joinedLine > MAX_LINE_FOR_PREVIEW || length + text.length > MAX_DOC_FOR_PREVIEW || hasLongLine(text))
-    ) {
-      doc.degraded = true;
-    }
+    if (!doc.degraded && needsDegrade(length + text.length)) doc.degraded = true;
     const spec = {
       changes: { from: length, insert: text },
       annotations: [Transaction.addToHistory.of(false), loadingText.of(true)],
@@ -731,7 +698,7 @@ class Engine implements EditorEngine {
     if (!doc || doc.mode === mode) return;
     doc.mode = mode;
     // Edits made in another mode are not checked for long lines (checkDegrade), so look again.
-    if (mode === "formatted") doc.degraded = needsDegrade(this.stateOf(doc).doc);
+    if (mode === "formatted") doc.degraded = needsDegrade(this.stateOf(doc).doc.length);
     const effects = modeCompartment.reconfigure(modeExtensions[this.effectiveMode(doc)]);
     if (doc.id === this.activeId && this.view) {
       this.view.dispatch({ effects });
