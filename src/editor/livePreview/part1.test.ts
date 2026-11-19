@@ -7,7 +7,8 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 import { markdownSupport } from "../markdown";
-import { blockPreview } from "./block";
+import { blockField, blockPreview } from "./block";
+import { cursorCharLeft, cursorCharRight } from "@codemirror/commands";
 import { inlinePreview } from "./inline";
 import { previewContext, resolveImageSrc } from "./context";
 import { classifyHref } from "../../state/logic";
@@ -175,6 +176,55 @@ function typeInCell(cell: HTMLElement, text: string): void {
 function key(target: Element | null, init: KeyboardEventInit): void {
   target!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
 }
+
+describe("entering maths and diagrams from the keyboard", () => {
+  async function focusedEngineView(text: string): Promise<EditorView> {
+    mountEngine();
+    engine.createDoc("t", text, "formatted");
+    engine.activate("t");
+    await tick();
+    const view = EditorView.findFromDOM(document.querySelector(".cm-editor") as HTMLElement)!;
+    view.contentDOM.tabIndex = 0;
+    view.focus();
+    return view;
+  }
+
+  it("H2: Right from the line above a maths block opens it with the cursor on the formula", async () => {
+    const text = "top\n$$\nx^2\n$$\nend";
+    const view = await focusedEngineView(text);
+    view.dispatch({ selection: { anchor: 3 } });
+    await tick();
+    cursorCharRight(view);
+    await tick();
+    expect(view.state.field(blockField).editing).toBe(4);
+    expect(view.state.selection.main.head).toBe(text.indexOf("x^2"));
+    expect(view.dom.querySelector(".cm-md-math-block")).toBeNull();
+    engine.destroy();
+  });
+
+  it("H2: Left from the line below a diagram opens it with the cursor at the end of its code", async () => {
+    const text = "top\n```mermaid\ngraph TD; A-->B\n```\nend";
+    const view = await focusedEngineView(text);
+    view.dispatch({ selection: { anchor: text.indexOf("end") } });
+    await tick();
+    cursorCharLeft(view);
+    await tick();
+    expect(view.state.field(blockField).editing).toBe(4);
+    expect(view.state.selection.main.head).toBe(text.indexOf("B\n```") + 1);
+    engine.destroy();
+  });
+
+  it("H2: Left from the line below a maths block lands at the end of the formula", async () => {
+    const text = "top\n$$\nx^2\n$$\nend";
+    const view = await focusedEngineView(text);
+    view.dispatch({ selection: { anchor: text.indexOf("end") } });
+    await tick();
+    cursorCharLeft(view);
+    await tick();
+    expect(view.state.selection.main.head).toBe(text.indexOf("x^2") + 3);
+    engine.destroy();
+  });
+});
 
 describe("Find matches in table cells", () => {
   it("TAB-1: every match in the table's cells is marked, not only the current one", async () => {

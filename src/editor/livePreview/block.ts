@@ -344,4 +344,71 @@ const viewportReporter = ViewPlugin.fromClass(
  */
 const atomicBlocks = EditorView.atomicRanges.of((view) => view.state.field(blockField).shown);
 
-export const blockPreview = [blockField, viewportReporter, atomicBlocks, tableFocus];
+/** Where the cursor goes in the source of a maths or Mermaid block entered from above or below. */
+function contentEdge(state: EditorState, from: number, to: number, fromAbove: boolean): number | null {
+  let pos: number | null = null;
+  syntaxTree(state).iterate({
+    from,
+    to,
+    enter: (node) => {
+      if (pos !== null) return false;
+      if (node.name === "BlockMath") {
+        const marks = node.node.getChildren("MathMark");
+        if (marks.length !== 2) return false;
+        let at = fromAbove ? marks[0].to : marks[1].from;
+        // Land on the formula's own line, not after the opening `$$` or before the closing one.
+        if (fromAbove && state.sliceDoc(at, at + 1) === "\n" && at + 1 <= marks[1].from) at++;
+        if (!fromAbove && state.sliceDoc(at - 1, at) === "\n" && at - 1 >= marks[0].to) at--;
+        pos = at;
+        return false;
+      }
+      if (node.name === "FencedCode") {
+        const body = node.node.getChild("CodeText");
+        if (body) pos = fromAbove ? body.from : body.to;
+        return false;
+      }
+      return true;
+    },
+  });
+  return pos;
+}
+
+/**
+ * An arrow key that lands the cursor on the edge of a rendered maths block or diagram opens its
+ * source with the cursor in it, like a table is entered from the keyboard (BUGS.md H2).
+ */
+const blockEntry = ViewPlugin.fromClass(
+  class {
+    constructor(private readonly view: EditorView) {}
+
+    update(update: ViewUpdate): void {
+      if (update.docChanged || !update.selectionSet || !update.view.hasFocus) return;
+      const keyboard = update.transactions.some(
+        (tr) => tr.isUserEvent("select") && !tr.isUserEvent("select.pointer") && !tr.isUserEvent("select.search"),
+      );
+      const main = update.state.selection.main;
+      if (!keyboard || !main.empty || update.state.selection.ranges.length > 1) return;
+      const oldHead = update.startState.selection.main.head;
+      const { shown } = update.state.field(blockField);
+      let target: { from: number; to: number } | null = null;
+      shown.between(main.head, main.head, (from, to, deco) => {
+        const widget = deco.spec.widget;
+        if (deco.spec.reveal !== "explicit" || !(widget instanceof MathWidget || widget instanceof MermaidWidget)) return;
+        if (main.head === from || main.head === to) target = { from, to };
+      });
+      if (!target) return;
+      const { from, to } = target;
+      const fromAbove = oldHead < from;
+      const pos = contentEdge(update.state, from, to, fromAbove);
+      if (pos === null) return;
+      // Dispatching is not allowed during an update.
+      queueMicrotask(() => {
+        const view = this.view;
+        if (!view.dom.isConnected || view.state.selection.main.head !== main.head) return;
+        view.dispatch({ effects: openBlockSource.of(from), selection: { anchor: pos }, scrollIntoView: true });
+      });
+    }
+  },
+);
+
+export const blockPreview = [blockField, viewportReporter, atomicBlocks, tableFocus, blockEntry];
