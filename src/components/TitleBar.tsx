@@ -6,6 +6,7 @@ import { AppIcon, G, Glyph } from "./icons";
 import { Menu, type AnchorRect, type MenuEntry } from "./Menu";
 import { CaptionButtons } from "./CaptionButtons";
 import { focusEditorSoon } from "./focus";
+import { isPulledOut, reorderTarget } from "../lib/tabDrag";
 
 interface TabProps {
   tab: TabMeta;
@@ -163,37 +164,51 @@ const TabStrip = memo(function TabStrip() {
     if (!ls || !sc) return;
     const nodes = Array.from(ls.children) as HTMLElement[];
     const lefts = nodes.map((n) => n.offsetLeft);
+    const widths = nodes.map((n) => n.offsetWidth);
     const w = el.offsetWidth;
     const startX = e.clientX;
     const startScroll = sc.scrollLeft;
     const minDx = -lefts[index];
     const maxDx = lefts[nodes.length - 1] - lefts[index];
     let dragging = false;
+    let pulledOut = false;
     let target = index;
+    // Keeps pointer events coming while the mouse is outside the window (F2).
+    try {
+      el.setPointerCapture?.(e.pointerId);
+    } catch {
+      // Capture is only a help; the window listeners below still work inside.
+    }
+
+    const resetOthers = () =>
+      nodes.forEach((n, i) => {
+        if (i !== index) n.style.transform = "";
+      });
 
     const move = (ev: globalThis.PointerEvent) => {
       const raw = ev.clientX - startX + (sc.scrollLeft - startScroll);
       if (!dragging) {
-        if (Math.abs(raw) < 5) return;
+        if (Math.abs(raw) < 5 && Math.abs(ev.clientY - e.clientY) < 5) return;
         dragging = true;
         el.classList.add("dragging");
+      }
+      const strip = sc.getBoundingClientRect();
+      pulledOut = isPulledOut(strip, ev.clientX, ev.clientY, { width: window.innerWidth, height: window.innerHeight });
+      el.classList.toggle("detaching", pulledOut);
+      if (pulledOut) {
+        // Out of the strip: the tab will go to another window, so nothing reorders.
+        el.style.transform = "";
+        resetOthers();
+        target = index;
+        return;
       }
       const dx = clamp(raw, minDx, maxDx);
       el.style.transform = `translateX(${dx}px)`;
 
-      const box = sc.getBoundingClientRect();
-      if (ev.clientX < box.left + 16) sc.scrollLeft -= 12;
-      else if (ev.clientX > box.right - 16) sc.scrollLeft += 12;
+      if (ev.clientX < strip.left + 16) sc.scrollLeft -= 12;
+      else if (ev.clientX > strip.right - 16) sc.scrollLeft += 12;
 
-      const center = lefts[index] + dx + w / 2;
-      target = index;
-      for (let i = 0; i < nodes.length; i++) {
-        if (i === index) continue;
-        const mid = lefts[i] + nodes[i].offsetWidth / 2;
-        // Inclusive: dragging past the end clamps the centre onto the last tab's midpoint.
-        if (i > index && center >= mid) target = Math.max(target, i);
-        if (i < index && center <= mid) target = Math.min(target, i);
-      }
+      target = reorderTarget(lefts, widths, index, dx);
       nodes.forEach((n, i) => {
         if (i === index) return;
         const shift = i > index && i <= target ? -w : i < index && i >= target ? w : 0;
@@ -201,17 +216,18 @@ const TabStrip = memo(function TabStrip() {
       });
     };
 
-    const finish = () => {
+    const finish = (ev: globalThis.PointerEvent) => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", finish);
       if (!dragging) return;
       ls.classList.add("no-anim");
-      el.classList.remove("dragging");
+      el.classList.remove("dragging", "detaching");
       nodes.forEach((n) => {
         n.style.transform = "";
       });
-      if (target !== index) actions.moveTab(index, target);
+      if (pulledOut && ev.type === "pointerup") void actions.moveTabOut(id);
+      else if (target !== index) actions.moveTab(index, target);
       requestAnimationFrame(() => requestAnimationFrame(() => ls.classList.remove("no-anim")));
     };
 
