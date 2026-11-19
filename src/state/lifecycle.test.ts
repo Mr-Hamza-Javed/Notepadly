@@ -112,3 +112,58 @@ describe("STATE-2: closing a window while its drafts are being written", () => {
     expect(backend.drafts.size).toBe(0);
   });
 });
+
+describe("STATE-3: typing into a tab while it moves to another window", () => {
+  it("cannot change the moving last tab, whose text has already been sent", async () => {
+    backend.reset();
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    app.type("only tab");
+    const moved = app.tab().id;
+    backend.dropTarget = null;
+    const moving = app.actions.moveTabOut(moved);
+    await waitFor(() => backend.count("window_new") === 1);
+    const sent = JSON.parse(backend.calls.find((c) => c.cmd === "window_new")!.args.transfer as string);
+    // The new window takes a moment to start; keys typed meanwhile must not vanish.
+    app.engine.insertText(" typed during the move");
+    expect(app.text(moved)).toBe(sent.handoff.text);
+    fakeWindow.deliver("tab-received", { id: moved });
+    await moving;
+    expect(fakeWindow.destroyed).toBe(true);
+  });
+
+  it("stays read-only when clicked again before the other window took it", async () => {
+    backend.reset();
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    app.type("moving");
+    const moved = app.tab().id;
+    await app.actions.newTab();
+    backend.dropTarget = { label: "main", x: 0, y: 0 };
+    const moving = app.actions.moveTabOut(moved);
+    await waitFor(() => fakeWindow.emitted.some((e) => e.event === "tab-incoming"));
+    await app.actions.activate(moved);
+    app.engine.insertText(" lost");
+    expect(app.text(moved)).toBe("moving");
+    fakeWindow.deliver("tab-received", { id: moved });
+    await moving;
+    expect(app.state().tabs.map((t) => t.id)).not.toContain(moved);
+  });
+
+  it("can be edited again when the move fails", async () => {
+    backend.reset();
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    app.type("only tab");
+    const moved = app.tab().id;
+    backend.dropTarget = { label: "main", x: 0, y: 0 };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const moving = app.actions.moveTabOut(moved);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await moving;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(app.state().activeId).toBe(moved);
+    app.type("!");
+    expect(app.text(moved)).toBe("only tab!");
+  });
+});
