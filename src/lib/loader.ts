@@ -781,6 +781,12 @@ async function checkTab(tab: TabMeta): Promise<void> {
       break;
     case "flag-deleted":
       rt.cleanDelete = current.dirty ? null : rt.editSeq;
+      if (!hasDoc) {
+        // Not loaded (restored lazily or hibernated): no text here that only this
+        // tab holds, so there is nothing to save and closing must not ask (STATE-1).
+        patchTab(tab.id, { externalChange: "deleted" });
+        break;
+      }
       rt.forceDirty = true;
       patchTab(tab.id, { externalChange: "deleted", dirty: true });
       markDraftChanged(tab.id);
