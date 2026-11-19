@@ -576,6 +576,20 @@ class TableController {
     const start = this.tableStart();
     const span = row.cells[ref.col];
     if (span && row.text.slice(span.from, span.to) === text) return;
+    // In a row without a leading pipe the first cell is also the start of the line, so `- `,
+    // `# ` or `> ` typed there would start a list, heading or quote and cut the table. Writing
+    // the row with its pipes keeps the text in the cell (BUGS.md PREV-6).
+    const leadingPipe = row.text.slice(row.prefix.length).startsWith("|");
+    if (ref.col === 0 && !leadingPipe) {
+      const values = Array.from({ length: Math.max(this.columns(), row.cells.length) }, (_v, c) =>
+        c === 0 ? text : cellText(row, c),
+      );
+      this.view.dispatch({
+        changes: { from: start + row.offset, to: start + row.offset + row.text.length, insert: formatRow(values, row.prefix) },
+        userEvent: "input.type",
+      });
+      return;
+    }
     if (span && span.from === span.to) {
       // Empty cell: its span is a point after the padding, so fill the whole gap between pipes.
       let from = span.from;
@@ -624,13 +638,15 @@ class TableController {
    * Puts the editor cursor on the line just before or after the table and focuses the editor.
    * With no line there, arrow keys stay in the cell, like on the first or last line of a
    * document (BUGS.md H3, M5). Escape at the end of the document adds a line to land on, kept
-   * out of the undo history so the tab does not turn unsaved.
+   * out of the undo history so the tab does not turn unsaved. While the rest of the file is
+   * still loading, that line would end up in the middle of the file, so Escape stays in the
+   * cell (BUGS.md TAB-4).
    */
   private leave(after: boolean, escape = false): void {
     const { from: start, to: end } = this.range();
     const doc = this.view.state.doc;
     if (after && end >= doc.length) {
-      if (!escape) return;
+      if (!escape || !previewContext.isFullyLoaded()) return;
       this.view.dispatch({
         changes: { from: doc.length, insert: "\n" },
         selection: { anchor: doc.length + 1 },

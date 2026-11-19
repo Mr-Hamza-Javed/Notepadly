@@ -151,3 +151,70 @@ describe("relative images after the document moves", () => {
     engine.destroy();
   });
 });
+
+/** jsdom cannot focus a contenteditable cell; a tabIndex makes it focusable as in a browser. */
+async function focusCell(root: ParentNode, text: string): Promise<HTMLElement> {
+  const cell = Array.from(root.querySelectorAll<HTMLElement>(".cm-md-table th, .cm-md-table td")).find(
+    (c) => c.textContent === text,
+  );
+  if (!cell) throw new Error(`no cell ${text}`);
+  cell.tabIndex = 0;
+  cell.focus();
+  await tick();
+  return cell;
+}
+
+/** Types into the focused cell the way the browser does: new text, then an input event. */
+function typeInCell(cell: HTMLElement, text: string): void {
+  cell.textContent = text;
+  const node = cell.firstChild!;
+  getSelection()!.setBaseAndExtent(node, text.length, node, text.length);
+  cell.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function key(target: Element | null, init: KeyboardEventInit): void {
+  target!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+}
+
+describe("leaving a table at the end of a partly loaded file", () => {
+  it("TAB-4: Escape in the last row adds no newline while the file is still loading", async () => {
+    let loaded = false;
+    const { parent } = mountEngine({ isFullyLoaded: () => loaded });
+    const text = "intro\n\n| a |\n| - |\n| x |";
+    engine.createDoc("t1", text, "formatted");
+    engine.activate("t1");
+    await tick();
+    await tick();
+    const cell = await focusCell(parent, "x");
+    key(cell, { key: "Escape" });
+    await tick();
+    expect(engine.getText("t1")).toBe(text);
+    expect(document.activeElement).toBe(cell);
+    // Once the whole file is there, Escape adds the line to land on as before.
+    loaded = true;
+    key(cell, { key: "Escape" });
+    await tick();
+    expect(engine.getText("t1")).toBe(`${text}\n`);
+    engine.destroy();
+  });
+});
+
+describe("typing in a table without outer pipes", () => {
+  for (const marker of ["- ", "# ", "> ", "1. ", "+ "]) {
+    it(`PREV-6: typing "${marker}" at the start of a first cell keeps the table whole`, async () => {
+      const view = preview("a | b\n--|--\nc | d\ne | f\n\nafter", 0);
+      const cell = await focusCell(view.dom, "e");
+      typeInCell(cell, `${marker}e`);
+      await tick();
+      const table = view.dom.querySelector(".cm-md-table")!;
+      expect(table.querySelectorAll("tr").length).toBe(3);
+      expect(cell.isConnected).toBe(true);
+      expect(document.activeElement).toBe(cell);
+      const cells = Array.from(table.querySelectorAll("tr:last-child td")).map((td) => td.textContent);
+      expect(cells[1]).toBe("f");
+      expect(view.state.doc.line(4).text).toBe(`| ${marker}e | f |`);
+      // The text shows as typed while the cell is edited.
+      expect(cell.textContent).toBe(`${marker}e`);
+    });
+  }
+});

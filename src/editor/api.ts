@@ -76,6 +76,8 @@ export interface EditorHost {
   openLink(href: string): void;
   /** Directory of the tab's file, for resolving relative image paths. */
   baseDir(tabId: string): string | null;
+  /** False while more of the tab's file is still to be loaded; true when not given. */
+  isFullyLoaded?(tabId: string): boolean;
 }
 
 export interface ScrollSnapshot {

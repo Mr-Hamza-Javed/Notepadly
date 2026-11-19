@@ -6,9 +6,12 @@ import { fileUrlToPath, resolveDocPath } from "../../state/logic";
 export const previewContext: {
   baseDir: () => string | null;
   openLink: (href: string) => void;
+  /** False while the rest of the active tab's file is still to be loaded. */
+  isFullyLoaded: () => boolean;
 } = {
   baseDir: () => null,
   openLink: () => undefined,
+  isFullyLoaded: () => true,
 };
 
 /**

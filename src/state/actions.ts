@@ -181,6 +181,7 @@ export const editorHost: EditorHost = {
     const path = getTab(id)?.path;
     return path ? dirOf(path) : null;
   },
+  isFullyLoaded: (id) => getTab(id)?.fullyLoaded ?? true,
 };
 
 function reportError(title: string) {

@@ -204,6 +204,7 @@ class Engine implements EditorEngine {
     this.configSerial++;
     previewContext.baseDir = () => (this.activeId ? host.baseDir(this.activeId) : null);
     previewContext.openLink = (href) => host.openLink(href);
+    previewContext.isFullyLoaded = () => (this.activeId ? (host.isFullyLoaded?.(this.activeId) ?? true) : true);
 
     const view = new EditorView({ parent, state: this.placeholderState() });
     this.view = view;
