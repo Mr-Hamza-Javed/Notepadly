@@ -190,6 +190,50 @@ These were written on Linux and only type-checked, or only read. Do this before 
 - **Recommendation:** add a deny list for executable types (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`, `.vbs`, `.js`, `.msi`, `.lnk`, `.scr`…) in the capability, so a future frontend bug cannot launch a program. Check it on Windows.
 - **What the deny list does not change:** these files still open as text in Notepadly, as in Windows Notepad, through File > Open, Explorer, drag and drop, and links. The deny list only stops the app from asking Windows to *run* them with their default program.
 
+## Review: Rust backend
+
+Reviewed `src-tauri/src` (files, store, lib, autoupdate, fonts, background), `tauri.conf.json` and `Cargo.toml`. The crate now passes `cargo check --lib --tests --target x86_64-pc-windows-msvc` on Linux (stub C headers for `ring`; nothing linked or run). `files.rs` and `store.rs` tests were also run on Linux through a copy with stand-ins for the Windows APIs: all pass except `exclusive_lock_reports_an_error_and_keeps_the_original`, which needs real Windows locking. Fixed: RUST-1, RUST-2, RUST-3 (see 2.3).
+
+### Bugs
+
+#### RUST-4. Saving a file opened through an NTFS alternate data stream fails 📖
+- **Steps:** `notepadly notes.txt:secret` (or open that path), type, Ctrl+S.
+- **Actual:** opening works (`paths_from_args` keeps it, since `is_file()` is true for a stream). Save makes a temp file and then calls `ReplaceFileW` on `notes.txt:secret`, which works on files only, or for a new stream renames the temp file to a stream name. Expected to fail with an error every time (not checked on Windows). Nothing is lost: the temp file is removed and the stream is unchanged.
+- **Expected:** saves into the stream, like Notepad.
+- **Cause:** `src-tauri/src/files.rs` `commit` (rename / `replace_file`) does not handle stream paths.
+- **Fix:** when the last path component contains `:`, skip the temp file and write in place (`write_in_place`, opened with `create(true)` for a new stream). Test on Windows first.
+
+#### RUST-5. A window opened a moment before another closes can stay hidden for good 📖
+- **Steps:** with background mode on and one window open, press Ctrl+N and close the first window at once (before the new window has painted, about 200 ms). Later close the new window too. Then start Notepadly again.
+- **Actual:** `is_last_window` counts only visible windows, and a new window stays hidden until its first paint. So the first window thinks it is the last and goes to the background. When the new window closes, it goes to the background too: two hidden windows. The next launch wakes only `main` (or the first in the list). The other one stays hidden, using memory, until Exit.
+- **Expected:** a booting window counts as on screen; only one window ever waits in the background.
+- **Cause:** `src-tauri/src/background.rs` `is_last_window` (`!w.is_visible()`); a new window is created with `visible: false` (`tauri.conf.json`).
+- **Fix:** keep a "booting" set in `WindowPaths` (from `open_window` until the frontend shows the window) and treat those windows as on screen in `is_last_window` and `no_window_on_screen`.
+
+#### RUST-6. A launch during a background update can start hidden and drop the file it was opened with 📖
+- **Steps:** an update installs from the background. While the installer runs (a few seconds), double-click a `.txt` file.
+- **Actual:** the new process finds the fresh `resume-in-background` marker, consumes it, starts hidden and ignores its arguments (`setup`: `paths = Vec::new()` when `hidden`). The file does not open and no window shows. The installer's own restart then starts normally.
+- **Expected:** a launch with files always shows them.
+- **Cause:** `src-tauri/src/autoupdate.rs` `take_resume_marker` and `src-tauri/src/lib.rs` `setup` treat any launch within 10 minutes of the marker as the installer's restart.
+- **Fix:** pass a flag on the restart command line (or check the parent process), or at least never start hidden when the command line has file arguments.
+
+#### RUST-7. Two windows saving the same file at the same moment can both succeed 📖
+- **Steps:** the same file is open in two windows (WIN-3) and both save within a few milliseconds.
+- **Actual:** both `save` calls can pass the last `ensure_fresh` before either one's `commit`. Both report success, and the second silently replaces the first. Each window holds a different stamp, so the first window's next save is refused as STALE, but its text is already gone from disk. The window is small (from `ensure_fresh` to `ReplaceFileW`), but nothing closes it inside the process.
+- **Cause:** `src-tauri/src/files.rs` `save`: the final `ensure_fresh` and `commit` are not atomic.
+- **Fix:** a static `Mutex<()>` held from the final `ensure_fresh` through `commit` and `stat`. This serialises saves in this process; other programs remain a race, as in any editor.
+
+### Improvements
+- `files.rs` `write_in_place` reads the whole tail into memory. On a multi-GB partly loaded file in a folder where no temp file can be made, that can be several GB of RAM. Write the tail in place from the end backwards, or refuse a tail save above a limit there.
+- `files.rs` `kept_line_endings` decodes the old file with the encoding being saved, not the one it was read with. After an encoding change (for example UTF-16 to UTF-8) the old lines are garbage, so mixed endings are simply not kept. This is harmless, but passing the old encoding would keep them.
+- `ReplaceFileW` gives the file a new identity, so a save breaks hard links. A broken symlink is replaced by a regular file (`resolve_target` falls back to the link path when `canonicalize` fails). Notepad writes in place in both cases. Consider writing in place when `nNumberOfLinks > 1`.
+- A crash between `TempFile::create` and `commit` leaves `~notepadly-<pid>-<n>.tmp` next to the user's file for good. Clean up stale ones (older than a day, PID not running) in the folder on the next save there.
+- `store.rs` `drafts_prune` also deletes every `.tmp` in `drafts/`, including the temp file of a draft that another window is writing at that moment. That write then fails and is retried at the next flush. Only delete `.tmp` files older than a minute. This is related to MERGE-1.
+- `store.rs` `write_atomic` uses one fixed temp name per target (`<id>.tmp`). Two writes to the same draft or session at once (two windows writing the old `session.json`) share it and can interleave. Use a unique temp name, as `TempFile` does.
+- `lib.rs` `placement` (`at_cursor`) divides the screen cursor position by the source window's scale. A tab dragged onto a monitor with another DPI opens its window offset. Use the scale of the monitor under the cursor (`app.monitor_from_point`).
+- Test gaps: no Rust test covers `on_second_instance` routing (focused, hidden or booting windows) or `open_window` failure clean-up. Both need a mock runtime (`tauri::test::mock_app`).
+- `Cargo.toml`: `tauri = "~2.12"` while the plugins use `"2"`. A plugin minor release that needs a newer tauri will fail to resolve. Pin the plugins the same way or loosen tauri.
+
 ---
 
 # Part 2: Done
@@ -295,6 +339,9 @@ These were written on Linux and only type-checked, or only read. Do this before 
 | WIN-1 | After the hidden restart from an update, every later window hid itself | Only the first window starts hidden | `cb1f8a5` |
 | MERGE-1 | The startup draft clean-up deleted the drafts of other windows' stored sessions | `runInit` keeps the drafts of every stored session (a small risk remains, see Part 1) | `95c2f1b` |
 | — | Bitmap `.fon` fonts appeared as false families | Left out of the font list | `fec7557` |
+| RUST-1 | A tab dragged out could land in a window hidden behind another one, or behind the source window | `tab_drop_target` asks Windows for the window in front of the mouse (`WindowFromPoint`) | `39a4ac8` |
+| RUST-2 | Opening a file whose name is not valid Unicode (lone surrogate) aborted the launch (`std::env::args` panics) | Arguments read with `args_os`, converted lossily | `b9cf3b2` |
+| RUST-3 | Drafts and sessions were renamed into place unflushed; a power cut could leave a draft empty or zeroed with the old copy gone | Temp file synced before the rename | `6d416b5` |
 
 ## 2.4 Features added
 
