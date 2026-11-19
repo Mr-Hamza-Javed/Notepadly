@@ -5,7 +5,8 @@ import { EditorView, ViewPlugin, WidgetType, type ViewUpdate } from "@codemirror
 import { applyFormat } from "../commands";
 import { openBlockSource } from "./block";
 import { cachedMath, cachedMermaid, renderMath, renderMermaid, type RenderedHtml } from "../lazy";
-import { cellText, joinRow, parseAlign, parseTable } from "../tableModel";
+import { findQueryOf } from "../find";
+import { cellText, joinRow, parseAlign, parseTable, type TableRowModel } from "../tableModel";
 import { documentPathChanged, isImagePath, parseSize, previewContext, resolveHref, resolveImageSrc, resolveWikiTarget } from "./context";
 
 function element(tag: string, className: string, text?: string): HTMLElement {
@@ -255,8 +256,15 @@ class TableController {
   private active: CellRef | null = null;
   private pendingFocus: (CellRef & { atEnd: boolean }) | null = null;
   private rebuilding = false;
-  /** A cell that shows an editor selection while not focused (a Find match, BUGS.md H11). */
-  private marked: CellRef | null = null;
+  /** Parsed rows of `source`, parsed once per text (it was parsed ~5 times per keystroke). */
+  private parsed: TableRowModel[] = [];
+  /** Cells by source row and column; the delimiter row (1) has none. */
+  private grid: HTMLElement[][] = [];
+  /**
+   * Cells that show Find matches or an editor selection as marked source while not focused,
+   * by "row:col", with the marks drawn (BUGS.md H11, TAB-1).
+   */
+  private marked = new Map<string, string>();
   private readonly onSelectionChange = () => {
     if (this.active && this.wrap.isConnected) this.syncSelection();
   };
@@ -276,32 +284,48 @@ class TableController {
   }
 
   render(source: string): void {
+    if (source === this.source && this.grid.length) return;
+    const previous = this.parsed;
     const rows = parseTable(source);
     const columns = rows[0].cells.length;
     const shape = `${rows.length}x${columns}:${rows[1]?.text ?? ""}`;
     this.source = source;
+    this.parsed = rows;
+    if (findQueryOf(this.view.state) || this.marked.size) {
+      // Matches move with the text; a new table needs its marks too (BUGS.md TAB-1).
+      queueMicrotask(() => {
+        if (this.wrap.isConnected) this.showMarks();
+      });
+    }
     if (shape !== this.shape) {
       this.shape = shape;
       this.rebuild(rows, columns);
       return;
     }
-    for (const cell of this.cells()) {
-      const ref = this.refOf(cell);
-      const text = cellText(rows[ref.row], ref.col);
-      if (this.isActive(ref)) {
-        // Markdown trims cells, so compare trimmed text or a trailing space would be undone.
-        if (escapeCellText(cell.textContent ?? "").trim() !== text) {
-          cell.textContent = text;
-          caretTo(cell, true);
-          // A command changed the text (Bold, Paste, Undo): put the caret where the editor's
-          // selection is. Positions are only valid once CodeMirror finished this update.
-          queueMicrotask(() => {
-            if (this.isActive(ref) && this.wrap.isConnected) this.caretFromEditor(cell, ref);
-          });
-        }
-      } else if (cell.dataset.src !== text) {
-        setCellHtml(cell, text);
+    for (let r = 0; r < rows.length; r++) {
+      // Only rows whose text changed, and the cell being edited, need a look.
+      if (previous[r]?.text === rows[r].text && this.active?.row !== r) continue;
+      for (const cell of this.grid[r] ?? []) this.renderCell(cell, rows);
+    }
+  }
+
+  private renderCell(cell: HTMLElement, rows: TableRowModel[]): void {
+    const ref = this.refOf(cell);
+    const text = cellText(rows[ref.row], ref.col);
+    if (this.isActive(ref)) {
+      // Markdown trims cells, so compare trimmed text or a trailing space would be undone.
+      if (escapeCellText(cell.textContent ?? "").trim() !== text) {
+        cell.textContent = text;
+        caretTo(cell, true);
+        // A command changed the text (Bold, Paste, Undo): put the caret where the editor's
+        // selection is. Positions are only valid once CodeMirror finished this update.
+        queueMicrotask(() => {
+          if (this.isActive(ref) && this.wrap.isConnected) this.caretFromEditor(cell, ref);
+        });
       }
+    } else if (cell.dataset.src !== text) {
+      this.marked.delete(`${ref.row}:${ref.col}`);
+      setCellHtml(cell, text);
     }
   }
 
@@ -311,8 +335,10 @@ class TableController {
     this.rebuilding = true;
     const aligns = Array.from({ length: columns }, (_v, i) => parseAlign(cellText(rows[1], i)));
     const table = document.createElement("table");
+    this.grid = [];
     const addRow = (parent: HTMLElement, rowIndex: number, cellTag: "th" | "td") => {
       const tr = document.createElement("tr");
+      const line: HTMLElement[] = (this.grid[rowIndex] = []);
       for (let c = 0; c < columns; c++) {
         const cell = document.createElement(cellTag);
         const text = cellText(rows[rowIndex], c);
@@ -320,9 +346,12 @@ class TableController {
         cell.spellcheck = this.view.contentDOM.spellcheck;
         cell.dataset.row = String(rowIndex);
         cell.dataset.col = String(c);
+        // Urdu or Arabic text runs and aligns right to left; an explicit alignment still wins.
+        cell.dir = "auto";
         setCellHtml(cell, text);
         if (aligns[c]) cell.style.textAlign = aligns[c]!;
         tr.appendChild(cell);
+        line.push(cell);
       }
       parent.appendChild(tr);
     };
@@ -334,7 +363,7 @@ class TableController {
     table.appendChild(body);
     this.wrap.replaceChildren(table);
     this.active = null;
-    this.marked = null;
+    this.marked.clear();
     this.rebuilding = false;
     if (restore) {
       // rebuild runs inside CodeMirror's update (updateDOM); focusing dispatches, so wait.
@@ -348,7 +377,7 @@ class TableController {
   }
 
   private cells(): HTMLElement[] {
-    return Array.from(this.wrap.querySelectorAll<HTMLElement>("th,td"));
+    return this.grid.flat();
   }
 
   private refOf(cell: HTMLElement): CellRef {
@@ -360,16 +389,16 @@ class TableController {
   }
 
   private cellAt(row: number, col: number): HTMLElement | null {
-    return this.wrap.querySelector<HTMLElement>(`[data-row="${row}"][data-col="${col}"]`);
+    return this.grid[row]?.[col] ?? null;
   }
 
   private bodyRows(): number[] {
-    const rows = parseTable(this.source).length;
+    const rows = this.parsed.length;
     return [0, ...Array.from({ length: Math.max(0, rows - 2) }, (_v, i) => i + 2)];
   }
 
   private columns(): number {
-    return parseTable(this.source)[0].cells.length;
+    return this.parsed[0].cells.length;
   }
 
   /** Focuses a cell and places the caret; a range is in source offsets within the cell's text. */
@@ -398,7 +427,7 @@ class TableController {
 
   /** Document position of a cell's text and its length. A missing cell sits at the end of its row. */
   private cellRange(ref: CellRef): { from: number; length: number } {
-    const row = parseTable(this.source)[ref.row];
+    const row = this.parsed[ref.row];
     const base = this.tableStart() + row.offset;
     const span = row.cells[ref.col];
     return span ? { from: base + span.from, length: span.to - span.from } : { from: base + row.text.length, length: 0 };
@@ -407,7 +436,7 @@ class TableController {
   /** The cell at a document position, or the nearest one on its row (the header for the delimiter row). */
   private cellFor(from: number): HTMLElement | null {
     const start = this.tableStart();
-    const rows = parseTable(this.source);
+    const rows = this.parsed;
     for (let r = rows.length - 1; r >= 0; r--) {
       if (start + rows[r].offset > from) continue;
       const row = rows[r === 1 ? 0 : r];
@@ -486,35 +515,83 @@ class TableController {
   refreshCells(): void {
     for (const cell of this.cells()) {
       const ref = this.refOf(cell);
-      const marked = this.marked && this.marked.row === ref.row && this.marked.col === ref.col;
-      if (!this.isActive(ref) && !marked) setCellHtml(cell, cell.dataset.src ?? "");
+      if (!this.isActive(ref) && !this.marked.has(`${ref.row}:${ref.col}`)) setCellHtml(cell, cell.dataset.src ?? "");
     }
   }
 
-  /** Shows a selection the editor has in this table while no cell is focused, like a Find match. */
-  showSelection(from: number, to: number): void {
-    if (this.hasFocus()) return;
+  /**
+   * Shows every Find match in this table's cells, and an editor selection inside one cell while
+   * no cell is focused (BUGS.md H11, TAB-1). A cell with marks shows its markdown, so a mark
+   * sits exactly on the matched text; the current match or selection is the strong mark.
+   */
+  showMarks(): void {
+    const state = this.view.state;
+    const main = state.selection.main;
     const { from: start, to: end } = this.range();
-    let next: CellRef | null = null;
-    if (from !== to && from >= start && to <= end) {
-      const cell = this.cellFor(from);
-      const ref = cell ? this.refOf(cell) : null;
-      const range = ref ? this.cellRange(ref) : null;
-      if (ref && range && from >= range.from && to <= range.from + range.length) next = ref;
+    const rows = this.parsed;
+    const wanted = new Map<string, { ref: CellRef; marks: { from: number; to: number; current: boolean }[] }>();
+    let row = 0;
+    const add = (from: number, to: number, current: boolean) => {
+      if (from < start || to > end) return;
+      const rel = from - start;
+      while (row + 1 < rows.length && rows[row + 1].offset <= rel) row++;
+      if (row === 1) return;
+      const line = rows[row];
+      const col = line.cells.findIndex(
+        (span) => line.offset + span.from <= rel && to - start <= line.offset + span.to,
+      );
+      if (col < 0 || col >= (this.grid[row]?.length ?? 0) || this.isActive({ row, col })) return;
+      const key = `${row}:${col}`;
+      const base = start + line.offset + line.cells[col].from;
+      let entry = wanted.get(key);
+      if (!entry) wanted.set(key, (entry = { ref: { row, col }, marks: [] }));
+      const mark = { from: from - base, to: to - base, current };
+      if (!entry.marks.some((m) => m.from === mark.from && m.to === mark.to)) entry.marks.push(mark);
+      else if (current) entry.marks = entry.marks.map((m) => (m.from === mark.from ? mark : m));
+    };
+    const query = findQueryOf(state);
+    if (query?.valid) {
+      const cursor = query.getCursor(state, start, end);
+      let count = 0;
+      for (let step = cursor.next(); !step.done && count < 5000; step = cursor.next(), count++) {
+        const { from, to } = step.value;
+        if (to > from) add(from, to, from === main.from && to === main.to);
+      }
     }
-    const previous = this.marked;
-    if (previous && (!next || previous.row !== next.row || previous.col !== next.col)) {
-      const cell = this.cellAt(previous.row, previous.col);
-      if (cell) setCellHtml(cell, cell.dataset.src ?? "");
+    if (!this.hasFocus() && !main.empty) {
+      row = 0;
+      add(main.from, main.to, true);
     }
-    this.marked = next;
-    if (!next) return;
-    const cell = this.cellAt(next.row, next.col)!;
-    const range = this.cellRange(next);
-    const text = this.view.state.sliceDoc(range.from, range.from + range.length);
-    const mark = element("mark", "cm-md-cell-selection", text.slice(from - range.from, to - range.from));
-    cell.replaceChildren(text.slice(0, from - range.from), mark, text.slice(to - range.from));
-    mark.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    let scrollTo: HTMLElement | null = null;
+    for (const key of this.marked.keys()) {
+      if (wanted.has(key)) continue;
+      this.marked.delete(key);
+      const [r, c] = key.split(":").map(Number);
+      const cell = this.cellAt(r, c);
+      if (cell && !this.isActive({ row: r, col: c })) setCellHtml(cell, cell.dataset.src ?? "");
+    }
+    for (const [key, { ref, marks }] of wanted) {
+      marks.sort((x, y) => x.from - y.from);
+      const signature = JSON.stringify(marks);
+      if (this.marked.get(key) === signature) continue;
+      const hadCurrent = this.marked.get(key)?.includes('"current":true') ?? false;
+      this.marked.set(key, signature);
+      const cell = this.cellAt(ref.row, ref.col)!;
+      const text = cellText(rows[ref.row], ref.col);
+      const parts: (string | Node)[] = [];
+      let at = 0;
+      for (const mark of marks) {
+        if (mark.from < at) continue;
+        parts.push(text.slice(at, mark.from));
+        const node = element("mark", mark.current ? "cm-md-cell-selection" : "cm-find-match", text.slice(mark.from, mark.to));
+        if (mark.current && !hadCurrent) scrollTo = node;
+        parts.push(node);
+        at = mark.to;
+      }
+      parts.push(text.slice(at));
+      cell.replaceChildren(...parts);
+    }
+    scrollTo?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }
 
   private onMouseDown(event: MouseEvent): void {
@@ -534,11 +611,11 @@ class TableController {
     const ref = this.refOf(cell);
     if (this.isActive(ref)) return;
     this.active = ref;
-    if (this.marked && this.marked.row === ref.row && this.marked.col === ref.col) this.marked = null;
+    this.marked.delete(`${ref.row}:${ref.col}`);
     cell.classList.add("is-editing");
     document.addEventListener("selectionchange", this.onSelectionChange);
     // Show this cell's markdown while it is edited, like Obsidian.
-    const text = cellText(parseTable(this.source)[ref.row], ref.col);
+    const text = cellText(this.parsed[ref.row], ref.col);
     if (cell.textContent !== text || cell.childElementCount > 0) {
       cell.textContent = text;
       caretTo(cell, true);
@@ -559,7 +636,7 @@ class TableController {
       this.active = null;
       document.removeEventListener("selectionchange", this.onSelectionChange);
     }
-    const text = cellText(parseTable(this.source)[ref.row], ref.col);
+    const text = cellText(this.parsed[ref.row], ref.col);
     setCellHtml(cell, text);
   }
 
@@ -571,7 +648,7 @@ class TableController {
   }
 
   private writeCell(ref: CellRef, text: string): void {
-    const rows = parseTable(this.source);
+    const rows = this.parsed;
     const row = rows[ref.row];
     const start = this.tableStart();
     const span = row.cells[ref.col];
@@ -624,7 +701,7 @@ class TableController {
   }
 
   private addRow(focusCol: number): void {
-    const rows = parseTable(this.source);
+    const rows = this.parsed;
     const last = rows[rows.length - 1];
     const end = this.tableStart() + last.offset + last.text.length;
     this.pendingFocus = { row: rows.length, col: focusCol, atEnd: true };
@@ -844,7 +921,8 @@ export const tableFocus = ViewPlugin.fromClass(
         // Relative images in cells resolve against the new folder (BUGS.md PREV-7).
         for (const table of tablesOf(this.view)) table.refreshCells();
       }
-      if (!update.selectionSet && !update.docChanged && !update.focusChanged) return;
+      const queryChanged = findQueryOf(update.state) !== findQueryOf(update.startState);
+      if (!update.selectionSet && !update.docChanged && !update.focusChanged && !queryChanged) return;
       const keyboard = update.transactions.some((tr) => tr.isUserEvent("select") && !tr.isUserEvent("select.pointer"));
       this.schedule(keyboard, update.startState.selection.main.head);
     }
@@ -863,7 +941,7 @@ export const tableFocus = ViewPlugin.fromClass(
       const view = this.view;
       if (!view.dom.isConnected) return;
       const main = view.state.selection.main;
-      for (const table of tablesOf(view)) table.showSelection(main.from, main.to);
+      for (const table of tablesOf(view)) table.showMarks();
       if (!view.hasFocus || focusedTable(view)) return;
       const table = tableAt(view, main.head);
       if (!table) return;

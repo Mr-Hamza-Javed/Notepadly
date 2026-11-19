@@ -176,6 +176,53 @@ function key(target: Element | null, init: KeyboardEventInit): void {
   target!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
 }
 
+describe("Find matches in table cells", () => {
+  it("TAB-1: every match in the table's cells is marked, not only the current one", async () => {
+    const { parent } = mountEngine();
+    engine.createDoc("t1", "apple\n\n| fruit | note |\n| - | - |\n| apple | an apple a day |\n| pear | **apple** |\n\nend", "formatted");
+    engine.activate("t1");
+    await tick();
+    await tick();
+    const result = engine.find({ search: "apple", replace: "", caseSensitive: false, wrap: true });
+    expect(result.total).toBe(4);
+    await tick();
+    const table = parent.querySelector(".cm-md-table")!;
+    const marks = () =>
+      Array.from(table.querySelectorAll("mark")).map((m) => [m.className, m.textContent, m.closest("td")!.dataset.row]);
+    expect(marks()).toEqual([
+      ["cm-find-match", "apple", "2"],
+      ["cm-find-match", "apple", "2"],
+      ["cm-find-match", "apple", "3"],
+    ]);
+    // The next match is in the table: it becomes the strong mark, the others stay marked.
+    engine.findNext();
+    await tick();
+    expect(marks()).toEqual([
+      ["cm-md-cell-selection", "apple", "2"],
+      ["cm-find-match", "apple", "2"],
+      ["cm-find-match", "apple", "3"],
+    ]);
+    // Closing Find shows the cells rendered again.
+    engine.clearFind();
+    engine.goToLine(1);
+    await tick();
+    expect(marks()).toEqual([]);
+    expect(table.querySelector("td[data-row='3'][data-col='1'] strong")?.textContent).toBe("apple");
+    engine.destroy();
+  });
+});
+
+describe("right-to-left text in table cells", () => {
+  it("cells take their direction from their text, so Urdu aligns right", () => {
+    const view = preview("| نام | n |\n| - | -: |\n| علی | 2 |\n\nafter", 0);
+    const cells = Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-md-table th, .cm-md-table td"));
+    expect(cells.every((cell) => cell.dir === "auto")).toBe(true);
+    // An explicit alignment from the delimiter row still applies.
+    expect(cells[1].style.textAlign).toBe("right");
+    expect(cells[0].style.textAlign).toBe("");
+  });
+});
+
 describe("leaving a table at the end of a partly loaded file", () => {
   it("TAB-4: Escape in the last row adds no newline while the file is still loading", async () => {
     let loaded = false;
