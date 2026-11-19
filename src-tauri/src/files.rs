@@ -4,6 +4,7 @@
 use encoding_rs::CoderResult;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -11,8 +12,8 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
-use std::time::UNIX_EPOCH;
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Globalization::GetACP;
 use windows_sys::Win32::Storage::FileSystem::{
     ReplaceFileW, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -104,6 +105,16 @@ pub struct FileChunk {
     pub encoding: Encoding,
     pub eol: Eol,
     pub stamp: FileStamp,
+    /// This chunk has a line ending other than `eol` (the file's first one), so
+    /// the file has mixed line endings (FILES-1). Each chunk reports only its own
+    /// text: a frontend that loads several chunks ORs them together.
+    pub mixed_eol: bool,
+    /// The file has the read-only attribute, or this user may not write to it.
+    /// Only checked for the chunk at offset 0; later chunks report false.
+    pub read_only: bool,
+    /// The chunk holds NUL characters, so it is most likely not text (M15). Saving
+    /// it would damage it.
+    pub binary: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -123,6 +134,11 @@ pub struct SaveRequest {
     /// mixed line endings that the save leaves unchanged keep their own.
     #[serde(default)]
     pub normalize_eol: bool,
+    /// The encoding the file was read with, when the save changes it. Used only to
+    /// read the old text when keeping mixed line endings; without it the old
+    /// encoding is detected from the file.
+    #[serde(default)]
+    pub original_encoding: Option<Encoding>,
 }
 
 #[derive(Serialize, PartialEq, Debug)]
@@ -173,17 +189,51 @@ pub fn stat(path: &Path) -> Result<Option<FileStamp>, String> {
 fn ansi_codec() -> &'static encoding_rs::Encoding {
     static CODEC: OnceLock<&'static encoding_rs::Encoding> = OnceLock::new();
     CODEC.get_or_init(|| {
+        // SAFETY: plain Win32 query without arguments.
         let cp = unsafe { GetACP() };
-        match cp {
-            874 => encoding_rs::WINDOWS_874,
-            932 => encoding_rs::SHIFT_JIS,
-            936 => encoding_rs::GBK,
-            949 => encoding_rs::EUC_KR,
-            950 => encoding_rs::BIG5,
-            1250..=1258 => encoding_rs::Encoding::for_label(format!("windows-{cp}").as_bytes())
-                .unwrap_or(encoding_rs::WINDOWS_1252),
-            _ => encoding_rs::WINDOWS_1252,
-        }
+        codec_for_code_page(cp).unwrap_or(encoding_rs::WINDOWS_1252)
+    })
+}
+
+/// The encoding_rs codec for a Windows code page, when it has one. The OEM
+/// pages 437 and 850 (and a few others) are not in the WHATWG set encoding_rs
+/// implements, so they have none.
+fn codec_for_code_page(cp: u32) -> Option<&'static encoding_rs::Encoding> {
+    use encoding_rs as e;
+    Some(match cp {
+        866 => e::IBM866,
+        874 => e::WINDOWS_874,
+        932 => e::SHIFT_JIS,
+        936 | 20936 => e::GBK,
+        949 | 51949 => e::EUC_KR,
+        950 => e::BIG5,
+        1250 => e::WINDOWS_1250,
+        1251 => e::WINDOWS_1251,
+        1252 | 28591 => e::WINDOWS_1252,
+        1253 => e::WINDOWS_1253,
+        1254 | 28599 => e::WINDOWS_1254,
+        1255 => e::WINDOWS_1255,
+        1256 => e::WINDOWS_1256,
+        1257 => e::WINDOWS_1257,
+        1258 => e::WINDOWS_1258,
+        10000 => e::MACINTOSH,
+        10007 => e::X_MAC_CYRILLIC,
+        20866 => e::KOI8_R,
+        21866 => e::KOI8_U,
+        20932 | 51932 => e::EUC_JP,
+        28592 => e::ISO_8859_2,
+        28593 => e::ISO_8859_3,
+        28594 => e::ISO_8859_4,
+        28595 => e::ISO_8859_5,
+        28596 => e::ISO_8859_6,
+        28597 => e::ISO_8859_7,
+        28598 => e::ISO_8859_8,
+        38598 => e::ISO_8859_8_I,
+        28603 => e::ISO_8859_13,
+        28605 => e::ISO_8859_15,
+        50220..=50222 => e::ISO_2022_JP,
+        54936 => e::GB18030,
+        _ => return None,
     })
 }
 
@@ -287,12 +337,25 @@ fn cut_ansi(body: &[u8], codec: &'static encoding_rs::Encoding) -> usize {
     if codec.is_single_byte() {
         return cut_bytes(body, <[u8]>::len);
     }
-    let lead: fn(u8) -> bool = if codec == encoding_rs::SHIFT_JIS {
-        |b| matches!(b, 0x81..=0x9F | 0xE0..=0xFC)
+    let width: fn(&[u8], usize) -> usize = if codec == encoding_rs::SHIFT_JIS {
+        |bytes, i| 1 + usize::from(matches!(bytes[i], 0x81..=0x9F | 0xE0..=0xFC))
+    } else if codec == encoding_rs::GB18030 {
+        // Four bytes when the second is a digit, as in 0x81 0x30 0x81 0x30.
+        |bytes, i| match (bytes[i], bytes.get(i + 1)) {
+            (0x81..=0xFE, Some(0x30..=0x39)) => 4,
+            (0x81..=0xFE, _) => 2,
+            _ => 1,
+        }
+    } else if codec == encoding_rs::EUC_JP {
+        |bytes, i| match bytes[i] {
+            0x8F => 3,
+            0x8E | 0xA1..=0xFE => 2,
+            _ => 1,
+        }
     } else {
-        |b| matches!(b, 0x81..=0xFE)
+        |bytes, i| 1 + usize::from(matches!(bytes[i], 0x81..=0xFE))
     };
-    cut_bytes(body, |bytes| dbcs_char_cut(bytes, lead))
+    cut_bytes(body, |bytes| dbcs_char_cut(bytes, width))
 }
 
 /// CR and LF are never part of a multibyte sequence in UTF-8 or the ANSI code
@@ -329,12 +392,13 @@ fn utf8_char_cut(bytes: &[u8]) -> usize {
     len
 }
 
-/// Double-byte trail bytes overlap ASCII, so only a walk from the known
-/// character boundary at the start of the window is reliable.
-fn dbcs_char_cut(bytes: &[u8], is_lead: fn(u8) -> bool) -> usize {
+/// Multibyte trail bytes overlap ASCII, so only a walk from the known
+/// character boundary at the start of the window is reliable. `width` gives the
+/// length of the character that starts at an index.
+fn dbcs_char_cut(bytes: &[u8], width: fn(&[u8], usize) -> usize) -> usize {
     let mut i = 0;
     while i < bytes.len() {
-        let width = if is_lead(bytes[i]) { 2 } else { 1 };
+        let width = width(bytes, i);
         if i + width > bytes.len() {
             return i;
         }
@@ -449,9 +513,14 @@ pub fn read_chunk(
     } else {
         find_cut(body, encoding)
     };
-    let text = match normalize_newlines(&decode(&body[..cut], encoding)) {
-        Cow::Borrowed(s) => s.to_owned(),
-        Cow::Owned(s) => s,
+    let eol = known_eol.unwrap_or(Eol::Crlf);
+    let raw_text = decode(&body[..cut], encoding);
+    let mixed_eol = has_other_eol(&raw_text, eol);
+    let binary = raw_text.contains('\0');
+    let text = if raw_text.contains('\r') {
+        normalize_newlines(&raw_text).into_owned()
+    } else {
+        raw_text
     };
 
     Ok(FileChunk {
@@ -459,9 +528,53 @@ pub fn read_chunk(
         next_offset: offset + (bom_len + cut) as u64,
         eof,
         encoding,
-        eol: known_eol.unwrap_or(Eol::Crlf),
+        eol,
         stamp,
+        mixed_eol,
+        read_only: offset == 0 && is_read_only(path, &meta),
+        binary,
     })
+}
+
+/// True when `text` has a line ending other than `eol`. Chunks are never cut
+/// between the CR and LF of a CRLF, so a chunk alone answers this.
+fn has_other_eol(text: &str, eol: Eol) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let found = match bytes[i] {
+            b'\n' => Eol::Lf,
+            b'\r' if bytes.get(i + 1) == Some(&b'\n') => {
+                i += 1;
+                Eol::Crlf
+            }
+            b'\r' => Eol::Cr,
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        if found != eol {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// The read-only attribute, or a folder or file ACL that refuses this user write
+/// access. Opening for writing changes nothing on disk. Only "access denied"
+/// counts: a sharing violation means another program has the file open, which
+/// does not stop a save.
+fn is_read_only(path: &Path, meta: &fs::Metadata) -> bool {
+    if meta.permissions().readonly() {
+        return true;
+    }
+    let opened = OpenOptions::new()
+        .write(true)
+        .share_mode(SHARE_ALL)
+        .open(path);
+    matches!(opened, Err(e) if e.kind() == io::ErrorKind::PermissionDenied)
 }
 
 /// Counts characters (UTF-16 code units, matching JS string length) and lines
@@ -634,8 +747,9 @@ fn kept_line_endings(target: &Path, req: &SaveRequest) -> Option<String> {
     }
     let raw = read_up_to(&mut file, end as usize).ok()?;
     drop(file);
-    let body = raw.strip_prefix(req.encoding.bom()).unwrap_or(&raw[..]);
-    let old_text = decode(body, req.encoding);
+    let encoding = old_encoding(&raw, req);
+    let body = raw.strip_prefix(encoding.bom()).unwrap_or(&raw[..]);
+    let old_text = decode(body, encoding);
     let old = split_lines(&old_text);
     let first = old.iter().find_map(|line| line.1)?;
     if old.iter().all(|line| line.1.is_none_or(|e| e == first)) {
@@ -654,6 +768,23 @@ fn kept_line_endings(target: &Path, req: &SaveRequest) -> Option<String> {
     Some(out)
 }
 
+/// The encoding the file on disk was written in, to read its old lines. The
+/// request's own encoding is right unless the save changes it: the frontend can
+/// say what it read the file with, and otherwise a BOM, or UTF-16 against
+/// 8-bit text, shows the change.
+fn old_encoding(raw: &[u8], req: &SaveRequest) -> Encoding {
+    if let Some(encoding) = req.original_encoding {
+        return encoding;
+    }
+    let is_utf16 = |e: Encoding| matches!(e, Encoding::Utf16Le | Encoding::Utf16Be);
+    let (detected, bom_len) = detect_encoding(raw, true);
+    if bom_len > 0 || is_utf16(detected) != is_utf16(req.encoding) {
+        detected
+    } else {
+        req.encoding
+    }
+}
+
 /// A temp file next to the target, removed on drop unless `keep` was called.
 struct TempFile {
     path: PathBuf,
@@ -666,6 +797,7 @@ impl TempFile {
         let dir = target
             .parent()
             .ok_or_else(|| io::Error::other("path has no parent"))?;
+        clean_stale_temps(dir);
         loop {
             let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = dir.join(format!("~notepadly-{}-{seq}.tmp", std::process::id()));
@@ -681,6 +813,86 @@ impl TempFile {
             }
         }
     }
+}
+
+/// How old a temp file left by a crash must be before it is removed.
+const STALE_TEMP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Removes `~notepadly-<pid>-<n>.tmp` files that a crash between creating the
+/// temp file and swapping it in left next to the user's file: older than a day
+/// and from a process that is no longer running. Each folder is looked at once
+/// per run, at its first save.
+fn clean_stale_temps(dir: &Path) {
+    static CLEANED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let first_time = CLEANED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(dir.to_owned());
+    if first_time {
+        remove_stale_temps(dir, SystemTime::now());
+    }
+}
+
+fn remove_stale_temps(dir: &Path, now: SystemTime) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(stale_temp_pid) else {
+            continue;
+        };
+        if pid == std::process::id() || process_alive(pid) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age >= STALE_TEMP_AGE);
+        if old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The process id in a temp file name made by `TempFile::create`, or None for
+/// any other name (including a temp file kept as the only copy of a save).
+fn stale_temp_pid(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("~notepadly-")?.strip_suffix(".tmp")?;
+    let (pid, seq) = rest.split_once('-')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if digits(pid) && digits(seq) {
+        pid.parse().ok()
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: plain Win32 queries; the handle is closed before returning.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE as u32
+    }
+}
+
+#[cfg(not(windows))]
+fn process_alive(_pid: u32) -> bool {
+    false
 }
 
 impl Drop for TempFile {
@@ -804,6 +1016,11 @@ fn copy_over_in_place(temp: &mut TempFile, target: &Path) -> Result<(), String> 
         .and_then(|_| dest.sync_all());
     copied.map_err(|e| {
         temp.keep = true;
+        // A new name, so the clean-up of crashed saves never removes this copy.
+        let kept = temp.path.with_extension("recovered.txt");
+        if fs::rename(&temp.path, &kept).is_ok() {
+            temp.path = kept;
+        }
         format!("{e}; the saved text is in {}", temp.path.display())
     })
 }
@@ -838,6 +1055,7 @@ fn write_in_place(target: &Path, req: &SaveRequest, bytes: &[u8]) -> Result<File
     if let Some(offset) = req.tail_offset {
         append_tail(target, offset, &mut tail)?;
     }
+    let _serial = save_lock();
     ensure_fresh(target, req.expected_stamp)?;
     let mut dest = OpenOptions::new()
         .write(true)
@@ -860,13 +1078,69 @@ fn write_in_place(target: &Path, req: &SaveRequest, bytes: &[u8]) -> Result<File
 }
 
 /// A rename would turn a symlink into a regular file, so save through it instead.
+/// A broken link is saved to the path it points at, so it stays a link.
 fn resolve_target(path: &Path) -> PathBuf {
     let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
-    if is_link {
-        fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
-    } else {
-        path.to_owned()
+    if !is_link {
+        return path.to_owned();
     }
+    if let Ok(real) = fs::canonicalize(path) {
+        return real;
+    }
+    match (fs::read_link(path), path.parent()) {
+        // A relative link is relative to the folder the link is in.
+        (Ok(dest), Some(dir)) => dir.join(dest),
+        (Ok(dest), None) => dest,
+        _ => path.to_owned(),
+    }
+}
+
+/// Serialises the last freshness check and the swap of every save in this
+/// process, so two windows saving the same file at once cannot both pass the
+/// check before either writes (RUST-7). Other programs remain a race, as in any
+/// editor.
+fn save_lock() -> MutexGuard<'static, ()> {
+    static SAVE_LOCK: Mutex<()> = Mutex::new(());
+    SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// An NTFS alternate data stream (`notes.txt:secret`): the last component holds
+/// a `:`, which a plain file name never can. Neither ReplaceFileW nor a rename
+/// works on one (RUST-4).
+fn is_stream_path(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().contains(':'))
+}
+
+/// How many hard links the file has, when that can be read.
+#[cfg(windows)]
+fn link_count(path: &Path) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let file = open_shared(path).ok()?;
+    // SAFETY: the struct is plain data that the call fills in; the handle stays
+    // open (owned by `file`) for the duration of the call.
+    unsafe {
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        let ok = GetFileInformationByHandle(file.as_raw_handle() as _, &mut info);
+        (ok != 0).then_some(info.nNumberOfLinks)
+    }
+}
+
+#[cfg(not(windows))]
+fn link_count(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).ok().map(|m| m.nlink() as u32)
+}
+
+/// The save must write into the existing file rather than swap a new one in:
+/// a stream cannot be swapped, and a swap gives a file with several hard links
+/// a new identity, cutting it off from its other names. Notepad writes in
+/// place in both cases.
+fn must_write_in_place(target: &Path) -> bool {
+    is_stream_path(target) || link_count(target).is_some_and(|n| n > 1)
 }
 
 pub fn save(req: &SaveRequest) -> Result<FileStamp, String> {
@@ -899,8 +1173,15 @@ pub fn save(req: &SaveRequest) -> Result<FileStamp, String> {
     drop(output);
 
     // The file may have changed while the tail was being copied.
+    let _serial = save_lock();
     ensure_fresh(&target, req.expected_stamp)?;
-    commit(&mut temp, &target)?;
+    if must_write_in_place(&target) {
+        // The complete text is in the temp file first, so a failed copy loses
+        // nothing: the temp file is then kept and named in the error.
+        copy_over_in_place(&mut temp, &target)?;
+    } else {
+        commit(&mut temp, &target)?;
+    }
     stat(&target)?.ok_or_else(|| "file disappeared after saving".to_owned())
 }
 
@@ -939,6 +1220,13 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// BOM plus the text as is, line endings untouched.
+    fn raw_utf16(text: &str, encoding: Encoding) -> Vec<u8> {
+        let mut out = encoding.bom().to_vec();
+        out.extend(encode_str(text, encoding, true).unwrap());
+        out
     }
 
     fn utf16(text: &str, encoding: Encoding) -> Vec<u8> {
@@ -1083,8 +1371,9 @@ mod tests {
     fn multibyte_ansi_cut_respects_trail_bytes() {
         // 0x83 0x41 is one Shift_JIS character whose trail byte is ASCII 'A'.
         let bytes = [b'a', 0x83, 0x41, 0x83];
-        let lead: fn(u8) -> bool = |b| matches!(b, 0x81..=0x9F | 0xE0..=0xFC);
-        assert_eq!(dbcs_char_cut(&bytes, lead), 3);
+        let sjis: fn(&[u8], usize) -> usize =
+            |b, i| 1 + usize::from(matches!(b[i], 0x81..=0x9F | 0xE0..=0xFC));
+        assert_eq!(dbcs_char_cut(&bytes, sjis), 3);
         assert_eq!(cut_ansi(&bytes, encoding_rs::SHIFT_JIS), 3);
         assert_eq!(cut_ansi(&bytes, encoding_rs::WINDOWS_1252), 4);
     }
@@ -1169,6 +1458,7 @@ mod tests {
             expected_stamp: None,
             allow_lossy: false,
             normalize_eol: false,
+            original_encoding: None,
         }
     }
 
@@ -1526,10 +1816,24 @@ mod tests {
                 size: 1,
                 mtime_ms: 2.0,
             },
+            mixed_eol: true,
+            read_only: true,
+            binary: false,
         };
         let value = serde_json::to_value(&chunk).unwrap();
         assert_eq!(value["nextOffset"], 3);
         assert_eq!(value["stamp"]["mtimeMs"], 2.0);
+        assert_eq!(value["mixedEol"], true);
+        assert_eq!(value["readOnly"], true);
+        assert_eq!(value["binary"], false);
+
+        let req: SaveRequest = serde_json::from_str(
+            r#"{"path":"p","text":"t","eol":"LF","encoding":"utf-8",
+                "normalizeEol":true,"originalEncoding":"utf-16le"}"#,
+        )
+        .unwrap();
+        assert!(req.normalize_eol);
+        assert_eq!(req.original_encoding, Some(LE));
     }
 
     #[test]
@@ -1854,5 +2158,280 @@ mod tests {
             units(&format!("\\\\?\\UNC\\server\\share\\{long}\0"))
         );
         assert_eq!(wide(Path::new(r"C:\a")), units("C:\\a\0"));
+    }
+
+    // BUGS.md FILES-1: the frontend could not tell a file has mixed line endings.
+    #[test]
+    fn chunks_report_mixed_line_endings() {
+        let dir = TestDir::new();
+        let mixed = read_chunk(&dir.file(b"a\r\nb\nc"), 0, 1024, None).unwrap();
+        assert_eq!((mixed.eol, mixed.mixed_eol), (Eol::Crlf, true));
+        let plain = read_chunk(&dir.file(b"a\r\nb\r\nc"), 0, 1024, None).unwrap();
+        assert!(!plain.mixed_eol);
+        let cr = read_chunk(&dir.file(b"a\rb\rc\r"), 0, 1024, None).unwrap();
+        assert_eq!((cr.eol, cr.mixed_eol), (Eol::Cr, false));
+        // A later chunk compares against the file's first line ending.
+        let path = dir.file(b"first\r\nsecond\nthird\n");
+        let later = read_chunk(&path, 7, 1024, Some(Encoding::Utf8)).unwrap();
+        assert_eq!((later.eol, later.mixed_eol), (Eol::Crlf, true));
+        // A CRLF is never counted as a CR and an LF.
+        for window in 1..=24 {
+            let path = dir.file(b"one\r\ntwo\r\nthree\r\nfour");
+            let mut offset = 0;
+            loop {
+                let chunk = read_chunk(&path, offset, window, Some(Encoding::Utf8)).unwrap();
+                assert!(!chunk.mixed_eol, "window {window} at {offset}");
+                if chunk.eof {
+                    break;
+                }
+                offset = chunk.next_offset;
+            }
+        }
+        // UTF-16 too.
+        let utf16_mixed =
+            read_chunk(&dir.file(&raw_utf16("a\r\nb\nc", LE)), 0, 1024, None).unwrap();
+        assert!(utf16_mixed.mixed_eol);
+    }
+
+    #[test]
+    fn has_other_eol_looks_at_every_ending() {
+        assert!(!has_other_eol("", Eol::Crlf));
+        assert!(!has_other_eol("a\nb\n", Eol::Lf));
+        assert!(has_other_eol("a\nb\r\n", Eol::Lf));
+        assert!(has_other_eol("a\r\nb\r", Eol::Crlf));
+        assert!(!has_other_eol("a\r\n\r\n", Eol::Crlf));
+        assert!(has_other_eol("a\r\r\n", Eol::Cr));
+    }
+
+    // FILES-1: picking a line ending for a mixed file writes it everywhere.
+    #[test]
+    fn a_mixed_file_is_normalised_to_its_first_style_when_asked() {
+        let dir = TestDir::new();
+        let path = dir.file(b"a\r\nb\nc\r\n");
+        let chunk = read_chunk(&path, 0, 1024, None).unwrap();
+        assert!(chunk.mixed_eol);
+        let mut req = request(&path, &chunk.text, chunk.eol, chunk.encoding);
+        req.normalize_eol = true;
+        save(&req).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"a\r\nb\r\nc\r\n");
+        assert!(!read_chunk(&path, 0, 1024, None).unwrap().mixed_eol);
+    }
+
+    // Edge case "read-only file": Save said "Access is denied" with no sign before.
+    #[test]
+    fn the_first_chunk_reports_a_read_only_file() {
+        let dir = TestDir::new();
+        let path = dir.file(b"locked\nfile");
+        assert!(!read_chunk(&path, 0, 1024, None).unwrap().read_only);
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&path, perms.clone()).unwrap();
+        assert!(read_chunk(&path, 0, 1024, None).unwrap().read_only);
+        // Later chunks do not pay for the check.
+        assert!(
+            !read_chunk(&path, 7, 1024, Some(Encoding::Utf8))
+                .unwrap()
+                .read_only
+        );
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&path, perms).unwrap();
+    }
+
+    // BUGS.md M15: no warning when a binary file is opened as text.
+    #[test]
+    fn nul_bytes_mark_a_chunk_as_binary() {
+        let dir = TestDir::new();
+        let exe = dir.file(b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xFF\xFF");
+        assert!(read_chunk(&exe, 0, 1024, None).unwrap().binary);
+        let text = dir.file("plain text, é and 😀\n".as_bytes());
+        assert!(!read_chunk(&text, 0, 1024, None).unwrap().binary);
+        // The zero bytes of UTF-16 text are not NUL characters.
+        let wide = dir.file(&encode_text("hello world", Eol::Lf, LE));
+        let chunk = read_chunk(&wide, 0, 1024, None).unwrap();
+        assert_eq!((chunk.encoding, chunk.binary), (LE, false));
+    }
+
+    // BUGS.md M15: code pages other than a few were read as windows-1252.
+    #[test]
+    fn more_code_pages_have_a_codec() {
+        let name = |cp| codec_for_code_page(cp).map(|c| c.name());
+        assert_eq!(name(866), Some("IBM866"));
+        assert_eq!(name(20866), Some("KOI8-R"));
+        assert_eq!(name(21866), Some("KOI8-U"));
+        assert_eq!(name(1251), Some("windows-1251"));
+        assert_eq!(name(1258), Some("windows-1258"));
+        assert_eq!(name(28595), Some("ISO-8859-5"));
+        assert_eq!(name(54936), Some("gb18030"));
+        assert_eq!(name(936), Some("GBK"));
+        assert_eq!(name(10000), Some("macintosh"));
+        // Not in encoding_rs: the caller falls back to windows-1252.
+        assert_eq!(name(437), None);
+        assert_eq!(name(850), None);
+        assert_eq!(name(65001), None);
+    }
+
+    #[test]
+    fn multibyte_cuts_know_gb18030_and_euc_jp_widths() {
+        // A four-byte GB18030 character cut after its second byte.
+        let gb = [b'a', 0x81, 0x30, 0x81, 0x30, b'b', 0x81, 0x30];
+        assert_eq!(cut_ansi(&gb, encoding_rs::GB18030), 6);
+        // A three-byte EUC-JP character (0x8F lead) cut after two bytes.
+        let euc = [b'a', 0xA4, 0xA2, 0x8F, 0xA2];
+        assert_eq!(cut_ansi(&euc, encoding_rs::EUC_JP), 3);
+        assert_eq!(cut_ansi(&euc, encoding_rs::EUC_KR), 5);
+    }
+
+    // BUGS.md "Review: Rust backend": after an encoding change the old lines
+    // were decoded with the new encoding, so mixed endings were not kept.
+    #[test]
+    fn mixed_line_endings_are_kept_across_an_encoding_change() {
+        let dir = TestDir::new();
+        let path = dir.file(&raw_utf16("a\r\nb\nc", LE));
+        let chunk = read_chunk(&path, 0, 1024, None).unwrap();
+        save(&request(&path, &chunk.text, chunk.eol, Encoding::Utf8)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"a\r\nb\nc");
+
+        // Told explicitly: an ANSI file saved as UTF-16.
+        let path = dir.file(b"x\r\ny\nz");
+        let mut req = request(&path, "x\ny\nz", Eol::Crlf, BE);
+        req.original_encoding = Some(Encoding::Ansi);
+        save(&req).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), raw_utf16("x\r\ny\nz", BE));
+    }
+
+    // BUGS.md RUST-7: two saves of one file could both pass the freshness check.
+    #[test]
+    fn concurrent_saves_with_the_same_stamp_let_only_one_win() {
+        let dir = TestDir::new();
+        let path = dir.file(b"original");
+        for round in 0..20 {
+            // Each round starts from a file with a known stamp.
+            fs::write(&path, format!("round {round} start")).unwrap();
+            let stamp = stat(&path).unwrap();
+            let results: Vec<Result<FileStamp, String>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..4)
+                    .map(|i| {
+                        let path = path.clone();
+                        scope.spawn(move || {
+                            let mut req = request(
+                                &path,
+                                &format!("writer {i} {}", "x".repeat(i)),
+                                Eol::Lf,
+                                Encoding::Utf8,
+                            );
+                            req.expected_stamp = stamp;
+                            save(&req)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let wins = results.iter().filter(|r| r.is_ok()).count();
+            assert_eq!(wins, 1, "round {round}: {results:?}");
+            assert!(results
+                .iter()
+                .all(|r| r.as_ref().is_ok() || r.as_ref().unwrap_err() == STALE));
+        }
+        assert_eq!(dir.entries(), 1, "temp file left behind");
+    }
+
+    // BUGS.md RUST-4: a file opened through an alternate data stream.
+    #[test]
+    fn stream_paths_are_recognised() {
+        assert!(is_stream_path(Path::new("notes.txt:secret")));
+        assert!(is_stream_path(Path::new("notes.txt::$DATA")));
+        assert!(!is_stream_path(Path::new("notes.txt")));
+        #[cfg(windows)]
+        {
+            assert!(is_stream_path(Path::new(r"C:\notes\notes.txt:secret")));
+            assert!(!is_stream_path(Path::new(r"C:\notes\notes.txt")));
+            assert!(!is_stream_path(Path::new(r"C:notes.txt")));
+            assert!(!is_stream_path(Path::new(r"\\server\share\a.txt")));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn saving_into_an_alternate_data_stream_writes_the_stream() {
+        let dir = TestDir::new();
+        let path = dir.file(b"main data");
+        let stream = PathBuf::from(format!("{}:secret", path.display()));
+        // A new stream is created; the main data is untouched.
+        save(&request(&stream, "hidden\ntext", Eol::Crlf, Encoding::Utf8)).unwrap();
+        assert_eq!(fs::read(&stream).unwrap(), b"hidden\r\ntext");
+        assert_eq!(fs::read(&path).unwrap(), b"main data");
+        // An existing stream is rewritten, shorter, with a stamp check.
+        let mut req = request(&stream, "short", Eol::Lf, Encoding::Utf8);
+        req.expected_stamp = stat(&stream).unwrap();
+        save(&req).unwrap();
+        assert_eq!(fs::read(&stream).unwrap(), b"short");
+        assert_eq!(fs::read(&path).unwrap(), b"main data");
+        assert_eq!(dir.entries(), 1, "temp file left behind");
+    }
+
+    // BUGS.md "Review: Rust backend": a save broke hard links.
+    #[test]
+    fn a_hard_linked_file_is_written_in_place() {
+        let dir = TestDir::new();
+        let path = dir.file(b"shared text");
+        let other = dir.0.join("other name.txt");
+        fs::hard_link(&path, &other).unwrap();
+        assert!(must_write_in_place(&path));
+        save(&request(&path, "new\ntext", Eol::Crlf, Encoding::Utf8)).unwrap();
+        assert_eq!(fs::read(&other).unwrap(), b"new\r\ntext");
+        assert_eq!(fs::read(&path).unwrap(), b"new\r\ntext");
+        assert_eq!(dir.entries(), 2, "temp file left behind");
+        fs::remove_file(&other).unwrap();
+        assert!(!must_write_in_place(&path));
+    }
+
+    #[test]
+    fn only_old_temp_files_of_dead_processes_are_cleaned_up() {
+        assert_eq!(stale_temp_pid("~notepadly-123-4.tmp"), Some(123));
+        assert_eq!(stale_temp_pid("~notepadly-123-4.recovered.txt"), None);
+        assert_eq!(stale_temp_pid("~notepadly-123.tmp"), None);
+        assert_eq!(stale_temp_pid("~notepadly--4.tmp"), None);
+        assert_eq!(stale_temp_pid("notes.tmp"), None);
+
+        let dir = TestDir::new();
+        // A pid that cannot be running (above the Windows and Linux maximum).
+        let dead = dir.0.join("~notepadly-4294967290-1.tmp");
+        let mine = dir
+            .0
+            .join(format!("~notepadly-{}-99.tmp", std::process::id()));
+        let kept = dir.0.join("~notepadly-4294967290-2.recovered.txt");
+        let user = dir.0.join("~notepadly-notes.tmp");
+        for path in [&dead, &mine, &kept, &user] {
+            fs::write(path, b"x").unwrap();
+        }
+        // A fresh crash leftover stays a day.
+        remove_stale_temps(&dir.0, SystemTime::now());
+        assert!(dead.exists());
+        let tomorrow = SystemTime::now() + STALE_TEMP_AGE + Duration::from_secs(60);
+        remove_stale_temps(&dir.0, tomorrow);
+        assert!(!dead.exists());
+        assert!(mine.exists() && kept.exists() && user.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_broken_symlink_is_saved_where_it_points() {
+        use std::os::windows::fs::symlink_file;
+        let dir = TestDir::new();
+        let link = dir.0.join("link.txt");
+        // Creating symlinks needs Developer Mode or admin rights on Windows.
+        if symlink_file("target.txt", &link).is_err() {
+            return;
+        }
+        save(&request(&link, "through the link", Eol::Lf, Encoding::Utf8)).unwrap();
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read(dir.0.join("target.txt")).unwrap(),
+            b"through the link"
+        );
     }
 }
