@@ -134,6 +134,54 @@ describe("markdown extensions: edge cases", () => {
     expect(texts("$$\na\n\n# Heading\n\ntext", "ATXHeading1")).toEqual(["# Heading"]);
   });
 
+  // BUGS.md L11 (rest): an unclosed %% restyled up to 5,000 lines, unclosed front matter 1,000.
+  it("L11: an unclosed %% ends at the first blank line; a closed one may hold blank lines", () => {
+    expect(texts("%%\nhidden\n\n# Heading\n\ntext", "CommentBlock")).toEqual(["%%\nhidden"]);
+    expect(texts("%%\nhidden\n\n# Heading\n\ntext", "ATXHeading1")).toEqual(["# Heading"]);
+    expect(texts("%%\na\n\nb\n%%\nafter", "CommentBlock")).toEqual(["%%\na\n\nb\n%%"]);
+    expect(texts("> %%\n> a\n>\n> b", "CommentBlock")).toEqual(["%%\n> a"]);
+  });
+
+  it("L11: front matter without a closing line is a rule and text", () => {
+    const doc = "---\ntitle: x\nmore: y\n\n# Heading";
+    expect(texts(doc, "Frontmatter")).toEqual([]);
+    expect(texts(doc, "ATXHeading1")).toEqual(["# Heading"]);
+    expect(texts("---\ntitle: x\n...\nbody", "Frontmatter")).toEqual(["---\ntitle: x\n..."]);
+  });
+
+  it("L11: adding or removing a far closer reparses the block that looked for it", () => {
+    const filler = "para\n\n".repeat(30);
+    const cases: [string, number, number, string][] = [];
+    const comment = `intro\n\n%%\nhidden\n\n${filler}`;
+    // Close the comment at the end, then open it again.
+    cases.push([comment, comment.length, comment.length, "%%\n"]);
+    const closed = `${comment}%%\n`;
+    cases.push([closed, closed.length - 3, closed.length, ""]);
+    const front = `---\ntitle: x\n\n${filler}`;
+    cases.push([front, front.length, front.length, "---\n"]);
+    cases.push([`${front}---\n`, front.length, front.length + 4, ""]);
+    for (const [text, from, to, insert] of cases) {
+      const tree = notepadlyParser.parse(text);
+      const fragments = TreeFragment.applyChanges(TreeFragment.addTree(tree), [
+        { fromA: from, toA: to, fromB: from, toB: from + insert.length },
+      ]);
+      const next = text.slice(0, from) + insert + text.slice(to);
+      expect(notepadlyParser.parse(next, fragments).toString(), JSON.stringify(insert)).toBe(
+        plainMarkdownParser.parse(next).toString(),
+      );
+    }
+  });
+
+  // BUGS.md EDIT-9: a paragraph line starting with $$ turned the rest of the paragraph into maths.
+  it("EDIT-9: a paragraph line that only starts with $$ stays text", () => {
+    expect(texts("Cost:\n$$5 total\nmore text", "BlockMath")).toEqual([]);
+    expect(texts("Cost:\n$$5 total\nmore text", "Paragraph")).toEqual(["Cost:\n$$5 total\nmore text"]);
+    // A lone $$, or a line holding its closing $$, still starts display maths.
+    expect(texts("text\n$$\nx\n$$", "BlockMath")).toEqual(["$$\nx\n$$"]);
+    expect(texts("text\n$$  \nx\n$$", "BlockMath")).toEqual(["$$  \nx\n$$"]);
+    expect(texts("text\n$$x$$\nmore", "BlockMath")).toEqual(["$$x$$"]);
+  });
+
   it("does not let an unclosed $$ run past its line limit", () => {
     const doc = "$$\n" + "x\n".repeat(6000);
     const [math] = texts(doc, "BlockMath");
@@ -222,6 +270,33 @@ describe("markdown extensions: edge cases", () => {
     for (const opener of ["[[a ", "![[a ", "[^a "]) {
       expect(time(opener.repeat(4_900)), opener).toBeLessThan(plain * 15 + 20);
     }
+  });
+
+  it("a long line full of unclosed dollars parses about as fast as plain text", () => {
+    const time = (text: string) => {
+      let best = Infinity;
+      for (let run = 0; run < 3; run++) {
+        const start = performance.now();
+        plainMarkdownParser.parse(text);
+        best = Math.min(best, performance.now() - start);
+      }
+      return best;
+    };
+    const plain = time("abc ".repeat(4_950));
+    // Each dollar used to scan (and copy) the next 4,000 characters.
+    for (const opener of ["$a ", "$$a "]) {
+      expect(time(opener.repeat(19_800 / opener.length)), opener).toBeLessThan(plain * 4 + 10);
+    }
+  });
+
+  it("finds the same maths after skipping a stretch already scanned", () => {
+    // The second dollar resumes where the first one's scan stopped; its own window still counts.
+    const gap = "x ".repeat(1_500);
+    expect(texts(`$a ${gap}$b ${gap}c$ d`, "InlineMath")).toEqual([`$b ${gap}c$`]);
+    expect(texts(`$a ${gap}$b ${gap}${gap}c$ d`, "InlineMath")).toEqual([]);
+    expect(texts("$a \\$ b$ and $c$", "InlineMath")).toEqual(["$a \\$ b$", "$c$"]);
+    expect(texts("$a b\n$c$ d", "InlineMath")).toEqual(["$c$"]);
+    expect(texts("x $$a $ b$$ and $$c$$", "InlineMath")).toEqual(["$$a $ b$$", "$$c$$"]);
   });
 
   // BUGS.md L2 and L3: false tags and highlights.

@@ -22,7 +22,12 @@ const fmt = (n: number) => n.toLocaleString("en-US");
 
 /** "3 of 50"; at the counting bound the total is a lower bound: "3 of 10,000+". */
 export function findCountLabel(result: FindResult): string {
-  if (result.total === 0) return "No results";
-  const total = result.total >= FIND_COUNT_LIMIT ? `${fmt(FIND_COUNT_LIMIT)}+` : fmt(result.total);
+  if (result.invalid) return "Invalid expression";
+  if (result.total === 0) return result.pending ? "Searching…" : "No results";
+  // While the count runs, the total so far is a lower bound too.
+  const total =
+    result.total >= FIND_COUNT_LIMIT || result.pending
+      ? `${fmt(Math.min(result.total, FIND_COUNT_LIMIT))}+`
+      : fmt(result.total);
   return result.current > 0 ? `${fmt(result.current)} of ${total}` : `${total} results`;
 }

@@ -503,3 +503,87 @@ describe("toolbar context", () => {
     expect(formatContextAt(markdownViewAt(`${table}\n\nafter`, table.length + 3).state).inTable).toBe(false);
   });
 });
+
+describe("lists: Enter on an empty nested item, and numbering after Tab", () => {
+  it("Enter on an empty nested item moves it out one level", () => {
+    expect(run("- a\n    - |", continueMarkup)).toEqual([true, "- a\n- |"]);
+    expect(run("- a\n  - b\n  - |", continueMarkup)).toEqual([true, "- a\n  - b\n- |"]);
+    expect(run("> - a\n>     - |", continueMarkup)).toEqual([true, "> - a\n> - |"]);
+    expect(run("- [ ] a\n    - [ ] |", continueMarkup)).toEqual([true, "- [ ] a\n- [ ] |"]);
+  });
+
+  it("a moved-out item takes the next number of its new level and renumbers below", () => {
+    expect(run("1. a\n    1. x\n    2. |\n2. b", continueMarkup)).toEqual([true, "1. a\n    1. x\n2. |\n3. b"]);
+    expect(run("1. a\n    - |", continueMarkup)).toEqual([true, "1. a\n2. |"]);
+  });
+
+  it("Enter on an empty top-level item still ends the list", () => {
+    expect(run("- a\n- |", continueMarkup)).toEqual([true, "- a\n|"]);
+  });
+
+  it("Tab starts a nested numbered list at 1 and renumbers the items below", () => {
+    expect(run("1. a\n2. b|\n3. c", handleTab)).toEqual([true, "1. a\n    1. b|\n2. c"]);
+    expect(run("1. a\n    1. x\n2. b|", handleTab)).toEqual([true, "1. a\n    1. x\n    2. b|"]);
+  });
+
+  it("Shift+Tab continues the outer numbering", () => {
+    expect(run("1. a\n    1. b|\n2. c", handleShiftTab)).toEqual([true, "1. a\n2. b|\n3. c"]);
+  });
+
+  it("Tab into a bulleted sub-list takes its bullet; bullets alone are unchanged", () => {
+    expect(run("1. a\n    - x\n2. b|", handleTab)).toEqual([true, "1. a\n    - x\n    - b|"]);
+    expect(run("- a\n- b|\n- c", handleTab)).toEqual([true, "- a\n    - b|\n- c"]);
+  });
+
+  it("does not renumber a separate list, or one that starts at another number", () => {
+    expect(run("5. a\n6. b|", handleTab)).toEqual([true, "5. a\n    1. b|"]);
+    expect(run("1. a\n2. b|\n\npara\n\n7. z", handleTab)[1]).toBe("1. a\n    1. b|\n\npara\n\n7. z");
+  });
+
+  it("Tab and the renumbering are one undo step", () => {
+    const view = markdownView("1. a\n2. b|\n3. c");
+    handleTab(view);
+    undo(view);
+    expect(show(view)).toBe("1. a\n2. b|\n3. c");
+  });
+});
+
+describe("EDIT-7: bold over a selection that already holds bold", () => {
+  it("bolds the whole selection once instead of doubling the markers", () => {
+    expect(format("|**bold** and **more**|", { type: "bold" })).toBe("**|bold and more|**");
+    expect(format("say |one **two** three| now", { type: "bold" })).toBe("say **|one two three|** now");
+    expect(format("|*a* b|", { type: "italic" })).toBe("*|a b|*");
+    expect(format("|~~a~~ b|", { type: "strike" })).toBe("~~|a b|~~");
+  });
+
+  it("grows to cover a bold run the selection only partly holds", () => {
+    expect(format("**bo|ld** and more|", { type: "bold" })).toBe("**|bold and more|**");
+  });
+
+  it("leaves other kinds alone and toggles back on a second press", () => {
+    expect(format("|a **b** c|", { type: "italic" })).toBe("*|a **b** c|*");
+    const view = markdownView("|**bold** and **more**|");
+    applyFormat(view, { type: "bold" });
+    applyFormat(view, { type: "bold" });
+    expect(show(view)).toBe("|bold and more|");
+  });
+
+  it("merges the bold runs of each paragraph in a multi-paragraph selection", () => {
+    expect(format("|**a** b\n\nc **d**|", { type: "bold" })).toBe("**|a b**\n\n**c d|**");
+  });
+});
+
+describe("EDIT-8: column commands in the extra cell of a long row", () => {
+  const text = "| a | b |\n| --- | --- |\n| 1 | 2 | 3 |";
+
+  it("pads the header and delimiter so the new column lines up", () => {
+    const right = markdownViewAt(text, text.indexOf("3"));
+    applyFormat(right, { type: "table-edit", op: "col-right" });
+    expect(right.state.doc.toString()).toBe("| a | b |  |  |\n| --- | --- | --- | --- |\n| 1 | 2 | 3 |  |");
+
+    const left = markdownViewAt(text, text.indexOf("3"));
+    applyFormat(left, { type: "table-edit", op: "col-left" });
+    expect(left.state.doc.toString()).toBe("| a | b |  |  |\n| --- | --- | --- | --- |\n| 1 | 2 |  | 3 |");
+    expect(left.state.doc.lineAt(left.state.selection.main.head).number).toBe(3);
+  });
+});
