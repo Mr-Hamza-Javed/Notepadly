@@ -6,7 +6,7 @@ import { applyFormat } from "../commands";
 import { openBlockSource } from "./block";
 import { cachedMath, cachedMermaid, renderMath, renderMermaid, type RenderedHtml } from "../lazy";
 import { cellText, joinRow, parseAlign, parseTable } from "../tableModel";
-import { previewContext, resolveHref, resolveImageSrc } from "./context";
+import { isImagePath, parseSize, previewContext, resolveHref, resolveImageSrc, resolveWikiTarget } from "./context";
 
 function element(tag: string, className: string, text?: string): HTMLElement {
   const el = document.createElement(tag);
@@ -19,32 +19,101 @@ function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** Small renderer for table cells. Cells are static HTML, so this stays deliberately simple. */
+/** Attribute-free inline tags only, so a cell can never inject markup with handlers. */
+const CELL_HTML_TAG = /&lt;(\/?)(sub|sup|kbd|u|ins|mark|b|strong|i|em|s|del|strike|small)&gt;/gi;
+/** A link target with one level of balanced parentheses, as in `Foo_(bar)` (BUGS.md PREV-10). */
+const LINK_TARGET = String.raw`((?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?`;
+const CELL_IMAGE = new RegExp(String.raw`!\[([^\]]*)\]\(` + LINK_TARGET + String.raw`\)`, "g");
+const CELL_LINK = new RegExp(String.raw`\[([^\]]+)\]\(` + LINK_TARGET + String.raw`\)`, "g");
+const CELL_EMBED = /!\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/g;
+const CELL_WIKILINK = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+/** Inline maths as the parser reads it: `$$x$$`, or `$x$` with no space inside and no word after. */
+const CELL_MATH = /(?<![\\$])(\$\$(?![\s$])((?:\\.|[^\\$]|\$(?!\$))+?)\$\$|\$(?![\s$])((?:\\.|[^\\$])*?(?:\\.|[^\s\\$]))\$(?![\p{L}\p{N}_]))/gu;
+
+/** Bold, italic, strike, highlight and the allowed HTML tags, on already escaped text. */
+function cellEmphasis(html: string): string {
+  return (
+    html
+      .replace(/&lt;br\s*\/?&gt;/gi, "<br>")
+      .replace(CELL_HTML_TAG, (_m, slash: string, tag: string) => `<${slash}${tag.toLowerCase()}>`)
+      // Emphasis needs flanking markers: no space just inside them, so `2 * 3 * 4` stays text.
+      .replace(/\*\*(?!\s)([^*]*[^*\s])\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*(?!\s)([^*]*[^*\s])\*/g, "$1<em>$2</em>")
+      .replace(/(^|[^\w_])_(?!\s)([^_]*[^_\s])_(?![\w_])/g, "$1<em>$2</em>")
+      .replace(/~~([^~]+)~~/g, "<s>$1</s>")
+      .replace(/==([^=]+)==/g, "<mark>$1</mark>")
+  );
+}
+
+function cellImage(src: string, alt: string, width?: number, height?: number): string {
+  const resolved = resolveImageSrc(src.trim());
+  const size = `${width ? ` width="${width}"` : ""}${height ? ` height="${height}"` : ""}`;
+  const source = resolved ? ` src="${escapeHtml(resolved)}"` : "";
+  return `<img class="cm-md-image cm-md-cell-image" alt="${escapeHtml(alt)}"${source}${size}>`;
+}
+
+/**
+ * Small renderer for table cells. Cells are static HTML, so this stays deliberately simple.
+ * Code spans, maths, images and links are taken out first, so emphasis rules never run
+ * inside them (BUGS.md TAB-3); maths is filled in by `fillCellMath`.
+ */
 export function renderCellHtml(source: string): string {
-  const codeSpans: string[] = [];
+  const parts: string[] = [];
+  // NUL marks the placeholders; CommonMark shows it as U+FFFD anyway.
+  const hold = (html: string) => `\u0000${parts.push(html) - 1}\u0000`;
   // GFM unescapes `\|` in a table cell before inline parsing, so inside code spans too.
-  // NUL marks the code span placeholders; CommonMark shows it as U+FFFD anyway.
-  let html = escapeHtml(source.replace(/\u0000/g, "�"))
-    .replace(/\\\|/g, "|")
-    .replace(/`([^`]+)`/g, (_m, code: string) => {
-      codeSpans.push(`<code>${code}</code>`);
-      return `\u0000${codeSpans.length - 1}\u0000`;
-    });
-  html = html
-    .replace(/&lt;br\s*\/?&gt;/gi, "<br>")
-    // Attribute-free inline tags only, so a cell can never inject markup with handlers.
-    .replace(
-      /&lt;(\/?)(sub|sup|kbd|u|ins|mark|b|strong|i|em|s|del|strike|small)&gt;/gi,
-      (_m, slash: string, tag: string) => `<${slash}${tag.toLowerCase()}>`,
+  let text = source.replace(/\u0000/g, "\uFFFD").replace(/\\\|/g, "|");
+  text = text
+    .replace(/`([^`]+)`/g, (_m, code: string) => hold(`<code>${escapeHtml(code)}</code>`))
+    .replace(CELL_MATH, (_m, _all, block: string | undefined, inline: string | undefined) => {
+      const tex = (block ?? inline ?? "").trim();
+      return hold(`<span class="cm-md-math-inline" data-math="${escapeHtml(tex)}">${escapeHtml(tex)}</span>`);
+    })
+    .replace(CELL_EMBED, (_m, target: string, alias: string | undefined) => {
+      if (!isImagePath(target)) return hold(`<span class="cm-md-embed">${escapeHtml(alias || target.trim())}</span>`);
+      const size = parseSize(alias ?? "");
+      return hold(cellImage(target, size ? target.trim() : alias || target.trim(), size?.width, size?.height));
+    })
+    .replace(CELL_IMAGE, (_m, altText: string, src: string) => {
+      const bar = altText.lastIndexOf("|");
+      const size = bar >= 0 ? parseSize(altText.slice(bar + 1)) : null;
+      return hold(cellImage(src, size ? altText.slice(0, bar) : altText, size?.width, size?.height));
+    })
+    .replace(CELL_LINK, (_m, label: string, href: string) =>
+      hold(`<a data-href="${escapeHtml(href)}">${cellEmphasis(escapeHtml(label))}</a>`),
     )
-    // Emphasis needs flanking markers: no space just inside them, so `2 * 3 * 4` stays text.
-    .replace(/\*\*(?!\s)([^*]*[^*\s])\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*(?!\s)([^*]*[^*\s])\*/g, "$1<em>$2</em>")
-    .replace(/(^|[^\w_])_(?!\s)([^_]*[^_\s])_(?![\w_])/g, "$1<em>$2</em>")
-    .replace(/~~([^~]+)~~/g, "<s>$1</s>")
-    .replace(/==([^=]+)==/g, "<mark>$1</mark>")
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a data-href="$2">$1</a>');
-  return html.replace(/\u0000(\d+)\u0000/g, (_m, index: string) => codeSpans[Number(index)]);
+    .replace(CELL_WIKILINK, (_m, target: string, alias: string | undefined) =>
+      hold(
+        `<a class="cm-md-wikilink" data-href="${escapeHtml(resolveWikiTarget(target))}">${escapeHtml(alias ?? target)}</a>`,
+      ),
+    );
+  const restore = (html: string): string =>
+    html.replace(/\u0000(\d+)\u0000/g, (_m, index: string) => restore(parts[Number(index)]));
+  return restore(cellEmphasis(escapeHtml(text)));
+}
+
+/** Renders the maths placeholders of a cell, from the cache or once KaTeX has loaded. */
+function fillCellMath(cell: HTMLElement): void {
+  for (const host of cell.querySelectorAll<HTMLElement>("[data-math]")) {
+    const tex = host.dataset.math ?? "";
+    const cached = cachedMath(tex, false);
+    if (cached) {
+      host.innerHTML = cached.html;
+      continue;
+    }
+    renderMath(tex, false)
+      .then((entry) => {
+        if (host.isConnected && host.dataset.math === tex) host.innerHTML = entry.html;
+      })
+      .catch(() => host.classList.add("cm-md-render-error"));
+  }
+}
+
+/** Shows a cell's markdown rendered. */
+function setCellHtml(cell: HTMLElement, text: string): void {
+  cell.dataset.src = text;
+  cell.innerHTML = renderCellHtml(text);
+  fillCellMath(cell);
 }
 
 /** Moves the cursor into the source when a rendered block is clicked. */
@@ -231,8 +300,7 @@ class TableController {
           });
         }
       } else if (cell.dataset.src !== text) {
-        cell.dataset.src = text;
-        cell.innerHTML = renderCellHtml(text);
+        setCellHtml(cell, text);
       }
     }
   }
@@ -252,8 +320,7 @@ class TableController {
         cell.spellcheck = this.view.contentDOM.spellcheck;
         cell.dataset.row = String(rowIndex);
         cell.dataset.col = String(c);
-        cell.dataset.src = text;
-        cell.innerHTML = renderCellHtml(text);
+        setCellHtml(cell, text);
         if (aligns[c]) cell.style.textAlign = aligns[c]!;
         tr.appendChild(cell);
       }
@@ -429,7 +496,7 @@ class TableController {
     const previous = this.marked;
     if (previous && (!next || previous.row !== next.row || previous.col !== next.col)) {
       const cell = this.cellAt(previous.row, previous.col);
-      if (cell) cell.innerHTML = renderCellHtml(cell.dataset.src ?? "");
+      if (cell) setCellHtml(cell, cell.dataset.src ?? "");
     }
     this.marked = next;
     if (!next) return;
@@ -484,8 +551,7 @@ class TableController {
       document.removeEventListener("selectionchange", this.onSelectionChange);
     }
     const text = cellText(parseTable(this.source)[ref.row], ref.col);
-    cell.dataset.src = text;
-    cell.innerHTML = renderCellHtml(text);
+    setCellHtml(cell, text);
   }
 
   private onInput(event: Event): void {
