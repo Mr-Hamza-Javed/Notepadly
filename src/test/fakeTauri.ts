@@ -6,10 +6,12 @@
 // BOM, tail saves, STALE rejections, missing folders and draft id validation.
 //
 // Known differences from Rust, none of which the frontend tests rely on:
-// - Only UTF-8 (with or without BOM) is modelled. Rust also detects UTF-16 BOMs
-//   and falls back to the ANSI code page for invalid UTF-8; the fake decodes
-//   invalid bytes as U+FFFD.
+// - UTF-8 (with or without BOM) and ANSI are modelled; ANSI is always
+//   windows-1252. Like Rust, the first 256 KiB decide between UTF-8 and ANSI,
+//   and an encoding passed at offset 0 forces it. UTF-16 is not modelled.
 // - Writes are not atomic and there is no ReplaceFileW / in-place fallback.
+// - Mixed line endings are not kept on save (files.rs `kept_line_endings`):
+//   every line gets the requested ending, as with `normalizeEol`.
 // - Error strings for missing files and folders copy Windows' wording, but other
 //   I/O errors only happen when a test injects them with `failNext`.
 
@@ -25,7 +27,35 @@ interface FakeFile {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+const strictDecoder = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
+const ansiDecoder = new TextDecoder("windows-1252");
 const BOM = [0xef, 0xbb, 0xbf];
+
+const isUtf8 = (bytes: Uint8Array) => {
+  try {
+    strictDecoder.decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** windows-1252 for the fake's ANSI, built from the decoder. */
+const ansiBytes = new Map<string, number>(
+  Array.from({ length: 256 }, (_, b) => [ansiDecoder.decode(new Uint8Array([b])), b] as [string, number]),
+);
+
+/** files.rs `encode_ansi`: the first unmappable character fails the save unless lossy. */
+function encodeAnsi(text: string, lossy: boolean): Uint8Array {
+  const out: number[] = [];
+  for (const ch of text) {
+    const byte = ansiBytes.get(ch);
+    if (byte !== undefined) out.push(byte);
+    else if (lossy) out.push(0x3f);
+    else throw `UNMAPPABLE: ${ch}`;
+  }
+  return new Uint8Array(out);
+}
 
 const key = (path: string) => path.replace(/\//g, "\\").toLowerCase();
 
@@ -52,12 +82,13 @@ function firstEol(bytes: Uint8Array, complete: boolean): "CRLF" | "LF" | "CR" | 
 }
 
 /** files.rs `cut_bytes` + `utf8_char_cut`. */
-function cutChunk(body: Uint8Array): number {
+function cutChunk(body: Uint8Array, singleByte = false): number {
   const len = body.length;
   for (let i = len - 1; i >= 0; i--) {
     if (body[i] === 10 || (body[i] === 13 && i + 1 < len)) return i + 1;
   }
   if (body[len - 1] === 13) return len - 1;
+  if (singleByte) return len;
   for (let back = 1; back <= Math.min(3, len); back++) {
     const byte = body[len - back];
     if ((byte & 0xc0) === 0x80) continue;
@@ -162,14 +193,21 @@ export class FakeBackend {
     }
     switch (cmd) {
       case "file_read_chunk":
-        return this.readChunk(args.path as string, args.offset as number, args.maxBytes as number);
+        return this.readChunk(
+          args.path as string,
+          args.offset as number,
+          args.maxBytes as number,
+          (args.encoding as string | null | undefined) ?? null,
+        );
       case "file_stat":
         return this.stampOf(args.path as string);
       case "file_save":
         return this.save(args.req as SaveArgs);
       case "file_scan": {
-        const text = normalize(decoder.decode(this.stripBom(this.bytes(args.path as string))));
-        return { chars: text.length, lines: text.split("\n").length };
+        const raw = this.stripBom(this.bytes(args.path as string));
+        const ansi = args.encoding === "ansi";
+        const text = normalize((ansi ? ansiDecoder : decoder).decode(raw));
+        return { chars: text.length, lines: text.split("\n").length, invalid: !ansi && !isUtf8(raw) };
       }
       case "session_read":
         return this.session;
@@ -213,7 +251,20 @@ export class FakeBackend {
     return bytes[0] === BOM[0] && bytes[1] === BOM[1] && bytes[2] === BOM[2] ? bytes.subarray(3) : bytes;
   }
 
-  private readChunk(path: string, offset: number, maxBytes: number) {
+  /** files.rs `detect_encoding` over the first 256 KiB (a cut-off sequence at the end is fine). */
+  private detect(all: Uint8Array): string {
+    if (this.stripBom(all) !== all) return "utf-8-bom";
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(all.subarray(0, 256 * 1024), {
+        stream: all.length > 256 * 1024,
+      });
+      return "utf-8";
+    } catch {
+      return "ansi";
+    }
+  }
+
+  private readChunk(path: string, offset: number, maxBytes: number, hint: string | null) {
     if (this.unreadable.has(key(path))) throw "The process cannot access the file because it is being used by another process. (os error 32)";
     const file = this.files.get(key(path));
     if (!file) throw "The system cannot find the file specified. (os error 2)";
@@ -223,9 +274,11 @@ export class FakeBackend {
     const want = Math.min(Math.max(maxBytes, 8), size - start);
     const window = all.subarray(start, start + want);
     const eof = start + window.length >= size;
-    const bom = start === 0 && this.stripBom(window) !== window ? 3 : 0;
+    const encoding = hint ?? this.detect(all);
+    const bom = start === 0 && encoding !== "ansi" && this.stripBom(window) !== window ? 3 : 0;
     const body = window.subarray(bom);
-    const cut = eof ? body.length : cutChunk(body);
+    const ansi = encoding === "ansi";
+    const cut = eof ? body.length : cutChunk(body, ansi);
     // The first chunk detects the line ending from its own window; later chunks
     // repeat what the first 256 KiB of the file says (files.rs `known_format`).
     const eol =
@@ -233,10 +286,10 @@ export class FakeBackend {
         ? firstEol(body, eof)
         : firstEol(this.stripBom(all.subarray(0, 256 * 1024)), size <= 256 * 1024);
     return {
-      text: normalize(decoder.decode(body.subarray(0, cut))),
+      text: normalize((ansi ? ansiDecoder : decoder).decode(body.subarray(0, cut))),
       nextOffset: start + bom + cut,
       eof,
-      encoding: this.stripBom(all) !== all ? "utf-8-bom" : "utf-8",
+      encoding: encoding === "utf-8" && bom ? "utf-8-bom" : encoding,
       eol: eol ?? "CRLF",
       stamp: { size, mtimeMs: file.mtimeMs },
     };
@@ -249,7 +302,8 @@ export class FakeBackend {
       throw "STALE";
     }
     const eol = req.eol === "CRLF" ? "\r\n" : req.eol === "CR" ? "\r" : "\n";
-    const body = encoder.encode(normalize(req.text).replace(/\n/g, eol));
+    const final = normalize(req.text).replace(/\n/g, eol);
+    const body = req.encoding === "ansi" ? encodeAnsi(final, !!req.allowLossy) : encoder.encode(final);
     const parts: Uint8Array[] = [req.encoding === "utf-8-bom" ? new Uint8Array(BOM) : new Uint8Array(), body];
     const parent = parentKey(req.path);
     if (parent && !this.dirs.has(parent)) throw "The system cannot find the path specified. (os error 3)";
@@ -271,6 +325,8 @@ interface SaveArgs {
   encoding: string;
   tailOffset: number | null;
   expectedStamp: FakeStamp | null;
+  allowLossy?: boolean;
+  normalizeEol?: boolean;
 }
 
 /** The current window, as far as actions.ts uses it. */
@@ -301,12 +357,17 @@ export class FakeDialogs {
   openAnswers: (string[] | null)[] = [];
   saveRequests: { defaultPath?: string }[] = [];
   openedUrls: string[] = [];
+  /** Button labels for the next native message boxes; an empty queue answers "Cancel". */
+  messageAnswers: string[] = [];
+  messages: { title?: string; body: string }[] = [];
 
   reset(): void {
     this.saveAnswers = [];
     this.openAnswers = [];
     this.saveRequests = [];
     this.openedUrls = [];
+    this.messageAnswers = [];
+    this.messages = [];
   }
 }
 
@@ -358,6 +419,10 @@ export const tauriMocks = {
       return dialogs.saveAnswers.shift() ?? null;
     },
     open: async () => dialogs.openAnswers.shift() ?? null,
+    message: async (body: string, options?: { title?: string }) => {
+      dialogs.messages.push({ title: options?.title, body });
+      return dialogs.messageAnswers.shift() ?? "Cancel";
+    },
   }),
   opener: () => ({
     openUrl: async (url: string) => {

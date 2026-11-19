@@ -322,11 +322,56 @@ describe("save as", () => {
     expect(backend.count("file_save")).toBe(0);
   });
 
-  it("adds the default extension when the name has none", async () => {
+  // BUGS.md C1: the dialog adds the filter's extension itself; with "All files"
+  // a name without one is what the user wants, and LICENSE.md must stay untouched.
+  it("saves a name without an extension as chosen and leaves name.md alone", async () => {
+    backend.write("C:\\notes\\LICENSE.md", "IMPORTANT EXISTING CONTENT");
+    app.type("hello");
+    dialogs.saveAnswers.push("C:\\notes\\LICENSE");
+    expect(await app.actions.saveAs()).toBe(true);
+    expect(backend.text("C:\\notes\\LICENSE")).toBe("hello");
+    expect(backend.text("C:\\notes\\LICENSE.md")).toBe("IMPORTANT EXISTING CONTENT");
+    expect(app.tab()).toMatchObject({ path: "C:\\notes\\LICENSE", title: "LICENSE", mode: "plain" });
+  });
+
+  // BUGS.md M6: Save As onto a file open in another tab left two tabs for one file.
+  it("M6: replaces a clean tab of the file it saves over", async () => {
+    backend.write(B, "old b");
+    await app.actions.openPaths([B]);
+    await app.actions.newTab();
+    app.type("new b");
+    dialogs.saveAnswers.push(B);
+    expect(await app.actions.saveAs()).toBe(true);
+    expect(backend.text(B)).toBe("new b");
+    const tabs = app.state().tabs.filter((t) => t.path === B);
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].id).toBe(app.state().activeId);
+    expect(app.text()).toBe("new b");
+  });
+
+  it("M6: refuses to save over a file whose tab has unsaved changes", async () => {
+    backend.write(B, "old b");
+    await app.actions.openPaths([B]);
+    app.type(" edited");
+    await app.actions.newTab();
+    app.type("other");
+    dialogs.saveAnswers.push(B);
+    expect(await app.actions.saveAs()).toBe(false);
+    expect(app.message()?.body).toContain("b.txt is open in another tab with unsaved changes");
+    expect(backend.text(B)).toBe("old b");
+    expect(app.tab()).toMatchObject({ path: null, dirty: true });
+    expect(app.tabByName("b.txt").dirty).toBe(true);
+  });
+
+  // BUGS.md T4: Windows writes "notes." as "notes"; the tab must name that file.
+  it("drops a trailing dot from the chosen name", async () => {
     app.type("x");
-    dialogs.saveAnswers.push("C:\\notes\\noext");
-    await app.actions.saveAs();
-    expect(backend.exists("C:\\notes\\noext.md")).toBe(true);
+    dialogs.saveAnswers.push("C:\\notes\\notes.");
+    expect(await app.actions.saveAs()).toBe(true);
+    expect(backend.exists("C:\\notes\\notes")).toBe(true);
+    expect(app.tab()).toMatchObject({ path: "C:\\notes\\notes", title: "notes" });
+    await app.actions.openPaths(["C:\\notes\\notes"]);
+    expect(app.state().tabs).toHaveLength(1);
   });
 
   it("switches to plain mode when saved under a non-markdown name", async () => {
@@ -465,6 +510,40 @@ describe("large files", () => {
     backend.write(A, "replaced by another program");
     expect(await app.actions.save()).toBe(false);
     expect(backend.text(A)).toBe("replaced by another program");
+  });
+
+  // BUGS.md C3: Save failed with "use Save as", and Save As failed with "Reload it".
+  it("C3: saves the loaded part elsewhere once the disk copy changed, after asking", async () => {
+    const loaded = app.tab().loadedOffset;
+    app.engine.restore(app.tab().id, { anchor: 0, head: 0, scrollTop: 0 });
+    app.engine.insertText("EDIT\n");
+    backend.write(A, "replaced by another program");
+    expect(await app.actions.save()).toBe(false);
+    expect(app.message()?.title).toBe("File changed on disk");
+    app.actions.closeDialog();
+    await app.actions.keepMine(app.tab().id);
+
+    // Cancelled: nothing is written.
+    dialogs.saveAnswers.push("C:\\notes\\copy.md");
+    expect(await app.actions.saveAs()).toBe(false);
+    expect(dialogs.messages[0].title).toBe("File changed on disk");
+    expect(backend.exists("C:\\notes\\copy.md")).toBe(false);
+
+    dialogs.saveAnswers.push("C:\\notes\\copy.md");
+    dialogs.messageAnswers.push("Save loaded part");
+    expect(await app.actions.saveAs()).toBe(true);
+    expect(backend.text("C:\\notes\\copy.md")).toBe("EDIT\n" + big.slice(0, loaded));
+    expect(backend.text(A)).toBe("replaced by another program");
+    expect(app.tab()).toMatchObject({
+      path: "C:\\notes\\copy.md",
+      dirty: false,
+      fullyLoaded: true,
+      externalChange: null,
+      loadedOffset: 5 + loaded,
+    });
+    // The tab is now an ordinary, complete file: Save works again.
+    app.type("!");
+    expect(await app.actions.save()).toBe(true);
   });
 
   it("loads the whole file before writing it somewhere else", async () => {
@@ -859,5 +938,96 @@ describe("closing the window and restoring the session", () => {
     backend.delete(A);
     app = await bootApp({ keepDisk: true });
     expect(app.tab().dirty).toBe(false);
+  });
+});
+
+describe("encodings and line endings", () => {
+  const C = "C:\\notes\\c.txt";
+  const cafeAnsi = new Uint8Array([0x63, 0x61, 0x66, 0xe9]); // "café" in windows-1252
+
+  beforeEach(async () => {
+    app = await bootApp();
+  });
+
+  // BUGS.md C6: characters the code page lacks silently became "?".
+  it("C6: asks before saving characters ANSI cannot hold", async () => {
+    backend.write(C, cafeAnsi);
+    await app.actions.openPaths([C]);
+    expect(app.tab()).toMatchObject({ encoding: "ansi" });
+    expect(app.text()).toBe("café");
+    app.type(" ш");
+
+    // Cancel: nothing is written and the tab stays unsaved.
+    expect(await app.actions.save()).toBe(false);
+    expect(dialogs.messages[0].title).toBe("Some characters cannot be saved");
+    expect(backend.bytes(C)).toEqual(cafeAnsi);
+    expect(app.tab().dirty).toBe(true);
+
+    // Keeping ANSI is still possible, but only when chosen.
+    dialogs.messageAnswers.push("Save as ANSI");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.bytes(C)).toEqual(new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x20, 0x3f]));
+  });
+
+  it("C6: switches the file to UTF-8 when asked", async () => {
+    backend.write(C, cafeAnsi);
+    await app.actions.openPaths([C]);
+    app.type(" ш");
+    dialogs.messageAnswers.push("Save as UTF-8");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(C)).toBe("café ш");
+    expect(app.tab()).toMatchObject({ encoding: "utf-8", dirty: false });
+  });
+
+  // BUGS.md C7: only the first 256 KB decided the encoding.
+  it("C7: reads a clean file again as ANSI when later bytes are not UTF-8", async () => {
+    const head = "a\n".repeat(150_000); // 300 KB of ASCII: the first chunk looks like UTF-8
+    backend.write(C, new Uint8Array([...new TextEncoder().encode(head), ...cafeAnsi]));
+    await app.actions.openPaths([C]);
+    await waitFor(() => app.tab().encoding === "ansi");
+    await app.actions.ensureFullyLoaded(app.tab().id);
+    expect(app.text()).toBe(head + "café");
+    expect(app.tab().dirty).toBe(false);
+  });
+
+  // BUGS.md M15: a wrong encoding guess could not be corrected.
+  it("M15: reopens a file with another encoding", async () => {
+    backend.write(C, cafeAnsi);
+    await app.actions.openPaths([C]);
+    await app.actions.reopenWithEncoding("utf-8");
+    expect(app.tab()).toMatchObject({ encoding: "utf-8", dirty: false });
+    expect(app.text()).toBe("caf\uFFFD");
+    await app.actions.reopenWithEncoding("ansi");
+    expect(app.text()).toBe("café");
+  });
+
+  it("M15: asks before reopening throws away unsaved changes", async () => {
+    backend.write(C, cafeAnsi);
+    await app.actions.openPaths([C]);
+    app.type("!");
+    await app.actions.reopenWithEncoding("utf-8");
+    expect(dialogs.messages[0].title).toBe("Reopen with encoding");
+    expect(app.text()).toBe("café!");
+    dialogs.messageAnswers.push("Reopen");
+    await app.actions.reopenWithEncoding("utf-8");
+    expect(app.text()).toBe("caf\uFFFD");
+    expect(app.tab().dirty).toBe(false);
+  });
+
+  // BUGS.md H14: Rust keeps mixed line endings unless the user picked one.
+  it("H14: asks Rust to normalise line endings only after one was picked", async () => {
+    backend.write(C, "a\r\nb\nc");
+    await app.actions.openPaths([C]);
+    const saves = () =>
+      backend.calls
+        .filter((c) => c.cmd === "file_save")
+        .map((c) => (c.args.req as { normalizeEol: boolean }).normalizeEol);
+    app.type("!");
+    await app.actions.save();
+    await app.actions.setEol("LF");
+    await app.actions.save();
+    app.type("?");
+    await app.actions.save();
+    expect(saves()).toEqual([false, true, false]);
   });
 });

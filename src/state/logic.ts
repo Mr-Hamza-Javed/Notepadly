@@ -189,14 +189,31 @@ export function defaultExtension(mode: FormatMode): string {
   return mode === "plain" ? ".txt" : ".md";
 }
 
+/** Windows reserves these device names, with any extension (`con.md` too). */
+const DEVICE_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?=\s*(\.|$))/i;
+
 export function suggestedFileName(tab: Pick<TabMeta, "path" | "title" | "mode">): string {
   if (tab.path) return fileNameOf(tab.path);
-  const safe = tab.title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "").replace(/[. ]+$/, "").trim();
+  const safe = tab.title
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
+    .replace(/[. ]+$/, "")
+    .trim()
+    .replace(DEVICE_NAME, "$1_");
   return `${safe || UNTITLED}${defaultExtension(tab.mode)}`;
 }
 
-export function withDefaultExtension(path: string, mode: FormatMode): string {
-  return extOf(path) ? path : path + defaultExtension(mode);
+/**
+ * The path a Save As writes to. The dialog has already added the selected
+ * filter's extension and asked about overwriting that exact name, so nothing
+ * is added here: with "All files" a name like `LICENSE` stays as typed.
+ * Windows drops trailing dots and spaces from a file name, so they are dropped
+ * here too; otherwise the tab would name a file that is not on disk under that
+ * spelling.
+ */
+export function chosenSavePath(path: string): string {
+  const name = fileNameOf(path);
+  const trimmed = name.replace(/[. ]+$/, "");
+  return trimmed ? path.slice(0, path.length - name.length) + trimmed : path;
 }
 
 const FILTER_MD = { name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd"] };

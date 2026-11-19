@@ -59,6 +59,8 @@ interface TabRuntime {
   hasDraft: boolean;
   /** Which file state the stored draft belongs to: the session must match it. */
   draftMeta: DraftMeta | null;
+  /** The user picked a line ending, so the next save writes it on every line. */
+  eolChosen: boolean;
 }
 
 const runtimes = new Map<string, TabRuntime>();
@@ -83,6 +85,7 @@ function rtOf(id: string): TabRuntime {
       dismissed: null,
       hasDraft: false,
       draftMeta: null,
+      eolChosen: false,
     };
     runtimes.set(id, rt);
   }
@@ -132,8 +135,46 @@ function startScan(id: string): void {
       if (rt.gen !== gen || rt.ioSeq !== ioSeq) return;
       const current = getTab(id);
       if (current && !current.fullyLoaded) patchTab(id, { totalChars: result.chars });
+      if (current && result.invalid && current.encoding === tab.encoding) onInvalidUtf8(id);
     })
     .catch(noop);
+}
+
+/**
+ * The encoding comes from the first 256 KB only. When the whole-file scan finds
+ * bytes further on that are not UTF-8, the file is really ANSI (BUGS.md C7):
+ * an unedited tab is read again as ANSI, an edited one gets a warning.
+ */
+function onInvalidUtf8(id: string): void {
+  const tab = getTab(id);
+  if (!tab?.path || (tab.encoding !== "utf-8" && tab.encoding !== "utf-8-bom")) return;
+  if (!tab.dirty && !tab.externalChange) {
+    reopenWithEncoding(id, "ansi").catch((error) =>
+      showMessage("Could not open file", `${tab.title} could not be read again as ANSI.\n${String(error)}`),
+    );
+    return;
+  }
+  showMessage(
+    "File is not UTF-8",
+    `Part of ${tab.title} is not valid UTF-8, so those characters show as � and would be saved that way. To read it correctly, reload it as ANSI from the Encoding menu in the status bar (your changes would be lost), or Save as to keep your text in a new file.`,
+  );
+}
+
+/** Reads the file again from the start in the given encoding, replacing the tab's text. */
+export function reopenWithEncoding(id: string, encoding: Encoding): Promise<void> {
+  const rt = rtOf(id);
+  return enqueue(rt, async () => {
+    await settle(rt.materialising);
+    const tab = getTab(id);
+    if (!tab?.path) return;
+    const snap = engine.hasDoc(id) ? engine.snapshot(id) : rt.snap;
+    await applyFromDisk(id, reloadTarget(tab), snap, false, encoding);
+  });
+}
+
+/** The user picked a line ending: the next save writes it on every line. */
+export function markEolChosen(id: string): void {
+  rtOf(id).eolChosen = true;
 }
 
 function scheduleIdleLoad(id: string): void {
@@ -171,7 +212,7 @@ function loadStep(id: string, maxBytes: number): Promise<void> {
   const { gen } = rt;
   const offset = tab.loadedOffset;
   const read = (async () => {
-    const chunk = await ipc.readChunk(tab.path as string, offset, maxBytes, tab.encoding);
+    const chunk = await ipc.readChunk(tab.path as string, offset, maxBytes, offset === 0 ? null : tab.encoding);
     const current = getTab(id);
     if (rt.gen !== gen || !current) return;
     // A chunk from a different file state must not be spliced in, and adopting
@@ -248,7 +289,12 @@ interface DiskRead {
 }
 
 /** Reads from byte 0 to about `target`. Restarts if the file changes part way. */
-async function readUpTo(path: string, target: number, isCurrent: () => boolean): Promise<DiskRead | null> {
+async function readUpTo(
+  path: string,
+  target: number,
+  isCurrent: () => boolean,
+  forced: Encoding | null = null,
+): Promise<DiskRead | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const parts: string[] = [];
     let offset = 0;
@@ -256,7 +302,7 @@ async function readUpTo(path: string, target: number, isCurrent: () => boolean):
     for (;;) {
       const wanted = Math.min(RELOAD_CHUNK, Math.max(MIN_READ, target - offset));
       const size = offset === 0 ? Math.max(FIRST_CHUNK, wanted) : wanted;
-      const chunk = await ipc.readChunk(path, offset, size, first?.encoding ?? null);
+      const chunk = await ipc.readChunk(path, offset, size, first?.encoding ?? forced);
       if (!isCurrent()) return null;
       if (first && !stampsEqual(first.stamp, chunk.stamp)) {
         first = null;
@@ -290,6 +336,7 @@ async function applyFromDisk(
   target: number,
   snap: ScrollSnapshot | null,
   silent: boolean,
+  forced: Encoding | null = null,
 ): Promise<void> {
   const rt = rtOf(id);
   const start = getTab(id);
@@ -299,7 +346,7 @@ async function applyFromDisk(
   cancelIdleLoad(rt);
   await settle(rt.inFlight);
   const editsAtStart = rt.editSeq;
-  const read = await readUpTo(start.path, target, () => rt.gen === gen && !!getTab(id));
+  const read = await readUpTo(start.path, target, () => rt.gen === gen && !!getTab(id), forced);
   const tab = getTab(id);
   if (!read || !tab || rt.gen !== gen) return;
   if (silent && (rt.editSeq !== editsAtStart || tab.dirty)) {
@@ -416,16 +463,27 @@ export async function materialiseOrFlag(id: string): Promise<void> {
 
 export type WriteResult = { ok: true } | { ok: false; stale: boolean; message: string };
 
+export interface WriteOptions {
+  /**
+   * Writes only the loaded text of a partly loaded tab to another path, and
+   * makes the tab that new, complete file. For a file whose rest can no longer
+   * be read because it changed on disk.
+   */
+  loadedOnly?: boolean;
+  /** Lets characters the ANSI code page lacks be saved as `?`. */
+  allowLossy?: boolean;
+}
+
 /** Serialised with loads and reloads, so byte offsets can never be read mid-rewrite. */
-export function writeTab(id: string, targetPath: string): Promise<WriteResult> {
+export function writeTab(id: string, targetPath: string, options: WriteOptions = {}): Promise<WriteResult> {
   const rt = rtOf(id);
-  return enqueue(rt, () => doWrite(id, rt, targetPath));
+  return enqueue(rt, () => doWrite(id, rt, targetPath, options));
 }
 
 /** Waits for any queued save or reload of this tab. */
 export const settleTabIo = (id: string): Promise<void> => rtOf(id).queue;
 
-async function doWrite(id: string, rt: TabRuntime, targetPath: string): Promise<WriteResult> {
+async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: WriteOptions): Promise<WriteResult> {
   await settle(rt.inFlight);
   try {
     await materialise(id);
@@ -435,7 +493,8 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string): Promise<
   const tab = getTab(id);
   if (!tab) return { ok: false, stale: false, message: "The tab was closed." };
   const samePath = pathsEqual(tab.path, targetPath);
-  const partial = !tab.fullyLoaded;
+  const loadedOnly = !!options.loadedOnly && !samePath;
+  const partial = !tab.fullyLoaded && !loadedOnly;
   if (partial && (!samePath || !tab.stamp)) {
     return { ok: false, stale: partial && samePath, message: "Only part of this file is loaded." };
   }
@@ -455,6 +514,9 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string): Promise<
       // Rust answers STALE for a missing file, so recreating a deleted file must
       // send null. A partial tab keeps its stamp: its tail is gone with the file.
       expectedStamp: samePath && !(tab.externalChange === "deleted" && !partial) ? tab.stamp : null,
+      allowLossy: !!options.allowLossy,
+      // Mixed line endings are only kept when rewriting the same file.
+      normalizeEol: rt.eolChosen || !samePath,
     });
   } catch (error) {
     rt.ioSeq++;
@@ -470,6 +532,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string): Promise<
     rt.forceDirty = false;
   }
   rt.dismissed = null;
+  rt.eolChosen = false;
   const shared = {
     path: targetPath,
     title: fileNameOf(targetPath),

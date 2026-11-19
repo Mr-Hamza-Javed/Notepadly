@@ -30,7 +30,7 @@ import {
   saveFilters,
   suggestedFileName,
   tabFromSession,
-  withDefaultExtension,
+  chosenSavePath,
   wrapIndex,
 } from "./logic";
 import {
@@ -359,12 +359,23 @@ function applyMode(id: string, mode: FormatMode): void {
   loader.scheduleSessionWrite();
 }
 
-async function writeAndReport(id: string, path: string): Promise<boolean> {
-  const result = await loader.writeTab(id, path);
+/** A native message box with custom buttons; resolves to the label pressed. */
+async function askUser(
+  title: string,
+  body: string,
+  buttons: { ok: string; cancel: string } | { yes: string; no: string; cancel: string },
+): Promise<string> {
+  const { message } = await import("@tauri-apps/plugin-dialog");
+  return message(body, { title, kind: "warning", buttons });
+}
+
+async function writeAndReport(id: string, path: string, options: loader.WriteOptions = {}): Promise<boolean> {
+  const result = await loader.writeTab(id, path, options);
   if (result.ok) {
     addRecent(path);
     return true;
   }
+  if (result.message.includes("UNMAPPABLE")) return saveUnmappable(id, path, options);
   if (result.stale) {
     patchTab(id, { externalChange: "modified" });
     showMessage(
@@ -375,6 +386,34 @@ async function writeAndReport(id: string, path: string): Promise<boolean> {
     showMessage("Could not save file", result.message);
   }
   return false;
+}
+
+/**
+ * The text has characters the ANSI code page cannot hold (BUGS.md C6). Saving
+ * would turn them into `?` for good, so the user chooses.
+ */
+async function saveUnmappable(id: string, path: string, options: loader.WriteOptions): Promise<boolean> {
+  const toUtf8 = "Save as UTF-8";
+  const lossy = "Save as ANSI";
+  const answer = await askUser(
+    "Some characters cannot be saved",
+    `${fileNameOf(path)} is saved in ANSI, which cannot hold some of the characters in it. In ANSI they would become "?" for good.\n\nSave it as UTF-8 instead?`,
+    { yes: toUtf8, no: lossy, cancel: "Cancel" },
+  );
+  if (answer === lossy) return writeAndReport(id, path, { ...options, allowLossy: true });
+  if (answer !== toUtf8) return false;
+  // The unloaded rest of the file is ANSI bytes: it must be read before the encoding changes.
+  if (!options.loadedOnly) {
+    try {
+      await ensureFullyLoaded(id);
+    } catch {
+      return false;
+    }
+  }
+  patchTab(id, { encoding: "utf-8" });
+  loader.forceDirty(id);
+  loader.scheduleSessionWrite();
+  return writeAndReport(id, path, options);
 }
 
 async function saveAs(tabId?: string): Promise<boolean> {
@@ -389,18 +428,46 @@ async function saveAs(tabId?: string): Promise<boolean> {
     filters: saveFilters(tab.mode),
   });
   if (!chosen) return false;
-  const path = withDefaultExtension(chosen, tab.mode);
+  const path = chosenSavePath(chosen);
   const movesFile = !pathsEqual(path, tab.path);
+  // Another tab showing the file about to be replaced would be left stale.
+  const other = movesFile ? state().tabs.find((t) => t.id !== id && pathsEqual(t.path, path)) : undefined;
+  if (other?.dirty) {
+    showMessage(
+      "Could not save file",
+      `${fileNameOf(path)} is open in another tab with unsaved changes. Save or close that tab first.`,
+    );
+    return false;
+  }
+  let loadedOnly = false;
   if (movesFile) {
     try {
       await loader.ensureFullyLoaded(id);
     } catch (error) {
-      showMessage("Could not save file", errorText(error));
-      return false;
+      if (!(error instanceof loader.LoadBlockedError)) {
+        showMessage("Could not save file", errorText(error));
+        return false;
+      }
+      // The rest of the old file is gone, but the loaded text is still worth keeping.
+      const keep = "Save loaded part";
+      const answer = await askUser(
+        "File changed on disk",
+        `This file was changed by another program while only part of it was loaded, so the rest of it can no longer be read.\n\nSave the loaded part, with your changes, as ${fileNameOf(path)}?`,
+        { ok: keep, cancel: "Cancel" },
+      );
+      if (answer !== keep) return false;
+      loadedOnly = true;
     }
   }
-  if (!(await writeAndReport(id, path))) return false;
+  if (!(await writeAndReport(id, path, { loadedOnly }))) return false;
   if (movesFile) {
+    const replaced = other && getTab(other.id);
+    if (replaced && !replaced.dirty) {
+      if (state().activeId === replaced.id) await activate(id);
+      removeFromList(replaced.id);
+    } else if (replaced) {
+      patchTab(replaced.id, { externalChange: "modified" });
+    }
     const current = getTab(id);
     if (current) applyMode(id, modeAfterSave(current.mode, path, state().settings.formatting));
   }
@@ -609,8 +676,26 @@ async function changeFileFormat(patch: { eol: Eol } | { encoding: Encoding }): P
     return;
   }
   patchTab(id, patch);
+  if ("eol" in patch) loader.markEolChosen(id);
   loader.forceDirty(id);
   loader.scheduleSessionWrite();
+}
+
+/** Reads the active file again in another encoding, for a wrong guess (BUGS.md M15). */
+async function reopenWithEncoding(encoding: Encoding): Promise<void> {
+  const id = state().activeId;
+  const tab = getTab(id);
+  if (!tab?.path) return;
+  if (tab.dirty) {
+    const reopen = "Reopen";
+    const answer = await askUser(
+      "Reopen with encoding",
+      `Reading ${tab.title} again throws away your unsaved changes. Reopen it anyway?`,
+      { ok: reopen, cancel: "Cancel" },
+    );
+    if (answer !== reopen) return;
+  }
+  await loader.reopenWithEncoding(id, encoding).catch(reportError("Could not reopen file"));
 }
 
 // ---- Startup -----------------------------------------------------------------
@@ -763,6 +848,7 @@ export const actions = {
 
   setEol: (eol: Eol) => changeFileFormat({ eol }),
   setEncoding: (encoding: Encoding) => changeFileFormat({ encoding }),
+  reopenWithEncoding,
 
   openFind: (replace: boolean) => {
     useApp.setState({ find: { open: true, replace }, view: "editor" });
