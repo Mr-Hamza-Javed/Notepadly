@@ -390,9 +390,34 @@ describe("known open bugs (see BUGS.md)", () => {
   it("M4: bolding two paragraphs bolds each one", () => {
     expect(format("|one\n\ntwo|", { type: "bold" })).toBe("**|one**\n\n**two|**");
     expect(format("a |one\n  \n\ntwo\nthree| b", { type: "italic" })).toBe("a *|one*\n  \n\n*two\nthree|* b");
-    expect(format("|one\n\n|two", { type: "strike" })).toBe("~~|one~~\n\n|two");
+    // The selection becomes the wrapped text, so a second toggle removes the markers again.
+    expect(format("|one\n\n|two", { type: "strike" })).toBe("~~|one|~~\n\ntwo");
     // A soft line break inside one paragraph is still wrapped as a whole.
     expect(format("|one\ntwo|", { type: "bold" })).toBe("**|one\ntwo|**");
+  });
+});
+
+describe("EDIT-3: inline markers across list items, quotes, headings and spaces", () => {
+  it("puts the markers inside selected spaces, where Markdown reads them", () => {
+    expect(format("|hello |world", { type: "bold" })).toBe("**|hello|** world");
+    expect(format("a| b |c", { type: "italic" })).toBe("a *|b|* c");
+  });
+
+  it("wraps each list item, quote line or heading after its marker", () => {
+    expect(format("|- one\n- two|", { type: "bold" })).toBe("|- **one**\n- **two|**");
+    expect(format("|> one\n> two|", { type: "bold" })).toBe("|> **one**\n> **two|**");
+    expect(format("|1. one\n2. [ ] two|", { type: "strike" })).toBe("|1. ~~one~~\n2. [ ] ~~two|~~");
+    expect(format("|# one\n## two|", { type: "italic" })).toBe("|# *one*\n## *two|*");
+  });
+
+  it("removes the markers again on a second toggle", () => {
+    for (const input of ["|- one\n- two|", "|one\n\ntwo|", "|hello |world"]) {
+      const view = markdownView(input);
+      const before = view.state.doc.toString();
+      applyFormat(view, { type: "bold" });
+      applyFormat(view, { type: "bold" });
+      expect(view.state.doc.toString(), input).toBe(before);
+    }
   });
 });
 

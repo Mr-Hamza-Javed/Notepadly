@@ -58,33 +58,52 @@ function selectedLines(state: EditorState, range: SelectionRange): Line[] {
 
 // ---------- Inline toggles ----------
 
+/** Quote, list and heading markers at the start of a line: inline markers go after them. */
+const BLOCK_PREFIX = /^[ \t]*(?:>[ \t]?)*[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?|#{1,6}[ \t]+)?/;
+
 /**
- * The non-blank stretches of `from..to` between blank lines, trimmed of the
- * whitespace at their ends. One entry when the range has no blank line.
+ * The stretches of `from..to` to wrap in an inline marker, trimmed of the whitespace at
+ * their ends and of quote, list and heading markers. A blank line, or a line that starts a
+ * quote, list item or heading, starts a new stretch: `**- one\n- two**` would break the list.
  */
 function paragraphSegments(state: EditorState, from: number, to: number): [number, number][] {
   const first = state.doc.lineAt(from);
   const last = state.doc.lineAt(to);
-  if (first.number === last.number) return [[from, to]];
   const segments: [number, number][] = [];
   let start = -1;
   let end = -1;
   for (let n = first.number; n <= last.number; n++) {
     const line = state.doc.line(n);
-    const lineFrom = Math.max(line.from, from);
+    const prefix = BLOCK_PREFIX.exec(line.text)![0];
+    const lineFrom = Math.max(line.from + prefix.length, from);
     const lineTo = Math.min(line.to, to);
-    const text = state.sliceDoc(lineFrom, lineTo);
+    const text = lineTo > lineFrom ? state.sliceDoc(lineFrom, lineTo) : "";
     if (!text.trim()) {
-      if (line.text.trim() && start >= 0) continue; // only the selected part is blank: not a break
+      if (line.text.slice(prefix.length).trim() && start >= 0) continue; // only the selected part is blank: not a break
       if (start >= 0) segments.push([start, end]);
       start = -1;
       continue;
+    }
+    if (start >= 0 && prefix.trim()) {
+      segments.push([start, end]);
+      start = -1;
     }
     if (start < 0) start = lineFrom + (/^\s*/.exec(text)?.[0].length ?? 0);
     end = lineTo - (/\s*$/.exec(text)?.[0].length ?? 0);
   }
   if (start >= 0) segments.push([start, end]);
   return segments.length ? segments : [[from, to]];
+}
+
+/**
+ * The opening and closing marks of the `nodeName` node that wraps `from..to`, give or take
+ * its own markers (`slack` characters at each end), or null.
+ */
+function wrappingMarks(state: EditorState, from: number, to: number, nodeName: string, markName: string, slack: number) {
+  const node = ancestorOf(syntaxTree(state).resolveInner(from, 1), [nodeName]);
+  if (!node || node.from < from - slack || node.from > from || node.to < to || node.to > to + slack) return null;
+  const marks = node.getChildren(markName);
+  return marks.length >= 2 ? [marks[0], marks[marks.length - 1]] : null;
 }
 
 function toggleInline(view: EditorView, marker: string, nodeName: string, markName: string): void {
@@ -117,7 +136,15 @@ function toggleInline(view: EditorView, marker: string, nodeName: string, markNa
         }
       }
       const segments = paragraphSegments(state, range.from, range.to);
-      if (segments.length > 1 || segments[0][0] !== range.from || segments[0][1] !== range.to) {
+      const keepDirection = (start: number, end: number) =>
+        range.anchor <= range.head ? EditorSelection.range(start, end) : EditorSelection.range(end, start);
+      if (segments.length > 1) {
+        // A second toggle over the same lines removes what the first one added.
+        const inner = segments.map(([from, to]) => wrappingMarks(state, from, to, nodeName, markName, size));
+        if (inner.every((marks) => marks !== null)) {
+          const changes = state.changes(inner.flatMap((marks) => marks!.map(({ from, to }) => ({ from, to }))));
+          return { changes, range: keepDirection(changes.mapPos(range.from, 1), changes.mapPos(range.to, -1)) };
+        }
         // `**one\n\ntwo**` is not bold: wrap each paragraph on its own, inside its whitespace.
         const changes = state.changes(
           segments.flatMap(([from, to]) => [
@@ -125,19 +152,18 @@ function toggleInline(view: EditorView, marker: string, nodeName: string, markNa
             { from: to, insert: marker },
           ]),
         );
-        const start = changes.mapPos(range.from, 1);
-        const end = changes.mapPos(range.to, -1);
-        return {
-          changes,
-          range: range.anchor <= range.head ? EditorSelection.range(start, end) : EditorSelection.range(end, start),
-        };
+        return { changes, range: keepDirection(changes.mapPos(range.from, 1), changes.mapPos(range.to, -1)) };
       }
+      // One stretch: `**word **` is not bold, so the markers go inside the selected whitespace.
+      const [from, to] = segments[0];
       return {
         changes: [
-          { from: range.from, insert: marker },
-          { from: range.to, insert: marker },
+          { from, insert: marker },
+          { from: to, insert: marker },
         ],
-        range: EditorSelection.range(range.anchor + size, range.head + size),
+        range: from === range.from && to === range.to
+          ? EditorSelection.range(range.anchor + size, range.head + size)
+          : keepDirection(from + size, to + size),
       };
     }),
     { userEvent: "input.format", scrollIntoView: true },
