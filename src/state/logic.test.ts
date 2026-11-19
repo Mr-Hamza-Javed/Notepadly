@@ -9,6 +9,7 @@ import {
   dirOf,
   extOf,
   fileNameOf,
+  fontOptions,
   fontStack,
   fontWeightOf,
   formatDateTime,
@@ -610,5 +611,21 @@ describe("merging preferences from several windows (H12)", () => {
     expect(mergeRecent(["x", "a", "b"], ["a", "b"], ["a"])).toEqual(["x", "a"]);
     expect(mergeRecent(["x", "a"], ["a"], [])).toEqual(["x"]);
     expect(mergeRecent(["C:\\A.md"], [], ["c:\\a.md"])).toEqual(["c:\\a.md"]);
+  });
+});
+
+describe("font list (L6)", () => {
+  it("does not list Inter unless it is installed or chosen", () => {
+    expect(fontOptions("Arial", ["Segoe UI", "Arial"]).map((o) => o.value)).toEqual(["Arial", "Segoe UI"]);
+  });
+
+  it("marks the chosen font when it is not installed", () => {
+    expect(fontOptions("Inter", ["Arial"])).toEqual([
+      { value: "Arial", label: "Arial" },
+      { value: "Inter", label: "Inter (not installed)" },
+    ]);
+    expect(fontOptions("inter", ["Inter"])).toEqual([{ value: "inter", label: "inter" }]);
+    // Before the list has loaded nothing is marked.
+    expect(fontOptions("Inter", [])).toEqual([{ value: "Inter", label: "Inter" }]);
   });
 });

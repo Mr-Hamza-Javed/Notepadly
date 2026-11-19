@@ -5,6 +5,7 @@ import { ipc, type UpdateStatus } from "../../lib/ipc";
 
 const RELEASES_URL = "https://github.com/Mr-Hamza-Javed/Notepadly/releases/latest";
 import { actions } from "../../state/actions";
+import { fontOptions } from "../../state/logic";
 import { useApp } from "../../state/store";
 import type { Settings as SettingsModel, ThemeSetting } from "../../state/types";
 import "../../styles/settings.css";
@@ -119,8 +120,7 @@ function useSystemFonts(current: string) {
       .catch(() => undefined);
   }, []);
   const options = useMemo<SelectOption[]>(() => {
-    const names = Array.from(new Set([current, "Inter", ...fonts])).sort((a, b) => a.localeCompare(b));
-    return names.map((n) => ({ value: n, label: n }));
+    return fontOptions(current, fonts);
   }, [fonts, current]);
   return { options, load };
 }

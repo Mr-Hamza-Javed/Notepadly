@@ -95,6 +95,19 @@ export function fontStack(family: string): string {
   return `${quoted}, "Segoe UI Variable Text", "Segoe UI", sans-serif`;
 }
 
+/**
+ * The font list in Settings (L6): installed fonts plus the current one. The
+ * default "Inter" is not bundled, so it is listed only when installed or chosen,
+ * and a chosen font that is not installed says so once the list is known.
+ */
+export function fontOptions(current: string, installed: string[]): { value: string; label: string }[] {
+  const has = (name: string) => installed.some((f) => f.toLowerCase() === name.toLowerCase());
+  const names = [current, ...installed.filter((f) => f.toLowerCase() !== current.toLowerCase())];
+  return Array.from(new Set(names))
+    .sort((a, b) => a.localeCompare(b))
+    .map((n) => ({ value: n, label: n === current && installed.length > 0 && !has(n) ? `${n} (not installed)` : n }));
+}
+
 // ---- Paths ----------------------------------------------------------------
 
 export function fileNameOf(path: string): string {
