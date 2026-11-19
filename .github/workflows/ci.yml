@@ -1,4 +1,6 @@
 # Checks that run on every pull request and every push to main.
+# Third-party actions are pinned to commit SHAs (the tag or branch they were
+# taken from is in the comment), since a moved tag would run new code here.
 # Each job shows as its own check on the PR, so a failure names what broke.
 name: CI
 
@@ -53,8 +55,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: stable
           components: rustfmt
       - name: cargo fmt --check
         working-directory: src-tauri
@@ -70,10 +73,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: stable
           components: clippy
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: src-tauri -> target
           shared-key: windows-rust
@@ -94,8 +98,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: src-tauri -> target
           shared-key: windows-rust
@@ -104,3 +110,16 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --lib
+
+  npm-audit:
+    name: npm audit (shipped dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Only what ends up in the app; dev tools are not shipped.
+      - name: npm audit --omit=dev
+        run: npm audit --omit=dev
