@@ -109,6 +109,8 @@ export interface ScrollSnapshot {
   anchor: number;
   head: number;
   scrollTop: number;
+  /** Line starts of callouts folded or unfolded against their marker; absent when none. */
+  folds?: number[];
 }
 
 export interface EditorEngine {

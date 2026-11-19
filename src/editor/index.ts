@@ -160,6 +160,25 @@ function foldsOf(state: EditorState): number[] {
   return state.field(blockField, false)?.toggled.slice() ?? [];
 }
 
+/**
+ * Effects that make the flipped callouts exactly `folds`, skipping positions that are no
+ * longer the start of a callout line (the text changed). None outside Formatted mode.
+ */
+function foldEffects(state: EditorState, folds: readonly number[]): StateEffect<number>[] {
+  const field = state.field(blockField, false);
+  if (!field) return [];
+  const wanted = new Set(
+    folds.filter((pos) => {
+      if (!Number.isInteger(pos) || pos < 0 || pos > state.doc.length) return false;
+      const line = state.doc.lineAt(pos);
+      return line.from === pos && line.length < 2000 && CALLOUT_LINE.test(line.text);
+    }),
+  );
+  const flip = field.toggled.filter((pos) => !wanted.has(pos));
+  for (const pos of wanted) if (!field.toggled.includes(pos)) flip.push(pos);
+  return flip.map((pos) => toggleCalloutFold.of(pos));
+}
+
 let versionCounter = 0;
 
 /** Whether a document still needs the plain fallback; walks lines without joining the text. */
@@ -654,14 +673,8 @@ class Engine implements EditorEngine {
 
   /** Puts kept folds back on callouts that are still where they were. */
   private restoreFolds(doc: DocRecord, folds: readonly number[]): void {
-    const state = doc.state;
-    if (!folds.length || !state.field(blockField, false)) return;
-    const valid = folds.filter((pos) => {
-      if (pos < 0 || pos > state.doc.length) return false;
-      const line = state.doc.lineAt(pos);
-      return line.from === pos && line.length < 2000 && CALLOUT_LINE.test(line.text);
-    });
-    if (valid.length) doc.state = state.update({ effects: valid.map((pos) => toggleCalloutFold.of(pos)) }).state;
+    const effects = foldEffects(doc.state, folds);
+    if (effects.length) doc.state = doc.state.update({ effects }).state;
   }
 
   /** Seeds a fresh record's state with kept undo history; `text` starts with the text it had. */
@@ -827,10 +840,13 @@ class Engine implements EditorEngine {
   snapshot(tabId: string): ScrollSnapshot | null {
     const doc = this.docs.get(tabId);
     if (!doc) return null;
-    const { anchor, head } = this.stateOf(doc).selection.main;
+    const state = this.stateOf(doc);
+    const { anchor, head } = state.selection.main;
     const scrollTop =
       doc.id === this.activeId && this.view ? this.view.scrollDOM.scrollTop : (doc.scrollTop ?? 0);
-    return { anchor, head, scrollTop };
+    // Flipped callouts go with the position, so a reload, a restart or a move keeps them (M12).
+    const folds = foldsOf(state);
+    return folds.length ? { anchor, head, scrollTop, folds } : { anchor, head, scrollTop };
   }
 
   restore(tabId: string, snap: ScrollSnapshot): void {
@@ -838,11 +854,12 @@ class Engine implements EditorEngine {
     if (!doc) return;
     const length = this.stateOf(doc).doc.length;
     const selection = { anchor: Math.min(snap.anchor, length), head: Math.min(snap.head, length) };
+    const effects = snap.folds ? foldEffects(this.stateOf(doc), snap.folds) : [];
     if (doc.id === this.activeId && this.view) {
-      this.view.dispatch({ selection });
+      this.view.dispatch({ selection, effects });
       this.applyScrollTop(snap.scrollTop);
     } else {
-      doc.state = doc.state.update({ selection }).state;
+      doc.state = doc.state.update({ selection, effects }).state;
       doc.scrollEffect = null;
       doc.scrollTop = snap.scrollTop;
     }
