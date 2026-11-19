@@ -58,6 +58,8 @@ interface BlockValue {
   toggled: readonly number[];
   /** Start of the block whose source was opened explicitly, if any. */
   editing: number | null;
+  /** The theme the scanned blocks were drawn for (Mermaid colours). */
+  dark: boolean;
 }
 
 /**
@@ -156,7 +158,7 @@ export function calloutFolded(state: EditorState, from: number, marker: string):
 
 function scan(value: BlockValue, state: EditorState, span: Span): BlockValue {
   const parsedTo = Math.min(span.to, syntaxTree(state).length);
-  if (parsedTo < span.from) return { ...value, scanned: span };
+  if (parsedTo < span.from) return { ...value, scanned: span, dark: isDarkTheme() };
   const found = collectBlocks(state, { from: span.from, to: parsedTo }, value.toggled);
   const remove = { filterFrom: span.from, filterTo: parsedTo, filter: () => false };
   const hasSelectionHit = (range: Range<Decoration>) =>
@@ -167,6 +169,7 @@ function scan(value: BlockValue, state: EditorState, span: Span): BlockValue {
     shown: value.shown.update({ ...remove, add: found.filter((range) => !hasSelectionHit(range)) }),
     revealed: value.revealed.filter((item) => item.to < span.from || item.from > parsedTo),
     scanned: span,
+    dark: isDarkTheme(),
   };
 }
 
@@ -214,6 +217,7 @@ function mapValue(value: BlockValue, tr: Transaction): BlockValue {
     scanned: { from: changes.mapPos(value.scanned.from), to: changes.mapPos(value.scanned.to) },
     toggled: value.toggled.map((pos) => changes.mapPos(pos)),
     editing: value.editing === null ? null : changes.mapPos(value.editing, 1),
+    dark: value.dark,
   };
 }
 
@@ -237,6 +241,7 @@ function initialValue(state: EditorState): BlockValue {
     scanned: { from: 0, to: 0 },
     toggled: [],
     editing: null,
+    dark: isDarkTheme(),
   };
   return applyReveal(
     scan(empty, state, paddedSpan({ from: 0, to: Math.min(state.doc.length, 16000) }, state.doc.length)),
@@ -292,7 +297,12 @@ export const blockField = StateField.define<BlockValue>({
   provide: (field) => EditorView.decorations.from(field, (value) => value.shown),
 });
 
-/** Reports the viewport to the field, only when it leaves the region already scanned. */
+/**
+ * Reports the viewport to the field when it leaves the region already scanned, or when the
+ * theme changed since the scan. The engine rebuilds the active tab on a theme change; a tab
+ * that was in the background then comes back here through `setState`, which re-creates this
+ * plugin.
+ */
 const viewportReporter = ViewPlugin.fromClass(
   class {
     private scheduled = false;
@@ -312,7 +322,8 @@ const viewportReporter = ViewPlugin.fromClass(
       const { from, to } = this.view.viewport;
       const length = this.view.state.doc.length;
       const inside = from >= scanned.from && (to <= scanned.to || scanned.to >= length);
-      if (inside) return;
+      const themeChanged = this.view.state.field(blockField).dark !== isDarkTheme();
+      if (inside && !themeChanged) return;
       this.scheduled = true;
       queueMicrotask(() => {
         this.scheduled = false;
