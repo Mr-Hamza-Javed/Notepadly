@@ -11,6 +11,7 @@ import {
 import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
 import { CALLOUT_LINE, calloutFolded, toggleCalloutFold } from "./block";
 import {
+  documentPathChanged,
   isImagePath,
   parseSize,
   previewContext,
@@ -554,7 +555,9 @@ const inlinePlugin = ViewPlugin.fromClass(
     }
 
     update(update: ViewUpdate): void {
-      const foldToggled = update.transactions.some((tr) => tr.effects.some((e) => e.is(toggleCalloutFold)));
+      const foldToggled = update.transactions.some((tr) =>
+        tr.effects.some((e) => e.is(toggleCalloutFold) || e.is(documentPathChanged)),
+      );
       if (
         update.docChanged ||
         update.viewportChanged ||

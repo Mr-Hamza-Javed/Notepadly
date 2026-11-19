@@ -44,7 +44,7 @@ import {
 } from "./commands";
 import { FIND_COUNT_LIMIT, FindController, findExtension } from "./find";
 import { blockPreview, rebuildBlocks } from "./livePreview/block";
-import { previewContext, resolveHref } from "./livePreview/context";
+import { documentPathChanged, previewContext, resolveHref } from "./livePreview/context";
 import { ctrlClick, inlinePreview } from "./livePreview/inline";
 import { escapeCellText, focusedTable, tableAt } from "./livePreview/widgets";
 import { markdownSupport, parseAhead } from "./markdown";
@@ -691,6 +691,11 @@ class Engine implements EditorEngine {
     if (doc.versions[doc.depth] === undefined) doc.versions[doc.depth] = ++versionCounter;
     doc.savedVersion = doc.versions[doc.depth];
     this.refreshDirty(doc);
+  }
+
+  pathChanged(tabId: string): void {
+    // A background tab draws its widgets afresh when it is shown, so only the active one needs this.
+    if (tabId === this.activeId) this.view?.dispatch({ effects: documentPathChanged.of(null) });
   }
 
   snapshot(tabId: string): ScrollSnapshot | null {

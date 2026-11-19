@@ -6,7 +6,7 @@ import { applyFormat } from "../commands";
 import { openBlockSource } from "./block";
 import { cachedMath, cachedMermaid, renderMath, renderMermaid, type RenderedHtml } from "../lazy";
 import { cellText, joinRow, parseAlign, parseTable } from "../tableModel";
-import { isImagePath, parseSize, previewContext, resolveHref, resolveImageSrc, resolveWikiTarget } from "./context";
+import { documentPathChanged, isImagePath, parseSize, previewContext, resolveHref, resolveImageSrc, resolveWikiTarget } from "./context";
 
 function element(tag: string, className: string, text?: string): HTMLElement {
   const el = document.createElement(tag);
@@ -482,6 +482,15 @@ class TableController {
     if (cell) this.focusCell(cell, fromAbove ? "start" : toLastCell ? "end" : "start");
   }
 
+  /** Renders every cell again, e.g. after the document moved and relative images changed. */
+  refreshCells(): void {
+    for (const cell of this.cells()) {
+      const ref = this.refOf(cell);
+      const marked = this.marked && this.marked.row === ref.row && this.marked.col === ref.col;
+      if (!this.isActive(ref) && !marked) setCellHtml(cell, cell.dataset.src ?? "");
+    }
+  }
+
   /** Shows a selection the editor has in this table while no cell is focused, like a Find match. */
   showSelection(from: number, to: number): void {
     if (this.hasFocus()) return;
@@ -815,9 +824,16 @@ export const tableFocus = ViewPlugin.fromClass(
     constructor(private readonly view: EditorView) {}
 
     update(update: ViewUpdate): void {
+      if (update.transactions.some((tr) => tr.effects.some((e) => e.is(documentPathChanged)))) {
+        // Relative images in cells resolve against the new folder (BUGS.md PREV-7).
+        for (const table of tablesOf(this.view)) table.refreshCells();
+      }
       if (!update.selectionSet && !update.docChanged && !update.focusChanged) return;
       const keyboard = update.transactions.some((tr) => tr.isUserEvent("select") && !tr.isUserEvent("select.pointer"));
-      const oldHead = update.startState.selection.main.head;
+      this.schedule(keyboard, update.startState.selection.main.head);
+    }
+
+    private schedule(keyboard: boolean, oldHead: number): void {
       if (this.scheduled) return;
       this.scheduled = true;
       // Positions of widgets are only known once this update has drawn them.
@@ -973,6 +989,8 @@ export class MermaidWidget extends SourceWidget {
 const imageHeights = new Map<string, number>();
 
 export class ImageWidget extends WidgetType {
+  /** The URL the image loads from; it changes when the document moves (BUGS.md PREV-7). */
+  readonly resolved: string;
   constructor(
     readonly src: string,
     readonly alt: string,
@@ -980,10 +998,12 @@ export class ImageWidget extends WidgetType {
     readonly height?: number,
   ) {
     super();
+    this.resolved = resolveImageSrc(src);
   }
   override eq(other: ImageWidget): boolean {
     return (
       other.src === this.src &&
+      other.resolved === this.resolved &&
       other.alt === this.alt &&
       other.width === this.width &&
       other.height === this.height
@@ -1008,7 +1028,8 @@ export class ImageWidget extends WidgetType {
       image.classList.add("cm-md-image-broken");
       view.requestMeasure();
     });
-    image.src = resolveImageSrc(this.src);
+    if (this.resolved) image.src = this.resolved;
+    else image.classList.add("cm-md-image-broken");
     // Clicking an image keeps it rendered; double-click shows its markdown to edit.
     image.addEventListener("mousedown", (event) => {
       event.preventDefault();

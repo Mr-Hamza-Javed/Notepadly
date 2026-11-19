@@ -12,6 +12,8 @@ import { inlinePreview } from "./inline";
 import { previewContext, resolveImageSrc } from "./context";
 import { classifyHref } from "../../state/logic";
 import { renderCellHtml } from "./widgets";
+import { mountEngine } from "../../test/editorHarness";
+import { engine } from "..";
 
 const extensions = [markdownSupport, history(), blockPreview, inlinePreview];
 
@@ -123,5 +125,29 @@ describe("table cell rendering", () => {
     for (let i = 0; i < 50 && !host.querySelector(".katex"); i++) await new Promise((r) => setTimeout(r, 20));
     expect(host.querySelector(".katex")).not.toBeNull();
     await tick();
+  });
+});
+
+describe("relative images after the document moves", () => {
+  it("PREV-7: a save to a new folder re-resolves images in text and in table cells", async () => {
+    let dir: string | null = null;
+    const { parent } = mountEngine({ baseDir: () => dir });
+    engine.createDoc("t1", "intro\n\n![p](pic.png)\n\n| a |\n| - |\n| ![q](q.png) |\n\nend", "formatted");
+    engine.activate("t1");
+    await tick();
+    await tick();
+    const sources = () => Array.from(parent.querySelectorAll("img.cm-md-image")).map((img) => img.getAttribute("src"));
+    expect(sources()).toEqual([null, null]);
+    // First save of the untitled tab.
+    dir = "C:\\notes";
+    engine.pathChanged("t1");
+    await tick();
+    expect(sources()).toEqual(["C:\\notes\\pic.png", "C:\\notes\\q.png"]);
+    // Save As to another folder.
+    dir = "D:\\other";
+    engine.pathChanged("t1");
+    await tick();
+    expect(sources()).toEqual(["D:\\other\\pic.png", "D:\\other\\q.png"]);
+    engine.destroy();
   });
 });

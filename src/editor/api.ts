@@ -112,6 +112,8 @@ export interface EditorEngine {
   firstLine?(tabId: string): string;
   length(tabId: string): number;
   markSaved(tabId: string): void;
+  /** The tab's file path changed (first save, Save As): relative images resolve again. */
+  pathChanged(tabId: string): void;
   snapshot(tabId: string): ScrollSnapshot | null;
   restore(tabId: string, snap: ScrollSnapshot): void;
 

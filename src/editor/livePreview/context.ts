@@ -1,4 +1,5 @@
 // Link and image path resolution, plus the host hooks the widgets call into.
+import { StateEffect } from "@codemirror/state";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { fileUrlToPath, resolveDocPath } from "../../state/logic";
 
@@ -9,6 +10,12 @@ export const previewContext: {
   baseDir: () => null,
   openLink: () => undefined,
 };
+
+/**
+ * The document was saved under another path, so relative images must be resolved again
+ * (BUGS.md PREV-7). Dispatched by `EditorEngine.pathChanged`.
+ */
+export const documentPathChanged = StateEffect.define<null>();
 
 function decodePath(path: string): string {
   try {
