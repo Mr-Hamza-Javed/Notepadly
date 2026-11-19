@@ -376,4 +376,61 @@ describe("keyboard handling in the window", () => {
     document.querySelector(".cm-content")!.dispatchEvent(inside);
     expect(inside.defaultPrevented).toBe(false);
   });
+
+  // BUGS.md W3: rendered parts inside the editor showed "Refresh", "Back" and "Save as".
+  it("does not open the WebView context menu on rendered parts inside the editor", () => {
+    const content = document.querySelector(".cm-content")!;
+    const add = (html: string) => {
+      const holder = document.createElement("div");
+      holder.innerHTML = html;
+      return content.appendChild(holder.firstElementChild!);
+    };
+    const parts = [
+      add('<div contenteditable="false" class="table"><table><tbody><tr><td contenteditable="plaintext-only">cell</td></tr></tbody></table></div>'),
+      add('<span contenteditable="false" class="math"><span class="katex">x</span></span>'),
+      add('<div contenteditable="false" class="diagram"><svg><g><text>A</text></g></svg></div>'),
+      add('<span contenteditable="false" class="image"><img alt=""></span>'),
+      add('<span contenteditable="false"><input type="checkbox"></span>'),
+    ];
+    const rightClick = (target: Element) => {
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    try {
+      expect(rightClick(parts[0].querySelector("table")!), "table border").toBe(true);
+      expect(rightClick(parts[1].querySelector(".katex")!), "maths").toBe(true);
+      expect(rightClick(parts[2].querySelector("text")!), "diagram").toBe(true);
+      expect(rightClick(parts[3].querySelector("img")!), "image").toBe(true);
+      expect(rightClick(parts[4].querySelector("input")!), "checkbox").toBe(true);
+      // Text keeps the WebView's Cut / Copy / Paste menu: editor lines, cells and text boxes.
+      expect(rightClick(content), "editor text").toBe(false);
+      const input = document.body.appendChild(document.createElement("input"));
+      expect(rightClick(input), "text box").toBe(false);
+      input.remove();
+    } finally {
+      parts.forEach((part) => part.remove());
+    }
+  });
+
+  it("a real rendered table's border does not open the WebView context menu", async () => {
+    app.engine.insertText("| a | b |\n| - | - |\n| 1 | 2 |\n\ntext");
+    await settle(50);
+    const table = document.querySelector(".cm-content table");
+    expect(table).not.toBeNull();
+    const cell = table!.querySelector("td")!;
+    const onCell = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    cell.dispatchEvent(onCell);
+    // A cell is text (the table's own menu, if mounted, handles it).
+    expect(onCell.defaultPrevented).toBe(false);
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    table!.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("blocks the Refresh key, F5 with modifiers and Ctrl+R everywhere", () => {
+    for (const c of [chord("BrowserRefresh"), chord("F5", { ctrl: true }), chord("F5", { shift: true }), chord("r", { ctrl: true }), chord("R", { ctrl: true, shift: true })]) {
+      expect(isSuppressedDefault(c, true), JSON.stringify(c)).toBe(true);
+    }
+  });
 });
