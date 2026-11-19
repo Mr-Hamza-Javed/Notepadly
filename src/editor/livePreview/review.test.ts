@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { markdownSupport } from "../markdown";
 import { blockField, blockPreview } from "./block";
 import { inlinePreview } from "./inline";
+import { previewContext, resolveImageSrc } from "./context";
 import { MermaidWidget } from "./widgets";
 
 const theme = vi.hoisted(() => ({ dark: false }));
@@ -101,5 +102,34 @@ describe("table cells", () => {
     const focused = document.activeElement as HTMLElement;
     expect(focused.dataset.row).toBe("0");
     expect(view.dom.contains(focused)).toBe(true);
+  });
+});
+
+describe("image paths", () => {
+  it("PREV-3: an image on another computer's share is not loaded (it would send the user's credentials)", () => {
+    previewContext.baseDir = () => "C:\\notes";
+    for (const src of [
+      "\\\\evil\\share\\x.png",
+      "//evil/share/x.png",
+      "file://evil/share/x.png",
+      "%5C%5Cevil%5Cshare%5Cx.png",
+      "\\\\?\\UNC\\evil\\share\\x.png",
+      "\\\\.\\pipe\\x.png",
+    ]) {
+      expect(resolveImageSrc(src), src).toBe("");
+    }
+    // Local paths still work, including the long-path form.
+    expect(resolveImageSrc("\\\\?\\C:\\pics\\a.png")).toBe("\\\\?\\C:\\pics\\a.png");
+    expect(resolveImageSrc("img/a.png")).toBe("C:\\notes\\img\\a.png");
+    previewContext.baseDir = () => null;
+    expect(resolveImageSrc("\\\\evil\\share\\x.png")).toBe("");
+  });
+
+  it("PREV-3: a document on a share still shows images from the same server", () => {
+    previewContext.baseDir = () => "\\\\NAS\\docs";
+    expect(resolveImageSrc("img/a.png")).toBe("\\\\NAS\\docs\\img\\a.png");
+    expect(resolveImageSrc("\\\\nas\\pics\\b.png")).toBe("\\\\nas\\pics\\b.png");
+    expect(resolveImageSrc("\\\\other\\pics\\b.png")).toBe("");
+    previewContext.baseDir = () => null;
   });
 });
