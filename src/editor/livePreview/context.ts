@@ -8,11 +8,28 @@ export const previewContext: {
   openLink: (href: string) => void;
   /** False while the rest of the active tab's file is still to be loaded. */
   isFullyLoaded: () => boolean;
+  /** Whether an http(s) image may load in the active tab (Settings > Load remote images). */
+  remoteImageAllowed: (src: string) => boolean;
+  /** The user clicked a blocked remote image's placeholder. */
+  allowRemoteImage: (src: string) => void;
 } = {
   baseDir: () => null,
   openLink: () => undefined,
   isFullyLoaded: () => true,
+  remoteImageAllowed: () => true,
+  allowRemoteImage: () => undefined,
 };
+
+export const REMOTE_IMAGE_BLOCKED = "Remote image blocked \u2014 click to load";
+
+export function isRemoteImage(src: string): boolean {
+  return /^https?:/i.test(src.trim());
+}
+
+/** An http(s) image that must not load yet: it shows a placeholder instead. */
+export function remoteImageBlocked(src: string): boolean {
+  return isRemoteImage(src) && !previewContext.remoteImageAllowed(src.trim());
+}
 
 /**
  * The document was saved under another path, so relative images must be resolved again

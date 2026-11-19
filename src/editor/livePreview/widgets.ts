@@ -7,7 +7,17 @@ import { openBlockSource } from "./block";
 import { cachedMath, cachedMermaid, cachedMermaidError, renderMath, renderMermaid, type RenderedHtml } from "../lazy";
 import { findQueryOf } from "../find";
 import { cellText, joinRow, parseAlign, parseTable, type TableRowModel } from "../tableModel";
-import { documentPathChanged, isImagePath, parseSize, previewContext, resolveHref, resolveImageSrc, resolveWikiTarget } from "./context";
+import {
+  REMOTE_IMAGE_BLOCKED,
+  documentPathChanged,
+  isImagePath,
+  parseSize,
+  previewContext,
+  remoteImageBlocked,
+  resolveHref,
+  resolveImageSrc,
+  resolveWikiTarget,
+} from "./context";
 
 function element(tag: string, className: string, text?: string): HTMLElement {
   const el = document.createElement(tag);
@@ -47,6 +57,10 @@ function cellEmphasis(html: string): string {
 }
 
 function cellImage(src: string, alt: string, width?: number, height?: number): string {
+  if (remoteImageBlocked(src)) {
+    const label = alt ? ` title="${escapeHtml(alt)}"` : "";
+    return `<span class="cm-md-image-blocked" role="button" data-remote-src="${escapeHtml(src.trim())}"${label}>${REMOTE_IMAGE_BLOCKED}</span>`;
+  }
   const resolved = resolveImageSrc(src.trim());
   const size = `${width ? ` width="${width}"` : ""}${height ? ` height="${height}"` : ""}`;
   const source = resolved ? ` src="${escapeHtml(resolved)}"` : "";
@@ -162,12 +176,22 @@ function bindBlockSource(view: EditorView, host: HTMLElement, offset: number, wi
 export interface Nest {
   classes: string;
   indent: number;
+  /**
+   * The block starts on its list item's marker line (`- $$`): the bullet or number to show
+   * in the indent, and the column it sits at.
+   */
+  marker?: { text: string; at: number };
 }
 
 export const TOP_LEVEL: Nest = { classes: "", indent: 0 };
 
 function sameNest(a: Nest, b: Nest): boolean {
-  return a.classes === b.classes && a.indent === b.indent;
+  return (
+    a.classes === b.classes &&
+    a.indent === b.indent &&
+    a.marker?.text === b.marker?.text &&
+    a.marker?.at === b.marker?.at
+  );
 }
 
 function applyNest(dom: HTMLElement, nest: Nest): void {
@@ -175,7 +199,21 @@ function applyNest(dom: HTMLElement, nest: Nest): void {
     if (name.startsWith("cm-md-q") || name.startsWith("cm-md-callout") || name === "cm-md-nested") dom.classList.remove(name);
   }
   if (nest.classes) dom.classList.add("cm-md-nested", ...nest.classes.split(" "));
-  dom.style.marginInlineStart = nest.indent ? `${nest.indent}ch` : "";
+  const { marker } = nest;
+  // The marker is drawn by CSS (::before), so it survives the widget replacing its content.
+  dom.classList.toggle("cm-md-marked", !!marker);
+  if (marker) {
+    dom.dataset.marker = marker.text;
+    dom.style.setProperty("--nl-marker-at", `${marker.at}ch`);
+    dom.style.marginInlineStart = "";
+    // Padding, not margin: the bullet sits inside the box, which may clip what overflows.
+    dom.style.paddingInlineStart = `${nest.indent}ch`;
+  } else {
+    delete dom.dataset.marker;
+    dom.style.removeProperty("--nl-marker-at");
+    dom.style.paddingInlineStart = "";
+    dom.style.marginInlineStart = nest.indent ? `${nest.indent}ch` : "";
+  }
 }
 
 abstract class SourceWidget extends WidgetType {
@@ -283,6 +321,8 @@ class TableController {
   private active: CellRef | null = null;
   private pendingFocus: (CellRef & { atEnd: boolean }) | null = null;
   private rebuilding = false;
+  /** An IME composition is running in a cell: its text is written once, when it ends. */
+  private composing = false;
   /** Parsed rows of `source`, parsed once per text (it was parsed ~5 times per keystroke). */
   private parsed: TableRowModel[] = [];
   /** Cells by source row and column; the delimiter row (1) has none. */
@@ -301,6 +341,14 @@ class TableController {
     this.wrap.addEventListener("focusin", (event) => this.onFocusIn(event));
     this.wrap.addEventListener("focusout", (event) => this.onFocusOut(event));
     this.wrap.addEventListener("input", (event) => this.onInput(event));
+    this.wrap.addEventListener("compositionstart", () => {
+      this.composing = true;
+    });
+    this.wrap.addEventListener("compositionend", (event) => {
+      this.composing = false;
+      // Chrome sends the last input before compositionend: write the committed text now.
+      this.onInput(event);
+    });
     this.wrap.addEventListener("keydown", (event) => this.onKeyDown(event));
     liveTables.add(this);
   }
@@ -340,6 +388,8 @@ class TableController {
     const ref = this.refOf(cell);
     const text = cellText(rows[ref.row], ref.col);
     if (this.isActive(ref)) {
+      // The IME owns the cell's DOM until the composition ends; touching it would cancel it.
+      if (this.composing) return;
       // Markdown trims cells, so compare trimmed text or a trailing space would be undone.
       if (escapeCellText(cell.textContent ?? "").trim() !== text) {
         cell.textContent = text;
@@ -623,6 +673,13 @@ class TableController {
 
   private onMouseDown(event: MouseEvent): void {
     const target = event.target as HTMLElement;
+    const blocked = target.closest<HTMLElement>(".cm-md-image-blocked");
+    if (blocked) {
+      // Loads the image instead of starting to edit the cell.
+      event.preventDefault();
+      previewContext.allowRemoteImage(blocked.dataset.remoteSrc ?? "");
+      return;
+    }
     const anchor = target.closest<HTMLElement>("a[data-href]");
     if (anchor && event.ctrlKey) {
       event.preventDefault();
@@ -670,6 +727,9 @@ class TableController {
   private onInput(event: Event): void {
     const cell = (event.target as HTMLElement).closest<HTMLElement>("th,td");
     if (!cell) return;
+    // Text still being composed (pinyin, kana) is not written: each step would be an undo
+    // step of its own, and a redraw of the cell meanwhile would cancel the composition.
+    if (this.composing || (event as InputEvent).isComposing) return;
     this.writeCell(this.refOf(cell), escapeCellText(cell.textContent ?? "").trim());
     if (this.isActive(this.refOf(cell))) this.syncSelection();
   }
@@ -1136,6 +1196,8 @@ const imageHeights = new Map<string, number>();
 export class ImageWidget extends WidgetType {
   /** The URL the image loads from; it changes when the document moves (BUGS.md PREV-7). */
   readonly resolved: string;
+  /** A remote image not allowed to load yet (Settings > Load remote images). */
+  readonly blocked: boolean;
   constructor(
     readonly src: string,
     readonly alt: string,
@@ -1143,21 +1205,25 @@ export class ImageWidget extends WidgetType {
     readonly height?: number,
   ) {
     super();
-    this.resolved = resolveImageSrc(src);
+    this.blocked = remoteImageBlocked(src);
+    this.resolved = this.blocked ? "" : resolveImageSrc(src);
   }
   override eq(other: ImageWidget): boolean {
     return (
       other.src === this.src &&
       other.resolved === this.resolved &&
+      other.blocked === this.blocked &&
       other.alt === this.alt &&
       other.width === this.width &&
       other.height === this.height
     );
   }
   override get estimatedHeight(): number {
+    if (this.blocked) return 30;
     return this.height ?? imageHeights.get(this.src) ?? 200;
   }
   toDOM(view: EditorView): HTMLElement {
+    if (this.blocked) return this.placeholder(view);
     const image = document.createElement("img");
     image.className = "cm-md-image";
     image.alt = this.alt;
@@ -1184,6 +1250,23 @@ export class ImageWidget extends WidgetType {
       view.focus();
     });
     return image;
+  }
+  private placeholder(view: EditorView): HTMLElement {
+    const box = element("span", "cm-md-image-blocked", REMOTE_IMAGE_BLOCKED);
+    box.setAttribute("role", "button");
+    box.dataset.remoteSrc = this.src.trim();
+    if (this.alt) box.title = this.alt;
+    box.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      // Double-click shows the markdown, as for a loaded image.
+      if (event.detail >= 2) {
+        view.dispatch({ selection: { anchor: view.posAtDOM(box) + 2 } });
+        view.focus();
+        return;
+      }
+      previewContext.allowRemoteImage(this.src.trim());
+    });
+    return box;
   }
   override ignoreEvent(): boolean {
     return true;

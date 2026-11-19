@@ -179,6 +179,29 @@
 .notepadly-cm .cm-md-nested.cm-md-q3 { padding-inline-start: 48px; background-size: 48px 100%; }
 .notepadly-cm .cm-md-nested.cm-md-q4 { padding-inline-start: 64px; background-size: 64px 100%; }
 .notepadly-cm .cm-md-nested.cm-md-quote:dir(rtl) { background-position: right top; }
+/* A remote image that is not allowed to load yet (Settings > Load remote images). */
+.notepadly-cm .cm-md-image-blocked {
+  display: inline-block;
+  padding: 4px 10px;
+  border: 1px dashed currentColor;
+  border-radius: 4px;
+  opacity: 0.7;
+  font-size: 0.9em;
+  cursor: pointer;
+  user-select: none;
+}
+.notepadly-cm .cm-md-image-blocked:hover { opacity: 1; }
+/* A block on its list item's marker line (`- $$`) shows the bullet in its indent. */
+.notepadly-cm .cm-md-marked { position: relative; }
+.notepadly-cm .cm-md-marked::before {
+  content: attr(data-marker);
+  position: absolute;
+  inset-inline-start: var(--nl-marker-at, 0);
+  top: 0.35em;
+  min-width: 0.7em;
+  text-align: center;
+  font-weight: 700;
+}
 
 /* Callouts */
 .notepadly-cm .cm-md-callout {

@@ -134,6 +134,28 @@ function nestOf(state: EditorState, node: SyntaxNodeRef, prefix: string): Nest {
   return { classes, indent };
 }
 
+const MARKER_LINE = /^([ \t]*)([-+*]|\d{1,9}[.)])[ \t]+$/;
+const MARKED_BLOCKS = new Set(["Table", "HorizontalRule", "BlockMath", "FencedCode"]);
+
+/**
+ * The bullet or number for a block written on its list item's marker line, outside quotes
+ * (`- $$`, `1. | a |`). Undefined for anything else, such as a task item, which stays source.
+ */
+function markerOf(node: SyntaxNodeRef, prefix: string): Nest["marker"] {
+  const match = MARKER_LINE.exec(prefix);
+  const item = node.node.parent;
+  if (!match || !MARKED_BLOCKS.has(node.name) || item?.name !== "ListItem" || item.firstChild?.name !== "ListMark") {
+    return undefined;
+  }
+  const at = match[1].replace(/\t/g, "    ").length;
+  if (/\d/.test(match[2])) return { text: match[2], at };
+  let depth = 0;
+  for (let parent = item.parent; parent; parent = parent.parent) {
+    if (parent.name === "BulletList" || parent.name === "OrderedList") depth++;
+  }
+  return { text: ["•", "◦", "▪"][(depth - 1) % 3], at };
+}
+
 function collectBlocks(state: EditorState, span: Span, toggled: readonly number[]): Range<Decoration>[] {
   const found: Range<Decoration>[] = [];
   const { doc } = state;
@@ -145,12 +167,17 @@ function collectBlocks(state: EditorState, span: Span, toggled: readonly number[
       if (CONTAINERS.has(node.name)) return true;
       const startLine = doc.lineAt(node.from);
       const endLine = doc.lineAt(node.to);
-      // Inside a list or quote, only blocks that start their line (after `> ` and indentation)
-      // are rendered: replacing the line of `- $$` would hide the list marker.
+      // Inside a list or quote, blocks that start their line (after `> ` and indentation) are
+      // rendered. One on its list item's marker line (`- $$`) shows the marker beside it.
       const prefix = doc.sliceString(startLine.from, node.from);
       const nested = prefix.length > 0;
-      if (nested && !/^[ \t>]*$/.test(prefix) && node.name !== "Blockquote") return false;
-      const nest = nested ? nestOf(state, node, prefix) : TOP_LEVEL;
+      let marker: Nest["marker"];
+      if (nested && !/^[ \t>]*$/.test(prefix) && node.name !== "Blockquote") {
+        marker = markerOf(node, prefix);
+        if (!marker) return false;
+      }
+      let nest = nested ? nestOf(state, node, prefix) : TOP_LEVEL;
+      if (marker) nest = { ...nest, marker };
       const replace = (widget: Decoration["spec"]["widget"], reveal: RevealMode = "explicit") =>
         found.push(Decoration.replace({ widget, block: true, reveal }).range(startLine.from, endLine.to));
 

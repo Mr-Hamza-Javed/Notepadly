@@ -267,6 +267,29 @@ describe("drafts", () => {
     expect(app.tabByName("other.txt").externalChange).toBe("modified");
   });
 
+  it("M12: an unfolded callout stays unfolded after a restart and after a reload", async () => {
+    const NOTE = "C:\\data\\note.md";
+    const text = "intro\n\n> [!note]- Title\n> hidden body\n\nafter\n";
+    const callout = text.indexOf("> [!note]");
+    backend.write(NOTE, text);
+    await app.actions.openPaths([NOTE]);
+    const id = app.tab().id;
+    expect(app.tab().mode).toBe("formatted");
+    app.engine.restore(id, { anchor: 0, head: 0, scrollTop: 0, folds: [callout] });
+    expect(app.engine.snapshot(id)?.folds).toEqual([callout]);
+    // A change on disk reloads the clean tab: the fold state stays.
+    backend.write(NOTE, text + "more\n");
+    await app.loader.pollExternalChanges();
+    await waitFor(() => app.text(id).endsWith("more\n"));
+    expect(app.engine.snapshot(id)?.folds).toEqual([callout]);
+    await app.actions.closeWindow();
+
+    app = await bootApp({ keepDisk: true });
+    const restored = app.tabByName("note.md");
+    await app.actions.activate(restored.id);
+    expect(app.engine.snapshot(restored.id)?.folds).toEqual([callout]);
+  });
+
   it("falls back to the file on disk, clean, when a tab's draft has gone missing", async () => {
     backend.write(OTHER, "disk v1");
     await app.actions.openPaths([OTHER]);

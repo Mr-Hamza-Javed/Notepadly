@@ -38,6 +38,7 @@ export const G = {
   spell: 0xf87b,
   autocorrect: 0xeb7e,
   wrapAround: 0xe8ee,
+  image: 0xeb9f,
 } as const;
 
 export const Glyph = memo(function Glyph({ cp, size, className }: { cp: number; size?: number; className?: string }) {

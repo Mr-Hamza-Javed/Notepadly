@@ -157,6 +157,12 @@ const STARTUP: { value: SettingsModel["startup"]; label: string }[] = [
   { value: "new", label: "Start new session and discard unsaved changes" },
 ];
 
+const REMOTE_IMAGES: { value: SettingsModel["remoteImages"]; label: string }[] = [
+  { value: "always", label: "Always" },
+  { value: "ask", label: "Ask per document" },
+  { value: "never", label: "Never" },
+];
+
 const FontCard = memo(function FontCard() {
   const family = useApp((s) => s.settings.fontFamily);
   const style = useApp((s) => s.settings.fontStyle);
@@ -374,6 +380,20 @@ export default function Settings() {
               value={s.autocorrect}
               onChange={(v) => set("autocorrect", v)}
             />
+
+            <h2 className="settings-label">Privacy</h2>
+            <Expander
+              icon={<Icon cp={G.image} />}
+              title="Load remote images"
+              subtitle="Images from the web can tell the sender when and where a document was opened"
+            >
+              <Radios
+                label="Load remote images"
+                value={s.remoteImages}
+                options={REMOTE_IMAGES}
+                onChange={(v) => set("remoteImages", v)}
+              />
+            </Expander>
           </div>
           <About />
         </div>

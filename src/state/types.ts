@@ -24,7 +24,15 @@ export interface Settings {
   autocorrect: boolean;
   statusBar: boolean;
   zoom: number;
+  /**
+   * Images from the web (http/https) can tell a document's sender when and where it was
+   * read: "always" loads them, "ask" shows a placeholder that loads the document's remote
+   * images on a click, "never" shows one that loads only the clicked image.
+   */
+  remoteImages: RemoteImages;
 }
+
+export type RemoteImages = "always" | "ask" | "never";
 
 export interface TabMeta {
   id: string;

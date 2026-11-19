@@ -19,6 +19,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autocorrect: true,
   statusBar: true,
   zoom: 100,
+  remoteImages: "ask",
 };
 
 export const DEFAULT_PAGE_SETUP: PageSetup = {
@@ -61,6 +62,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     autocorrect: bool(r.autocorrect, d.autocorrect),
     statusBar: bool(r.statusBar, d.statusBar),
     zoom: clampZoom(num(r.zoom, d.zoom)),
+    remoteImages: oneOf(r.remoteImages, ["always", "ask", "never"] as const, d.remoteImages),
   };
 }
 
@@ -506,9 +508,11 @@ function parseStamp(raw: unknown): FileStamp | null {
 
 function parseSnap(raw: unknown): ScrollSnapshot | null {
   const r = raw as ScrollSnapshot | null;
-  return r && typeof r.anchor === "number" && typeof r.head === "number" && typeof r.scrollTop === "number"
-    ? { anchor: r.anchor, head: r.head, scrollTop: r.scrollTop }
-    : null;
+  if (!r || typeof r.anchor !== "number" || typeof r.head !== "number" || typeof r.scrollTop !== "number") return null;
+  const snap: ScrollSnapshot = { anchor: r.anchor, head: r.head, scrollTop: r.scrollTop };
+  const folds = Array.isArray(r.folds) ? r.folds.filter((pos) => Number.isInteger(pos) && pos >= 0) : [];
+  if (folds.length) snap.folds = folds.slice(0, 1000);
+  return snap;
 }
 
 export function parseSession(raw: string | null): SessionFile | null {

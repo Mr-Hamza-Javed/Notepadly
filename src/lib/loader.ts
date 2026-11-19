@@ -1,7 +1,7 @@
 // File I/O rules 2, 3, 6, 7, 8 and 9 of the spec: chunked loading, partial saves,
 // external change polling, background scans, drafts, session and hibernation.
 import { engine } from "../editor";
-import type { ScrollSnapshot } from "../editor/api";
+import type { CarriedDocState, ScrollSnapshot } from "../editor/api";
 import { ipc, type Encoding, type Eol, type FileStamp } from "./ipc";
 import {
   decideExternal,
@@ -377,6 +377,7 @@ function restoreView(id: string, snap: ScrollSnapshot | null): void {
   if (!snap) return;
   const length = engine.length(id);
   engine.restore(id, {
+    ...snap,
     anchor: Math.min(snap.anchor, length),
     head: Math.min(snap.head, length),
     scrollTop: snap.scrollTop,
@@ -762,6 +763,8 @@ export interface TabHandoff {
   sleep?: { stamp: FileStamp | null; encoding: Encoding } | null;
   /** Characters read from the file into the editor (L5). */
   diskChars?: number | null;
+  /** Undo history (when not too big) and callout folds (F2). */
+  editor?: CarriedDocState | null;
 }
 
 /** Read together with the tab's TabMeta, in the same tick, so offsets match the text. */
@@ -780,6 +783,7 @@ export function handOff(id: string): TabHandoff {
     unreadable: rt.unreadable,
     sleep: rt.sleep,
     diskChars: rt.diskChars,
+    editor: engine.carryState?.(id) ?? null,
   };
 }
 
@@ -799,12 +803,16 @@ export async function takeOver(tab: TabMeta, handoff: TabHandoff, fromId: string
   rt.unreadable = !!handoff.unreadable;
   rt.sleep = handoff.sleep ?? null;
   rt.diskChars = handoff.diskChars ?? null;
+  const carried = handoff.editor ?? null;
   if (handoff.text !== null) {
-    engine.createDoc(tab.id, handoff.text, tab.mode);
+    // With its undo history, the editor knows the saved point and so whether the tab is dirty.
+    const withHistory =
+      !!carried && !!engine.adoptDoc && engine.adoptDoc(tab.id, handoff.text, tab.mode, carried);
+    if (!withHistory) engine.createDoc(tab.id, handoff.text, tab.mode);
     restoreView(tab.id, handoff.snap);
     rt.snap = null;
-    // The new editor state starts clean; the tab is not.
-    rt.forceDirty = handoff.forceDirty || tab.dirty;
+    // A new editor state without history starts clean; the tab is not.
+    rt.forceDirty = handoff.forceDirty || (tab.dirty && !withHistory);
     rt.cleanDelete = handoff.cleanDelete ? rt.editSeq : null;
     if (!tab.fullyLoaded) {
       startScan(tab.id);
@@ -820,6 +828,9 @@ export async function takeOver(tab: TabMeta, handoff: TabHandoff, fromId: string
     }
     rt.hasDraft = true;
     rt.draftMeta = handoff.draftMeta;
+  } else if (carried && rt.sleep) {
+    // Hibernated: its history waits in the engine for the wake (M12).
+    engine.adoptDoc?.(tab.id, null, tab.mode, carried);
   }
   scheduleSessionWrite();
 }

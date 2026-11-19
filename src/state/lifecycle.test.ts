@@ -582,6 +582,60 @@ describe("STATE-7: a crash right after a move", () => {
   });
 });
 
+describe("F2: undo history moves with a dragged tab", () => {
+  it("undoes edits made in the first window, back to clean at the saved point", async () => {
+    const { a, b } = await twoWindows();
+    app = a;
+    backend.write("C:\\docs\\moved.txt", "saved text");
+    await a.actions.openPaths(["C:\\docs\\moved.txt"]);
+    const moved = a.tab().id;
+    a.type(" plus edit");
+    expect(a.tab().dirty).toBe(true);
+    await a.actions.newTab();
+    backend.dropTarget = { label: "window-1", x: 0, y: 0 };
+    await a.actions.moveTabOut(moved);
+    const copy = b.tabByName("moved.txt");
+    expect(copy).toBeDefined();
+    await b.actions.activate(copy.id);
+    expect(b.text(copy.id)).toBe("saved text plus edit");
+    expect(b.tab(copy.id).dirty).toBe(true);
+    b.engine.undo();
+    expect(b.text(copy.id)).toBe("saved text");
+    expect(b.tab(copy.id).dirty).toBe(false);
+    b.engine.redo();
+    expect(b.text(copy.id)).toBe("saved text plus edit");
+    expect(b.tab(copy.id).dirty).toBe(true);
+    // Window-1 keeps running into the next test: no late draft writes from it.
+    b.loader.setPersistence(false);
+  });
+
+  it("keeps the history of a hibernated tab for when it wakes in the other window", async () => {
+    const { a, b } = await twoWindows();
+    app = a;
+    const big = "line of a big file\n".repeat(80_000);
+    backend.write("C:\\docs\\big.log", big);
+    await a.actions.openPaths(["C:\\docs\\big.log"]);
+    const moved = a.tab().id;
+    await a.actions.ensureFullyLoaded(moved);
+    a.type("x");
+    await a.actions.save();
+    await a.actions.newTab();
+    a.loader.hibernateSweep(Date.now() + 61_000);
+    expect(a.tab(moved).hibernated).toBe(true);
+    backend.dropTarget = { label: "window-1", x: 0, y: 0 };
+    await a.actions.moveTabOut(moved);
+    const copy = b.tabByName("big.log");
+    await b.actions.activate(copy.id);
+    await b.actions.ensureFullyLoaded(copy.id);
+    expect(b.text(copy.id)).toBe(big + "x");
+    b.engine.undo();
+    expect(b.text(copy.id)).toBe(big);
+    expect(b.tab(copy.id).dirty).toBe(true);
+    // Window-1 keeps running into the next test: no late draft writes from it.
+    b.loader.setPersistence(false);
+  });
+});
+
 describe("STATE-8: closing two windows at once", () => {
   async function twoDirtyWindows() {
     const { a, b } = await twoWindows();
