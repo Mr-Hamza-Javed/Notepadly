@@ -149,7 +149,17 @@ function firstFrom(state: EditorState, query: SearchQuery, from: number, to: num
   return null;
 }
 
-function lastBefore(state: EditorState, query: SearchQuery, from: number, to: number): Match | null {
+/** Like `firstFrom`, yielding `null` after each scanned chunk. */
+function* firstFromSliced(state: EditorState, query: SearchQuery, from: number, to: number): Generator<null, Match | null> {
+  for (const match of scanMatches(state, query, from, to)) {
+    if (match) return match;
+    yield null;
+  }
+  return null;
+}
+
+/** The last match ending at or before `to`, yielding `null` after each scanned chunk. */
+function* lastBeforeSliced(state: EditorState, query: SearchQuery, from: number, to: number): Generator<null, Match | null> {
   // Search backwards in growing windows so "previous" stays cheap near the cursor.
   let windowSize = 4096;
   let end = to;
@@ -157,7 +167,10 @@ function lastBefore(state: EditorState, query: SearchQuery, from: number, to: nu
     const start = Math.max(from, end - windowSize);
     let last: Match | null = null;
     for (const match of scanMatches(state, query, start, to)) {
-      if (!match) continue;
+      if (!match) {
+        yield null;
+        continue;
+      }
       if (match.to > to) break;
       last = match;
     }
@@ -166,6 +179,33 @@ function lastBefore(state: EditorState, query: SearchQuery, from: number, to: nu
     end = start;
     windowSize *= 4;
   }
+}
+
+interface Found {
+  match: Match;
+  wrapped: boolean;
+}
+
+/** The next (dir 1) or previous match from the selection, wrapping if asked; sliced like `scanMatches`. */
+function* stepSearch(
+  state: EditorState,
+  query: SearchQuery,
+  dir: 1 | -1,
+  wrap: boolean,
+): Generator<null, Found | null> {
+  const length = state.doc.length;
+  const main = state.selection.main;
+  let match: Match | null;
+  if (dir === 1) {
+    match = yield* firstFromSliced(state, query, main.to, length);
+    if (match) return { match, wrapped: false };
+    if (wrap) match = yield* firstFromSliced(state, query, 0, main.to);
+  } else {
+    match = yield* lastBeforeSliced(state, query, 0, main.from);
+    if (match) return { match, wrapped: false };
+    if (wrap) match = yield* lastBeforeSliced(state, query, main.from, length);
+  }
+  return match ? { match, wrapped: true } : null;
 }
 
 /** The replacement text: as typed, or with `$&`, `$1`… filled in for a regular expression. */
@@ -204,6 +244,24 @@ interface Session {
   pendingSelect: { start: number; selection: EditorState["selection"] } | null;
 }
 
+interface StepJob {
+  search: Generator<null, Found | null>;
+  session: Session;
+  /** The step is dropped when the text or the selection changes meanwhile. */
+  doc: Text;
+  selection: EditorState["selection"];
+  dir: 1 | -1;
+  known: number;
+}
+
+interface ReplaceJob {
+  resolve: (count: number) => void;
+  timer: number;
+  doc: Text;
+  scan: Generator<Match | null>;
+  changes: { from: number; to: number; insert: string }[];
+}
+
 const NONE: FindResult = { total: 0, current: 0 };
 /** `FindController.timer` while a slice runs in a later task. */
 const BACKGROUND = -1;
@@ -212,6 +270,10 @@ const BACKGROUND = -1;
 export class FindController {
   private session: Session | null = null;
   private timer = 0;
+  /** A Next/Previous still looking for its match in slices. */
+  private stepJob: StepJob | null = null;
+  private stepTimer = 0;
+  private replaceJob: ReplaceJob | null = null;
   private listener: ((result: FindResult) => void) | null = null;
 
   constructor(private readonly getView: () => EditorView | null) {}
@@ -343,6 +405,7 @@ export class FindController {
     }
     clearTimeout(this.timer);
     this.timer = 0;
+    this.cancelStep();
     const query = new SearchQuery({
       search: options.search,
       replace: options.replace,
@@ -384,30 +447,70 @@ export class FindController {
     if (!view || !session) return NONE;
     if (!session.query.valid) return { total: 0, current: 0, invalid: true };
     session.pendingSelect = null;
+    this.cancelStep();
     const { state } = view;
-    const { query, options } = session;
-    const length = state.doc.length;
-    const main = state.selection.main;
-    let match: Match | null;
-    let wrapped = false;
-    if (dir === 1) {
-      match = firstFrom(state, query, main.to, length);
-      if (!match && options.wrap) {
-        match = firstFrom(state, query, 0, main.to);
-        wrapped = !!match;
-      }
-    } else {
-      match = lastBefore(state, query, 0, main.from);
-      if (!match && options.wrap) {
-        match = lastBefore(state, query, main.from, length);
-        wrapped = !!match;
-      }
-    }
-    if (!match) return this.result(view, session);
-
     // The running index only holds while the selection is still the match it counted.
     const before = this.result(view, session);
     const known = before.current > 0 && session.count?.doc === state.doc ? before.current : 0;
+    const search = stepSearch(state, session.query, dir, session.options.wrap);
+    // Text near the cursor is searched at once; a match further away is looked for in
+    // slices, so F3 in a big file with few matches never blocks typing (BUGS.md M14).
+    let chunks = 0;
+    for (;;) {
+      const next = search.next();
+      if (next.done) {
+        if (!next.value) return this.result(view, session);
+        return this.finishStep(view, session, dir, next.value, known);
+      }
+      if (++chunks * SCAN_CHUNK >= FIRST_MATCH_SYNC) break;
+    }
+    const job: StepJob = { search, session, doc: state.doc, selection: state.selection, dir, known };
+    this.stepJob = job;
+    this.runStep(view, job);
+    return { ...this.result(view, session), pending: true };
+  }
+
+  /** Continues a step that `step` left pending, for at most COUNT_SLICE_MS per task. */
+  private runStep(view: EditorView, job: StepJob): void {
+    this.stepTimer = window.setTimeout(() => {
+      this.stepTimer = 0;
+      if (this.stepJob !== job) return;
+      // The text, the selection or the find session changed: this step means nothing now.
+      if (
+        this.session !== job.session ||
+        this.getView() !== view ||
+        view.state.doc !== job.doc ||
+        !view.state.selection.eq(job.selection)
+      ) {
+        this.stepJob = null;
+        return;
+      }
+      const deadline = performance.now() + COUNT_SLICE_MS;
+      for (;;) {
+        const next = job.search.next();
+        if (next.done) {
+          this.stepJob = null;
+          const result = next.value
+            ? this.finishStep(view, job.session, job.dir, next.value, job.known)
+            : this.result(view, job.session);
+          if (this.session === job.session) this.listener?.(result);
+          return;
+        }
+        if (performance.now() >= deadline) break;
+      }
+      this.runStep(view, job);
+    }, 0);
+  }
+
+  private cancelStep(): void {
+    clearTimeout(this.stepTimer);
+    this.stepTimer = 0;
+    this.stepJob = null;
+  }
+
+  /** Selects a found match and works out its index. */
+  private finishStep(view: EditorView, session: Session, dir: 1 | -1, found: Found, known: number): FindResult {
+    const { match, wrapped } = found;
     this.select(view, match);
     const after = this.result(view, session);
     let current = after.current;
@@ -444,21 +547,75 @@ export class FindController {
     return this.step(1);
   }
 
-  replaceAll(): number {
+  /**
+   * Replaces every match. The matches are collected in slices of COUNT_SLICE_MS, so a big
+   * document never blocks the UI, then replaced in one transaction (one undo step). Resolves
+   * with the number replaced; 0 when cancelled (`cancelReplaceAll`) or when the session ended.
+   */
+  replaceAll(): Promise<number> {
     const view = this.getView();
     const session = this.session;
-    if (!view || !session || !session.query.valid) return 0;
-    const { state } = view;
-    const changes: { from: number; to: number; insert: string }[] = [];
-    for (const match of scanMatches(state, session.query, 0, state.doc.length)) {
-      if (match) changes.push({ from: match.from, to: match.to, insert: replacementFor(session.options, match) });
-    }
-    if (changes.length) view.dispatch({ changes, userEvent: "input.replace.all" });
-    session.count = null;
-    return changes.length;
+    this.cancelReplaceAll();
+    if (!view || !session || !session.query.valid) return Promise.resolve(0);
+    return new Promise<number>((resolve) => {
+      const job: ReplaceJob = {
+        resolve,
+        timer: 0,
+        doc: view.state.doc,
+        scan: scanMatches(view.state, session.query, 0, view.state.doc.length),
+        changes: [],
+      };
+      this.replaceJob = job;
+      const finish = (count: number) => {
+        if (this.replaceJob === job) this.replaceJob = null;
+        resolve(count);
+      };
+      const run = (sync: boolean) => {
+        job.timer = 0;
+        if (this.replaceJob !== job) return;
+        if (this.session !== session || this.getView() !== view) return finish(0);
+        if (view.state.doc !== job.doc) {
+          // An edit (or a chunk of the file loaded) while collecting: the offsets are stale.
+          job.doc = view.state.doc;
+          job.scan = scanMatches(view.state, session.query, 0, job.doc.length);
+          job.changes = [];
+        }
+        const deadline = performance.now() + COUNT_SLICE_MS;
+        let chunks = 0;
+        for (;;) {
+          const step = job.scan.next();
+          if (step.done) {
+            const { changes } = job;
+            if (changes.length) view.dispatch({ changes, userEvent: "input.replace.all" });
+            session.count = null;
+            return finish(changes.length);
+          }
+          const match = step.value;
+          if (match) {
+            job.changes.push({ from: match.from, to: match.to, insert: replacementFor(session.options, match) });
+            continue;
+          }
+          // A small document is done at once; a big one goes on in a later task.
+          if (sync ? ++chunks * SCAN_CHUNK >= FIRST_MATCH_SYNC : performance.now() >= deadline) break;
+        }
+        job.timer = window.setTimeout(() => run(false), 0);
+      };
+      run(true);
+    });
+  }
+
+  /** Stops a running Replace all without changing the text; it resolves with 0. */
+  cancelReplaceAll(): void {
+    const job = this.replaceJob;
+    if (!job) return;
+    this.replaceJob = null;
+    clearTimeout(job.timer);
+    job.resolve(0);
   }
 
   clear(): void {
+    this.cancelStep();
+    this.cancelReplaceAll();
     clearTimeout(this.timer);
     this.timer = 0;
     this.session = null;

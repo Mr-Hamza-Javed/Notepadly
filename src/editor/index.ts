@@ -881,8 +881,12 @@ class Engine implements EditorEngine {
     return this.finder.replaceCurrent();
   }
 
-  replaceAll(): number {
+  replaceAll(): Promise<number> {
     return this.finder.replaceAll();
+  }
+
+  cancelReplaceAll(): void {
+    this.finder.cancelReplaceAll();
   }
 
   clearFind(): void {

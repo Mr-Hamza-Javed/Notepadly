@@ -94,11 +94,11 @@ describe("find", () => {
     expect(finder.prev()).toEqual({ total: FIND_COUNT_LIMIT, current: 0 });
   });
 
-  it("does nothing without an editor", () => {
+  it("does nothing without an editor", async () => {
     const finder = new FindController(() => null);
     expect(finder.find(query("x"))).toEqual({ total: 0, current: 0 });
     expect(finder.next()).toEqual({ total: 0, current: 0 });
-    expect(finder.replaceAll()).toBe(0);
+    expect(await finder.replaceAll()).toBe(0);
   });
 });
 
@@ -187,33 +187,33 @@ describe("replace", () => {
     expect(view.state.doc.toString()).toBe("$& \\n $1");
   });
 
-  it("replaces every match, returns the count, and undoes in one step", () => {
+  it("replaces every match, returns the count, and undoes in one step", async () => {
     const { view, finder } = setup("a-b-c-d");
     finder.find(query("-", { replace: " — " }));
-    expect(finder.replaceAll()).toBe(3);
+    expect(await finder.replaceAll()).toBe(3);
     expect(view.state.doc.toString()).toBe("a — b — c — d");
     undo(view);
     expect(view.state.doc.toString()).toBe("a-b-c-d");
   });
 
-  it("can replace with an empty string to delete matches", () => {
+  it("can replace with an empty string to delete matches", async () => {
     const { view, finder } = setup("x,y,,z");
     finder.find(query(","));
-    expect(finder.replaceAll()).toBe(3);
+    expect(await finder.replaceAll()).toBe(3);
     expect(view.state.doc.toString()).toBe("xyz");
   });
 
-  it("does not loop when the replacement contains the search text", () => {
+  it("does not loop when the replacement contains the search text", async () => {
     const { view, finder } = setup("a a");
     finder.find(query("a", { replace: "aa" }));
-    expect(finder.replaceAll()).toBe(2);
+    expect(await finder.replaceAll()).toBe(2);
     expect(view.state.doc.toString()).toBe("aa aa");
   });
 
-  it("replaces all matches even beyond the counting limit", () => {
+  it("replaces all matches even beyond the counting limit", async () => {
     const { view, finder } = setup("b".repeat(FIND_COUNT_LIMIT + 5));
     finder.find(query("b", { replace: "c" }));
-    expect(finder.replaceAll()).toBe(FIND_COUNT_LIMIT + 5);
+    expect(await finder.replaceAll()).toBe(FIND_COUNT_LIMIT + 5);
     expect(view.state.doc.toString()).toBe("c".repeat(FIND_COUNT_LIMIT + 5));
   });
 
@@ -226,12 +226,12 @@ describe("replace", () => {
 });
 
 describe("clearing", () => {
-  it("forgets the session so Next and Replace all do nothing", () => {
+  it("forgets the session so Next and Replace all do nothing", async () => {
     const { view, finder } = setup("x x");
     finder.find(query("x", { replace: "y" }));
     finder.clear();
     expect(finder.next()).toEqual({ total: 0, current: 0 });
-    expect(finder.replaceAll()).toBe(0);
+    expect(await finder.replaceAll()).toBe(0);
     expect(view.state.doc.toString()).toBe("x x");
   });
 });
@@ -243,11 +243,11 @@ describe("whole word and regular expressions", () => {
     expect(finder.find(query("cat", { wholeWord: true })).total).toBe(2);
   });
 
-  it("searches with a regular expression and fills groups into the replacement", () => {
+  it("searches with a regular expression and fills groups into the replacement", async () => {
     const { view, finder } = setup("a1 b22 c333");
     expect(finder.find(query("\\d+", { regexp: true }))).toEqual({ total: 3, current: 1 });
     finder.find(query("([a-z])(\\d+)", { regexp: true, replace: "$2$1[$&]$$" }));
-    expect(finder.replaceAll()).toBe(3);
+    expect(await finder.replaceAll()).toBe(3);
     expect(view.state.doc.toString()).toBe("1a[a1]$ 22b[b22]$ 333c[c333]$");
   });
 
@@ -258,11 +258,11 @@ describe("whole word and regular expressions", () => {
     expect(view.state.doc.toString()).toBe("1=x y=2");
   });
 
-  it("reports an invalid expression and does nothing with it", () => {
+  it("reports an invalid expression and does nothing with it", async () => {
     const { view, finder } = setup("a(b");
     expect(finder.find(query("(", { regexp: true }))).toEqual({ total: 0, current: 0, invalid: true });
     expect(finder.next()).toEqual({ total: 0, current: 0, invalid: true });
-    expect(finder.replaceAll()).toBe(0);
+    expect(await finder.replaceAll()).toBe(0);
     expect(view.state.doc.toString()).toBe("a(b");
   });
 
@@ -308,6 +308,80 @@ describe("M14: counting a big document in slices", () => {
     view.dispatch({ selection: { anchor: 5 } });
     expect(await done).toEqual({ total: 1, current: 0 });
     expect(view.state.selection.main.head).toBe(5);
+  }, 30_000);
+});
+
+// BUGS.md M14 (rest): F3, Shift+F3 and Replace all scanned the whole file synchronously.
+describe("M14: stepping and replacing in a big document in slices", () => {
+  const filler = "lorem ipsum dolor sit amet\n".repeat(400_000); // ~11 MB
+  const settled = (finder: FindController) =>
+    new Promise<FindResult>((resolve) => finder.setListener((result) => !result.pending && resolve(result)));
+
+  it("F3 to a far match returns at once and selects the match in a later task", async () => {
+    const text = `needle ${filler}needle`;
+    const { finder, at } = setup(text);
+    let done = settled(finder);
+    finder.find(query("needle"));
+    await done;
+    expect(at()).toBe(0);
+    done = settled(finder);
+    expect(finder.next()).toMatchObject({ current: 1, pending: true });
+    expect(at()).toBe(0);
+    expect(await done).toEqual({ total: 2, current: 2 });
+    expect(at()).toBe(text.length - 6);
+  }, 30_000);
+
+  it("Shift+F3 to a far match returns at once and selects it later", async () => {
+    const text = `needle ${filler}`;
+    const { finder, view, at } = setup(text);
+    let done = settled(finder);
+    finder.find(query("needle"));
+    await done;
+    view.dispatch({ selection: { anchor: text.length } });
+    done = settled(finder);
+    expect(finder.prev()).toMatchObject({ pending: true });
+    expect(at()).toBe(text.length);
+    expect(await done).toEqual({ total: 1, current: 1 });
+    expect(at()).toBe(0);
+  }, 30_000);
+
+  it("drops a pending step when the user moves the cursor", async () => {
+    const text = `needle ${filler}needle`;
+    const { finder, view } = setup(text);
+    const done = settled(finder);
+    finder.find(query("needle"));
+    await done;
+    const listener = vi.fn();
+    finder.setListener(listener);
+    finder.next();
+    view.dispatch({ selection: { anchor: 3 } });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(view.state.selection.main.head).toBe(3);
+    expect(listener).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it("Replace all collects matches in slices and applies them in one undo step", async () => {
+    const text = `needle ${filler}needle`;
+    const { finder, view } = setup(text);
+    finder.find(query("needle", { replace: "pin" }));
+    const replacing = finder.replaceAll();
+    expect(view.state.doc.length).toBe(text.length);
+    expect(await replacing).toBe(2);
+    expect(view.state.doc.length).toBe(text.length - 6);
+    expect(view.state.sliceDoc(0, 4)).toBe("pin ");
+    undo(view);
+    expect(view.state.doc.length).toBe(text.length);
+  }, 30_000);
+
+  it("Replace all can be cancelled and leaves the text alone", async () => {
+    const text = `needle ${filler}needle`;
+    const { finder, view } = setup(text);
+    finder.find(query("needle", { replace: "pin" }));
+    const replacing = finder.replaceAll();
+    finder.cancelReplaceAll();
+    expect(await replacing).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(view.state.doc.length).toBe(text.length);
   }, 30_000);
 });
 

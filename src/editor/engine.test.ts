@@ -494,21 +494,21 @@ describe("editor engine: find through the engine", () => {
     engine.activate("a");
   });
 
-  it("finds, steps and replaces", () => {
+  it("finds, steps and replaces", async () => {
     expect(engine.find({ search: "one", replace: "1", caseSensitive: false, wrap: true })).toEqual({
       total: 3,
       current: 1,
     });
     expect(engine.findNext()).toEqual({ total: 3, current: 2 });
-    expect(engine.replaceAll()).toBe(3);
+    expect(await engine.replaceAll()).toBe(3);
     expect(engine.getText("a")).toBe("1 two 1 two 1");
   });
 
-  it("drops the find session when another tab is activated", () => {
+  it("drops the find session when another tab is activated", async () => {
     engine.find({ search: "one", replace: "", caseSensitive: false, wrap: true });
     engine.activate("b");
     expect(engine.findNext()).toEqual({ total: 0, current: 0 });
-    expect(engine.replaceAll()).toBe(0);
+    expect(await engine.replaceAll()).toBe(0);
     expect(engine.getText("b")).toBe("one");
   });
 });

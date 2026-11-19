@@ -153,7 +153,10 @@ export interface EditorEngine {
   findNext(): FindResult;
   findPrev(): FindResult;
   replaceCurrent(): FindResult;
-  replaceAll(): number;
+  /** Collects the matches in time slices, then replaces them in one undo step; 0 when cancelled (M14). */
+  replaceAll(): Promise<number>;
+  /** Stops a running Replace all; the text stays as it was. */
+  cancelReplaceAll(): void;
   clearFind(): void;
   /** Receives the result of a find whose count finished after `find` returned (BUGS.md M14). */
   onFindResult?(listener: ((result: FindResult) => void) | null): void;
