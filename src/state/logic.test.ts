@@ -79,7 +79,8 @@ describe("links", () => {
     expect(classifyHref("https://example.com", null)).toEqual({ kind: "web", url: "https://example.com" });
     expect(classifyHref("mailto:a@b.c", null).kind).toBe("web");
     expect(classifyHref("javascript:alert(1)", "C:\\n").kind).toBe("none");
-    expect(classifyHref("file:///C:/x", "C:\\n").kind).toBe("none");
+    // A file:// link opens the file in a tab (BUGS.md M7); it never reaches the system opener.
+    expect(classifyHref("file:///C:/x", "C:\\n")).toEqual({ kind: "file", path: "C:\\x.md" });
     expect(classifyHref("ms-settings:", "C:\\n").kind).toBe("none");
   });
 
@@ -120,8 +121,16 @@ describe("modes and titles", () => {
   });
 
   it("formats Time/Date like Notepad", () => {
-    expect(formatDateTime(new Date(2026, 10, 10, 0, 5))).toBe("12:05 AM 11/10/2026");
-    expect(formatDateTime(new Date(2026, 0, 2, 13, 30))).toBe("1:30 PM 1/2/2026");
+    expect(formatDateTime(new Date(2026, 10, 10, 0, 5), "en-US")).toBe("12:05 AM 11/10/2026");
+    expect(formatDateTime(new Date(2026, 0, 2, 13, 30), "en-US")).toBe("1:30 PM 1/2/2026");
+  });
+
+  // BUGS.md L4: F5 used the US format everywhere.
+  it("formats Time/Date in the user's own format", () => {
+    const d = new Date(2026, 10, 10, 15, 5);
+    expect(formatDateTime(d, "en-GB")).toBe("15:05 10/11/2026");
+    expect(formatDateTime(d, "de-DE")).toBe("15:05 10.11.2026");
+    expect(formatDateTime(d, "en-US")).toBe("3:05 PM 11/10/2026");
   });
 });
 
@@ -284,7 +293,8 @@ describe("paths: Windows details", () => {
   });
 
   it("recognises every markdown extension in any case", () => {
-    for (const ext of [".md", ".MD", ".markdown", ".mdown", ".mkd"]) expect(isMarkdownPath(`C:\\x${ext}`)).toBe(true);
+    // BUGS.md M8: .mdx is registered as Markdown by the installer.
+    for (const ext of [".md", ".MD", ".markdown", ".mdown", ".mkd", ".mdx"]) expect(isMarkdownPath(`C:\\x${ext}`)).toBe(true);
     for (const ext of [".txt", ".mdtxt", ".m", ""]) expect(isMarkdownPath(`C:\\x${ext}`)).toBe(false);
   });
 
@@ -357,8 +367,45 @@ describe("links: what a document link may open", () => {
   });
 
   // BUGS.md M7: a dot in a wikilink name is taken as an extension.
-  it.skip("M7: [[v1.2 notes]] opens v1.2 notes.md", () => {
+  it("M7: [[v1.2 notes]] opens v1.2 notes.md", () => {
     expect(classifyHref("wikilink:v1.2 notes", base)).toEqual({ kind: "file", path: "C:\\notes\\v1.2 notes.md" });
+    expect(classifyHref("wikilink:todo.txt", base)).toEqual({ kind: "file", path: "C:\\notes\\todo.txt" });
+    expect(classifyHref("wikilink:Plan.md", base)).toEqual({ kind: "file", path: "C:\\notes\\Plan.md" });
+    // Wikilinks are plain names: a percent sign is part of the name.
+    expect(classifyHref("wikilink:100%25 done", base)).toEqual({ kind: "file", path: "C:\\notes\\100%25 done.md" });
+  });
+
+  it("M7: decodes reserved characters such as %23 and %26 in a file name", () => {
+    expect(classifyHref("C%23 guide.md", base)).toEqual({ kind: "file", path: "C:\\notes\\C# guide.md" });
+    expect(classifyHref("a%26b.md#part", base)).toEqual({ kind: "file", path: "C:\\notes\\a&b.md" });
+  });
+
+  it("M7: opens PDFs and images with their default app, not as text", () => {
+    expect(classifyHref("report.pdf", base)).toEqual({ kind: "external", path: "C:\\notes\\report.pdf" });
+    expect(classifyHref("img/Photo.PNG", base)).toEqual({ kind: "external", path: "C:\\notes\\img\\Photo.PNG" });
+    expect(classifyHref("wikilink:scan.pdf", base)).toEqual({ kind: "external", path: "C:\\notes\\scan.pdf" });
+    // Programs and scripts are never launched: they open as text.
+    expect(classifyHref("setup.exe", base)).toEqual({ kind: "file", path: "C:\\notes\\setup.exe" });
+  });
+
+  it("M7: understands file:// links", () => {
+    expect(classifyHref("file:///C:/notes/a%20b.md", base)).toEqual({ kind: "file", path: "C:\\notes\\a b.md" });
+    expect(classifyHref("file://localhost/D:/x.md#h", base)).toEqual({ kind: "file", path: "D:\\x.md" });
+    expect(classifyHref("file://server/share/x.md", base)).toEqual({ kind: "file", path: "\\\\server\\share\\x.md" });
+    expect(classifyHref("file:///etc/passwd", base).kind).toBe("none");
+  });
+
+  it("M7: a link to a folder opens nothing", () => {
+    expect(classifyHref("sub/", base).kind).toBe("none");
+    expect(classifyHref("sub\\", base).kind).toBe("none");
+  });
+
+  it("M7: a link starting with / is relative to the drive or share root", () => {
+    expect(classifyHref("/docs/a.md", base)).toEqual({ kind: "file", path: "C:\\docs\\a.md" });
+    expect(classifyHref("/docs/a.md", "\\\\srv\\team\\notes")).toEqual({
+      kind: "file",
+      path: "\\\\srv\\team\\docs\\a.md",
+    });
   });
 });
 
@@ -424,8 +471,8 @@ describe("modes, titles and names", () => {
   });
 
   it("formats noon and midnight on the 12-hour clock", () => {
-    expect(formatDateTime(new Date(2026, 11, 31, 12, 0))).toBe("12:00 PM 12/31/2026");
-    expect(formatDateTime(new Date(2026, 0, 1, 23, 59))).toBe("11:59 PM 1/1/2026");
+    expect(formatDateTime(new Date(2026, 11, 31, 12, 0), "en-US")).toBe("12:00 PM 12/31/2026");
+    expect(formatDateTime(new Date(2026, 0, 1, 23, 59), "en-US")).toBe("11:59 PM 1/1/2026");
   });
 });
 

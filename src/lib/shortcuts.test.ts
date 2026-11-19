@@ -201,7 +201,8 @@ describe("keyboard handling in the window", () => {
 
   it("F5 inserts the time and date at the cursor", () => {
     press("F5");
-    expect(app.text()).toMatch(/^\d{1,2}:\d{2} (AM|PM) \d{1,2}\/\d{1,2}\/\d{4}$/);
+    // The format follows the locale (BUGS.md L4): time, then the date with a four-digit year.
+    expect(app.text()).toMatch(/^\d{1,2}[:.]\d{2}\b.*\d{4}/);
   });
 
   it("Ctrl+B is ignored in plain-text tabs", () => {
@@ -253,6 +254,39 @@ describe("keyboard handling in the window", () => {
     press("z", { ctrlKey: true }, input);
     expect(app.text()).toBe("typed");
     input.remove();
+  });
+
+  // BUGS.md L15: editing shortcuts typed in the Find box must not change the document.
+  it("Ctrl+B, Ctrl+I, Ctrl+K and F5 in a text box leave the document alone", () => {
+    app.engine.insertText("word");
+    app.engine.selectAll();
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    press("b", { ctrlKey: true }, input);
+    press("i", { ctrlKey: true }, input);
+    press("k", { ctrlKey: true }, input);
+    const f5 = press("F5", {}, input);
+    expect(app.text()).toBe("word");
+    expect(app.state().dialog).toBeNull();
+    // F5 still never reloads the page.
+    expect(f5.defaultPrevented).toBe(true);
+    input.remove();
+  });
+
+  // BUGS.md H10 (part 2): F3 moved the match but the find bar's counter stayed behind.
+  it("F3 and Shift+F3 with the find bar open go through the find bar", async () => {
+    // The app was booted on fresh modules: use the find bar glue it loaded.
+    const { setFindStepHandler } = await import("./findBar");
+    const steps: number[] = [];
+    setFindStepHandler((dir) => steps.push(dir));
+    try {
+      press("f", { ctrlKey: true });
+      press("F3");
+      press("F3", { shiftKey: true });
+      expect(steps).toEqual([1, -1]);
+    } finally {
+      setFindStepHandler(null);
+    }
   });
 
   it("Ctrl+plus and Ctrl+minus zoom", () => {

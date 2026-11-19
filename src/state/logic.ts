@@ -114,7 +114,7 @@ export function extOf(path: string): string {
   return dot > 0 ? name.slice(dot).toLowerCase() : "";
 }
 
-const MARKDOWN_EXTENSIONS = [".md", ".markdown", ".mdown", ".mkd"];
+const MARKDOWN_EXTENSIONS = [".md", ".markdown", ".mdown", ".mkd", ".mdx"];
 export const isMarkdownPath = (path: string) => MARKDOWN_EXTENSIONS.includes(extOf(path));
 
 /** Windows paths: separators and case do not matter. */
@@ -136,7 +136,55 @@ export function resolveRelative(baseDir: string, relative: string): string {
   return parts.join("\\");
 }
 
-export type HrefTarget = { kind: "web"; url: string } | { kind: "file"; path: string } | { kind: "none" };
+export type HrefTarget =
+  | { kind: "web"; url: string }
+  | { kind: "file"; path: string }
+  /** A document or media file that is not text: opened with its default app. */
+  | { kind: "external"; path: string }
+  | { kind: "none" };
+
+/**
+ * Linked files that are not text, so they must not open in a tab. Only these reach
+ * the system's default app: a link to a program or script still opens as text.
+ */
+const EXTERNAL_EXTENSIONS = new Set(
+  (
+    ".pdf .png .jpg .jpeg .gif .webp .bmp .svg .avif .ico .tif .tiff .heic " +
+    ".mp3 .wav .ogg .flac .m4a .mp4 .mkv .webm .mov .avi .wmv " +
+    ".docx .xlsx .pptx .doc .xls .ppt .odt .ods .odp .rtf .epub"
+  ).split(" "),
+);
+
+/** A wikilink names a note: `[[v1.2 notes]]` is `v1.2 notes.md` unless it names a known file type. */
+const WIKI_FILE_EXTENSIONS = new Set([...MARKDOWN_EXTENSIONS, ".txt", ".canvas", ...EXTERNAL_EXTENSIONS]);
+
+function decodeComponent(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    // Not percent-encoded: use as written.
+    return text;
+  }
+}
+
+/** `file:///C:/a%20b.md` → `C:\a b.md`, `file://server/share/x.md` → `\\server\share\x.md`. */
+export function fileUrlToPath(url: string): string | null {
+  const match = /^file:\/\/([^/\\]*)([/\\].*)?$/i.exec(url);
+  if (!match) return null;
+  const host = match[1];
+  const path = decodeComponent(match[2] ?? "").replace(/\//g, "\\");
+  if (host && host.toLowerCase() !== "localhost") return `\\\\${host}${path}`;
+  const drive = /^\\([a-zA-Z]:)(\\.*)?$/.exec(path);
+  return drive ? `${drive[1]}${drive[2] ?? "\\"}` : null;
+}
+
+/** `C:` for `C:\notes`, `\\server\share` for a network folder. */
+function rootOf(dir: string): string | null {
+  const drive = /^[a-zA-Z]:/.exec(dir);
+  if (drive) return drive[0];
+  const share = /^\\\\[^\\/]+[\\/][^\\/]+/.exec(dir);
+  return share ? share[0] : null;
+}
 
 /**
  * Decides what a link in a document may do. Only web and mail links reach the
@@ -147,18 +195,41 @@ export function classifyHref(href: string, baseDir: string | null): HrefTarget {
   if (!value || value.startsWith("#")) return { kind: "none" };
   if (/^(https?:|mailto:)/i.test(value)) return { kind: "web", url: value };
   const wiki = /^wikilink:(.*)$/i.exec(value);
-  const isDrive = /^[a-zA-Z]:[\\/]/.test(value);
-  if (!wiki && !isDrive && /^[a-zA-Z][a-zA-Z0-9+.-]+:/.test(value)) return { kind: "none" };
-  let target = (wiki ? wiki[1] : value).split("#")[0];
-  try {
-    target = decodeURI(target);
-  } catch {
-    // Not percent-encoded: use as written.
+  let target: string;
+  if (wiki) {
+    // Wikilinks are written as plain names, never percent-encoded.
+    target = wiki[1].split("#")[0].trim();
+    if (target && !WIKI_FILE_EXTENSIONS.has(extOf(target))) target += ".md";
+  } else if (/^file:/i.test(value)) {
+    const path = fileUrlToPath(value.split(/[?#]/)[0]);
+    if (!path) return { kind: "none" };
+    target = path;
+  } else {
+    const isDrive = /^[a-zA-Z]:[\\/]/.test(value);
+    if (!isDrive && /^[a-zA-Z][a-zA-Z0-9+.-]+:/.test(value)) return { kind: "none" };
+    // Split off the fragment first, so an encoded `%23` stays part of the name.
+    target = decodeComponent(value.split("#")[0]);
+  }
+  if (!wiki) {
+    // A link to a folder has nothing to open.
+    if (/[\\/]$/.test(target)) return { kind: "none" };
+    if (target && !extOf(target)) target += ".md";
   }
   if (!target) return { kind: "none" };
-  if (!extOf(target)) target += ".md";
-  if (/^[a-zA-Z]:[\\/]/.test(target) || target.startsWith("\\\\")) return { kind: "file", path: target };
-  return baseDir ? { kind: "file", path: resolveRelative(baseDir, target) } : { kind: "none" };
+  let path: string;
+  if (/^[a-zA-Z]:[\\/]/.test(target) || target.startsWith("\\\\")) {
+    path = target;
+  } else if (!baseDir) {
+    return { kind: "none" };
+  } else if (/^[\\/]/.test(target)) {
+    // `/docs/a.md` starts at the root of the document's drive or share.
+    const root = rootOf(baseDir);
+    if (!root) return { kind: "none" };
+    path = resolveRelative(root, target);
+  } else {
+    path = resolveRelative(baseDir, target);
+  }
+  return EXTERNAL_EXTENSIONS.has(extOf(path)) ? { kind: "external", path } : { kind: "file", path };
 }
 
 // ---- Modes, titles, names -------------------------------------------------
@@ -216,7 +287,7 @@ export function chosenSavePath(path: string): string {
   return trimmed ? path.slice(0, path.length - name.length) + trimmed : path;
 }
 
-const FILTER_MD = { name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd"] };
+const FILTER_MD = { name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd", "mdx"] };
 const FILTER_TXT = { name: "Text", extensions: ["txt"] };
 const FILTER_ALL = { name: "All files", extensions: ["*"] };
 
@@ -226,12 +297,16 @@ export function saveFilters(mode: FormatMode) {
 }
 export const openFilters = () => [FILTER_ALL, FILTER_MD, FILTER_TXT];
 
-/** Local `h:mm tt M/d/yyyy`, e.g. `10:30 AM 11/10/2026`. */
-export function formatDateTime(d: Date): string {
-  const hours = d.getHours();
-  const h12 = hours % 12 === 0 ? 12 : hours % 12;
-  const minutes = String(d.getMinutes()).padStart(2, "0");
-  return `${h12}:${minutes} ${hours < 12 ? "AM" : "PM"} ${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+/**
+ * Short time and date in the user's format, as Notepad's F5 does: `10:30 AM 11/10/2026`
+ * in the US, `10:30 10/11/2026` in the UK, `10:30 10.11.2026` in Germany. `locale`
+ * defaults to the WebView's locale.
+ */
+export function formatDateTime(d: Date, locale?: string): string {
+  const time = d.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  const date = d.toLocaleDateString(locale, { year: "numeric", month: "numeric", day: "numeric" });
+  // ICU puts a narrow no-break space before AM/PM; a plain space is what people type.
+  return `${time} ${date}`.replace(/[  ]/g, " ");
 }
 
 export function pushRecent(list: string[], path: string): string[] {

@@ -1,4 +1,5 @@
 import { engine } from "../editor";
+import { findStep } from "../lib/findBar";
 import { actions } from "../state/actions";
 import { useApp } from "../state/store";
 import type { MenuEntry } from "./Menu";
@@ -51,16 +52,16 @@ function editMenu(): MenuEntry[] {
   return [
     { id: "undo", label: "Undo", shortcut: "Ctrl+Z", disabled: !cursor.canUndo, onSelect: () => engine.undo() },
     SEP,
-    { id: "cut", label: "Cut", shortcut: "Ctrl+X", disabled: noSel, onSelect: () => engine.cut() },
-    { id: "copy", label: "Copy", shortcut: "Ctrl+C", disabled: noSel, onSelect: () => engine.copy() },
-    { id: "paste", label: "Paste", shortcut: "Ctrl+V", onSelect: () => engine.paste() },
+    { id: "cut", label: "Cut", shortcut: "Ctrl+X", disabled: noSel, onSelect: () => void actions.clipboard("cut") },
+    { id: "copy", label: "Copy", shortcut: "Ctrl+C", disabled: noSel, onSelect: () => void actions.clipboard("copy") },
+    { id: "paste", label: "Paste", shortcut: "Ctrl+V", onSelect: () => void actions.clipboard("paste") },
     { id: "del", label: "Delete", shortcut: "Del", disabled: noSel, onSelect: () => engine.deleteSelection() },
     SEP,
     { id: "bing", label: "Search with Bing", shortcut: "Ctrl+E", disabled: noSel, onSelect: () => actions.searchWeb() },
     SEP,
     { id: "find", label: "Find", shortcut: "Ctrl+F", disabled: empty, onSelect: () => actions.openFind(false) },
-    { id: "next", label: "Find next", shortcut: "F3", disabled: empty, onSelect: findAgain(() => engine.findNext()) },
-    { id: "prev", label: "Find previous", shortcut: "Shift+F3", disabled: empty, onSelect: findAgain(() => engine.findPrev()) },
+    { id: "next", label: "Find next", shortcut: "F3", disabled: empty, onSelect: findAgain(() => findStep(1) || engine.findNext()) },
+    { id: "prev", label: "Find previous", shortcut: "Shift+F3", disabled: empty, onSelect: findAgain(() => findStep(-1) || engine.findPrev()) },
     { id: "replace", label: "Replace", shortcut: "Ctrl+H", disabled: empty, onSelect: () => actions.openFind(true) },
     { id: "goto", label: "Go to", shortcut: "Ctrl+G", onSelect: () => actions.showDialog({ kind: "goto" }) },
     SEP,

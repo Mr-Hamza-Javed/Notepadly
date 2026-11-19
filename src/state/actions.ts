@@ -106,7 +106,8 @@ const sameCursor = (a: CursorInfo, b: CursorInfo) =>
   a.chars === b.chars &&
   a.selected === b.selected &&
   a.canUndo === b.canUndo &&
-  a.canRedo === b.canRedo;
+  a.canRedo === b.canRedo &&
+  !!a.previewLimited === !!b.previewLimited;
 
 const sameFormat = (a: FormatContext, b: FormatContext) =>
   a.block === b.block &&
@@ -120,6 +121,12 @@ const sameFormat = (a: FormatContext, b: FormatContext) =>
 async function openExternal(url: string): Promise<void> {
   const { openUrl } = await import("@tauri-apps/plugin-opener");
   await openUrl(url);
+}
+
+/** PDFs, images and other non-text files a document links to; `classifyHref` decides which. */
+async function openWithDefaultApp(path: string): Promise<void> {
+  const { openPath } = await import("@tauri-apps/plugin-opener");
+  await openPath(path);
 }
 
 export const editorHost: EditorHost = {
@@ -146,6 +153,7 @@ export const editorHost: EditorHost = {
     const target = classifyHref(href, base);
     if (target.kind === "web") openExternal(target.url).catch(reportError("Could not open link"));
     else if (target.kind === "file") void actions.openPaths([target.path]);
+    else if (target.kind === "external") openWithDefaultApp(target.path).catch(reportError("Could not open link"));
   },
   baseDir: (id) => {
     const path = getTab(id)?.path;
@@ -862,6 +870,9 @@ export const actions = {
   ensureFullyLoaded,
 
   insertDateTime: () => engine.insertText(formatDateTime(new Date())),
+  /** Edit > Cut / Copy / Paste. A clipboard failure is reported, and Cut then keeps the text. */
+  clipboard: (op: "cut" | "copy" | "paste"): Promise<void> =>
+    engine[op]().catch(reportError(op === "paste" ? "Could not paste" : "Could not copy to the clipboard")),
   searchWeb: () => {
     const selection = engine.selectionText().trim();
     if (!selection) return;

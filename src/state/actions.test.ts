@@ -789,6 +789,15 @@ describe("links in documents", () => {
     expect(app.text()).toBe("other");
   });
 
+  // BUGS.md M7: a linked PDF used to open as garbage in a text tab.
+  it("opens a linked PDF with its default app instead of a tab", async () => {
+    const { editorHost } = await import("./actions");
+    editorHost.openLink("report.pdf");
+    await settle();
+    expect(dialogs.openedPaths).toEqual(["C:\\notes\\report.pdf"]);
+    expect(app.state().tabs).toHaveLength(1);
+  });
+
   it("never passes other URI schemes to the system", async () => {
     const { editorHost } = await import("./actions");
     editorHost.openLink("ms-settings:privacy");

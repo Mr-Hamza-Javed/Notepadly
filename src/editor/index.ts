@@ -43,8 +43,8 @@ import {
 } from "./commands";
 import { FIND_COUNT_LIMIT, FindController, findExtension } from "./find";
 import { blockPreview, rebuildBlocks } from "./livePreview/block";
-import { previewContext } from "./livePreview/context";
-import { inlinePreview } from "./livePreview/inline";
+import { previewContext, resolveHref } from "./livePreview/context";
+import { ctrlClick, inlinePreview } from "./livePreview/inline";
 import { escapeCellText, focusedTable, tableAt } from "./livePreview/widgets";
 import { markdownSupport, parseAhead } from "./markdown";
 import { editorRootClass, lineDirections, tokenClasses, watchTheme } from "./theme";
@@ -55,6 +55,8 @@ export { FIND_COUNT_LIMIT };
 const MAX_LINE_FOR_PREVIEW = 20000;
 const MAX_DOC_FOR_PREVIEW = 20 * 1024 * 1024;
 const NEAR_END_THROTTLE_MS = 120;
+/** Wait after an edit that shortened a degraded document before checking it again. */
+const RECHECK_DELAY_MS = 400;
 /** History trims old events beyond this, which would misalign the depth-indexed versions. */
 const HISTORY_DEPTH = 400;
 
@@ -66,10 +68,39 @@ const attributesCompartment = new Compartment();
 
 const modeClass = (name: string) => EditorView.editorAttributes.of({ class: `cm-mode-${name}` });
 
+const URL_IN_TEXT = /\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
+
+/** The web address under `offset` in a line of plain text, without trailing punctuation. */
+export function urlAt(lineText: string, offset: number): string | null {
+  for (const match of lineText.matchAll(URL_IN_TEXT)) {
+    const url = match[0].replace(/[.,;:!?)\]}'"]+$/, "");
+    const from = match.index ?? 0;
+    if (offset >= from && offset <= from + url.length) return url;
+  }
+  return null;
+}
+
+/** Plain text has no syntax tree: Ctrl+click opens a bare web address (BUGS.md L13). */
+const plainLinkClick = EditorView.domEventHandlers({
+  mousedown(event, view) {
+    if (!event.ctrlKey || event.button !== 0) return false;
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (pos === null) return false;
+    const line = view.state.doc.lineAt(pos);
+    if (line.length > 20000) return false;
+    const url = urlAt(line.text, pos - line.from);
+    if (!url) return false;
+    event.preventDefault();
+    previewContext.openLink(resolveHref(url));
+    return true;
+  },
+});
+
 const modeExtensions: Record<FormatMode, Extension> = {
   formatted: [modeClass("formatted"), markdownSupport, parseAhead, tokenClasses, blockPreview, inlinePreview],
-  syntax: [modeClass("syntax"), markdownSupport, parseAhead, tokenClasses],
-  plain: [modeClass("plain")],
+  // Ctrl+click on links works in every mode, not only Formatted (BUGS.md L13).
+  syntax: [modeClass("syntax"), markdownSupport, parseAhead, tokenClasses, ctrlClick],
+  plain: [modeClass("plain"), plainLinkClick],
 };
 
 interface DocRecord {
@@ -77,7 +108,7 @@ interface DocRecord {
   /** Stale while the tab is active: use `stateOf`. */
   state: EditorState;
   mode: FormatMode;
-  /** Sticky until the text is replaced: the document is too large for live preview. */
+  /** The document is too large, or has a line too long, for live preview. */
   degraded: boolean;
   /** Version id for each undo depth; dirty means the current id is not the saved one. */
   versions: number[];
@@ -90,6 +121,16 @@ interface DocRecord {
 }
 
 let versionCounter = 0;
+
+/** Whether a document still needs the plain fallback; walks lines without joining the text. */
+function needsDegrade(doc: EditorState["doc"]): boolean {
+  if (doc.length > MAX_DOC_FOR_PREVIEW) return true;
+  if (doc.length <= MAX_LINE_FOR_PREVIEW) return false;
+  for (let iter = doc.iterLines(); !iter.next().done; ) {
+    if (iter.value.length > MAX_LINE_FOR_PREVIEW) return true;
+  }
+  return false;
+}
 
 function hasLongLine(text: string): boolean {
   let start = 0;
@@ -139,6 +180,7 @@ class Engine implements EditorEngine {
   private lastContext: FormatContext | null = null;
   private lastNearEnd = 0;
   private nearEndTimer = 0;
+  private recheckTimer = 0;
   private disposers: (() => void)[] = [];
 
   // ---------- Lifecycle ----------
@@ -172,6 +214,8 @@ class Engine implements EditorEngine {
     this.cursorFrame = 0;
     clearTimeout(this.nearEndTimer);
     this.nearEndTimer = 0;
+    clearTimeout(this.recheckTimer);
+    this.recheckTimer = 0;
     for (const dispose of this.disposers) dispose();
     this.disposers = [];
     this.view?.destroy();
@@ -327,7 +371,16 @@ class Engine implements EditorEngine {
   }
 
   private checkDegrade(doc: DocRecord, update: ViewUpdate): void {
-    if (doc.degraded || doc.mode !== "formatted") return;
+    if (doc.mode !== "formatted") return;
+    if (doc.degraded) {
+      // Deleting the long line (or undoing its paste) brings live preview back.
+      let removed = false;
+      update.changes.iterChangedRanges((fromA, toA) => {
+        if (toA > fromA) removed = true;
+      });
+      if (removed) this.scheduleRecheck(doc);
+      return;
+    }
     const { state } = update;
     let degrade = state.doc.length > MAX_DOC_FOR_PREVIEW;
     if (!degrade) {
@@ -345,6 +398,20 @@ class Engine implements EditorEngine {
         this.view.dispatch({ effects: modeCompartment.reconfigure(modeExtensions.syntax) });
       }
     });
+  }
+
+  /** Debounced: a full line scan runs once after a burst of deletions, not per keystroke. */
+  private scheduleRecheck(doc: DocRecord): void {
+    clearTimeout(this.recheckTimer);
+    this.recheckTimer = window.setTimeout(() => {
+      this.recheckTimer = 0;
+      const view = this.view;
+      if (!view || this.activeId !== doc.id || !doc.degraded || doc.mode !== "formatted") return;
+      if (needsDegrade(view.state.doc)) return;
+      doc.degraded = false;
+      view.dispatch({ effects: modeCompartment.reconfigure(modeExtensions.formatted) });
+      this.scheduleCursor();
+    }, RECHECK_DELAY_MS);
   }
 
   private scheduleCursor(): void {
@@ -371,6 +438,7 @@ class Engine implements EditorEngine {
       selected,
       canUndo: undoDepth(state) > 0,
       canRedo: redoDepth(state) > 0,
+      previewLimited: doc.mode === "formatted" && doc.degraded,
     };
     this.host.onCursor(doc.id, info);
     if (doc.mode === "plain") return;
@@ -487,6 +555,8 @@ class Engine implements EditorEngine {
       previous.scrollTop = view.scrollDOM.scrollTop;
     }
     this.finder.clear();
+    clearTimeout(this.recheckTimer);
+    this.recheckTimer = 0;
     this.activeId = tabId;
     doc.state = this.withConfig(doc.state, doc);
     view.setState(doc.state);
@@ -499,6 +569,8 @@ class Engine implements EditorEngine {
       doc.scrollTop = null;
     }
     this.notifyActivated(doc);
+    // A deletion just before the last tab switch may have removed the long line.
+    if (doc.degraded && doc.mode === "formatted") this.scheduleRecheck(doc);
   }
 
   /** Callers may pass an oversized value (Ctrl+End sends 1e9), so it is clamped to the valid range. */
@@ -614,22 +686,25 @@ class Engine implements EditorEngine {
     if (this.view) redo(this.view);
   }
 
-  cut(): void {
+  async cut(): Promise<void> {
+    const view = this.view;
     const text = this.selectionText();
-    if (!text) return;
-    void navigator.clipboard.writeText(text);
-    this.deleteSelection();
+    if (!view || !text) return;
+    const before = view.state;
+    // The text is only removed once it is safely on the clipboard.
+    await navigator.clipboard.writeText(text);
+    // The write is async: cut what was copied, not whatever is selected by now.
+    if (this.view === view && view.state === before) this.deleteSelection();
   }
 
-  copy(): void {
+  async copy(): Promise<void> {
     const text = this.selectionText();
-    if (text) void navigator.clipboard.writeText(text);
+    if (text) await navigator.clipboard.writeText(text);
   }
 
-  paste(): void {
-    void navigator.clipboard.readText().then((text) => {
-      if (text) this.insertText(text);
-    });
+  async paste(): Promise<void> {
+    const text = await navigator.clipboard.readText();
+    if (text) this.insertText(text);
   }
 
   deleteSelection(): void {

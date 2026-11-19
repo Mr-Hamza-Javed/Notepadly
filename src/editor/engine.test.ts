@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { mountEngine, nextFrame } from "../test/editorHarness";
-import { beforeEach, describe, expect, it } from "vitest";
-import { engine } from ".";
+import { EditorView } from "@codemirror/view";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { engine, urlAt } from ".";
 
 const lastDirty = (log: ReturnType<typeof mountEngine>["log"], id: string) =>
   [...log.dirty].reverse().find(([tab]) => tab === id)?.[1] ?? false;
@@ -340,5 +341,84 @@ describe("editor engine: find through the engine", () => {
     expect(engine.findNext()).toEqual({ total: 0, current: 0 });
     expect(engine.replaceAll()).toBe(0);
     expect(engine.getText("b")).toBe("one");
+  });
+});
+
+// BUGS.md L13: Ctrl+click opened links in Formatted mode only.
+describe("editor engine: Ctrl+click on links in every mode", () => {
+  const ctrlClickAt = (pos: number) => {
+    const spy = vi.spyOn(EditorView.prototype, "posAtCoords").mockReturnValue(pos);
+    try {
+      const content = document.querySelector(".cm-content")!;
+      content.dispatchEvent(new MouseEvent("mousedown", { ctrlKey: true, button: 0, bubbles: true, cancelable: true }));
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  it("opens a Markdown link in Markdown syntax mode", () => {
+    const { log } = mountEngine();
+    engine.createDoc("a", "see [docs](https://x.y/d) now", "syntax");
+    engine.activate("a");
+    ctrlClickAt(6);
+    expect(log.links).toEqual(["https://x.y/d"]);
+  });
+
+  it("opens a bare web address in plain text", () => {
+    const { log } = mountEngine();
+    engine.createDoc("a", "go to www.example.com/a, then", "plain");
+    engine.activate("a");
+    ctrlClickAt(10);
+    ctrlClickAt(2);
+    expect(log.links).toEqual(["https://www.example.com/a"]);
+  });
+
+  it("finds the address under the cursor without trailing punctuation", () => {
+    expect(urlAt("(see https://a.b/c).", 8)).toBe("https://a.b/c");
+    expect(urlAt("(see https://a.b/c).", 2)).toBeNull();
+    expect(urlAt("plain words", 3)).toBeNull();
+  });
+});
+
+// BUGS.md H6: one long line turned live preview off for good.
+describe("editor engine: live preview comes back after a long line is gone", () => {
+  const editorClass = () => document.querySelector(".cm-editor")?.className ?? "";
+
+  it("turns preview off for a pasted long line, says so, and back on after Undo", async () => {
+    const { log } = mountEngine();
+    engine.createDoc("a", "# Title\n", "formatted");
+    engine.activate("a");
+    engine.insertText("x".repeat(20_001));
+    await nextFrame();
+    expect(editorClass()).toContain("cm-mode-syntax");
+    expect(log.cursor.at(-1)?.[1].previewLimited).toBe(true);
+
+    engine.undo();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await nextFrame();
+    expect(editorClass()).toContain("cm-mode-formatted");
+    expect(log.cursor.at(-1)?.[1].previewLimited).toBe(false);
+  });
+
+  it("stays off while another long line remains", async () => {
+    mountEngine();
+    const long = "y".repeat(20_001);
+    engine.createDoc("a", `${long}\n${long}`, "formatted");
+    engine.activate("a");
+    engine.restore("a", { anchor: 0, head: long.length, scrollTop: 0 });
+    engine.deleteSelection();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(editorClass()).toContain("cm-mode-syntax");
+  });
+
+  it("turns preview on for a file opened with a long line once it is deleted", async () => {
+    mountEngine();
+    engine.createDoc("a", `short\n${"z".repeat(20_001)}`, "formatted");
+    engine.activate("a");
+    expect(editorClass()).toContain("cm-mode-syntax");
+    engine.restore("a", { anchor: 5, head: 20_007, scrollTop: 0 });
+    engine.deleteSelection();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(editorClass()).toContain("cm-mode-formatted");
   });
 });

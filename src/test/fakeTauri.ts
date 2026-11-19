@@ -360,6 +360,8 @@ export class FakeDialogs {
   /** Button labels for the next native message boxes; an empty queue answers "Cancel". */
   messageAnswers: string[] = [];
   messages: { title?: string; body: string }[] = [];
+  /** Files handed to the default app (`openPath`). */
+  openedPaths: string[] = [];
 
   reset(): void {
     this.saveAnswers = [];
@@ -368,6 +370,7 @@ export class FakeDialogs {
     this.openedUrls = [];
     this.messageAnswers = [];
     this.messages = [];
+    this.openedPaths = [];
   }
 }
 
@@ -427,6 +430,9 @@ export const tauriMocks = {
   opener: () => ({
     openUrl: async (url: string) => {
       dialogs.openedUrls.push(url);
+    },
+    openPath: async (path: string) => {
+      dialogs.openedPaths.push(path);
     },
   }),
 };

@@ -21,6 +21,11 @@ export interface CursorInfo {
   selected: number;
   canUndo: boolean;
   canRedo: boolean;
+  /**
+   * A Formatted tab shown as Markdown syntax because a line is over 20,000 characters
+   * or the document is over 20 MB. Clears when that is no longer so.
+   */
+  previewLimited?: boolean;
 }
 
 export type BlockKind = "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "body";
@@ -106,9 +111,11 @@ export interface EditorEngine {
   format(cmd: FormatCommand): void;
   undo(): void;
   redo(): void;
-  cut(): void;
-  copy(): void;
-  paste(): void;
+  /** Rejects, leaving the text in place, when the clipboard cannot be written. */
+  cut(): Promise<void>;
+  copy(): Promise<void>;
+  /** Rejects when the clipboard cannot be read. */
+  paste(): Promise<void>;
   deleteSelection(): void;
   selectAll(): void;
   insertText(text: string): void;

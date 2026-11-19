@@ -83,6 +83,16 @@ describe("find", () => {
     expect(finder.find(query("a")).total).toBe(FIND_COUNT_LIMIT);
   });
 
+  // BUGS.md H10 (part 3): "1 of 10000" became "0 of 10000" after Next.
+  it("keeps an exact index when stepping past the counting limit", () => {
+    const { finder } = setup("a".repeat(FIND_COUNT_LIMIT + 50));
+    expect(finder.find(query("a"))).toEqual({ total: FIND_COUNT_LIMIT, current: 1 });
+    expect(finder.next()).toEqual({ total: FIND_COUNT_LIMIT, current: 2 });
+    expect(finder.prev()).toEqual({ total: FIND_COUNT_LIMIT, current: 1 });
+    // Wrapping back to the last match: its index is unknown.
+    expect(finder.prev()).toEqual({ total: FIND_COUNT_LIMIT, current: 0 });
+  });
+
   it("does nothing without an editor", () => {
     const finder = new FindController(() => null);
     expect(finder.find(query("x"))).toEqual({ total: 0, current: 0 });

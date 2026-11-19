@@ -123,7 +123,7 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - **Also:** tables, Mermaid, block maths and `---` inside a list, quote or callout are not rendered at all (`block.ts:143` looks at top-level blocks only), yet the toolbar shows "Edit table" as enabled.
 - **Fix:** strip the quote/indent prefix before parsing, or disable the commands for nested tables.
 
-### H6. One long line (over 20,000 characters) turns off live preview for the whole document for good ✅
+### H6. One long line (over 20,000 characters) turns off live preview for the whole document for good ✅ — fixed (0bb62e7)
 - Paste a base64 image (`![](data:image/png;base64,...)`) or a minified line. The whole document becomes raw Markdown.
 - The status bar still says **"Formatted"** and the toolbar stays. Deleting the line or pressing Undo does not bring it back; the file must be closed and reopened.
 - **Cause:** `src/editor/index.ts:323` (`checkDegrade`); the `degraded` flag never clears.
@@ -140,13 +140,13 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - **Cause:** `src/lib/loader.ts:729`. Save also sends the whole text over IPC.
 - **Fix:** a longer debounce for big files, write only the changes, or write during idle time.
 
-### H9. Print does not match the screen, and comments are printed ✅
+### H9. Print does not match the screen, and comments are printed ✅ — fixed (ccacdde, f2a908b)
 - README and Help say comments are "left out of printing". In fact `%% secret comment %%` is printed.
 - Printed **raw**: `$E=mc^2$`, `$$...$$`, Mermaid (as code), callouts (`[!warning]`), `==highlight==`, `[[wikilink]]`, `#tag`. Front matter prints as a rule and a heading "title: x".
 - **Cause:** `src/lib/print.ts:134` uses plain `marked` only.
 - **Fix:** remove `%%...%%` and front matter before printing; render KaTeX, Mermaid and callouts into the print HTML.
 
-### H10. The Find "x of y" counter is wrong ✅
+### H10. The Find "x of y" counter is wrong ✅ — fixed (96a6e76, 7ff58db)
 1. Move the cursor elsewhere and press Next: on the match at line 40 the counter says **"3 of 50"** (it only adds 1).
 2. F3 / Shift+F3 move the match but never update the counter.
 3. With 10,000 or more matches: "1 of 10000", then **"0 of 10000"** after Next. It should say "10000+".
@@ -192,7 +192,7 @@ The caret was at the end of the cell; F5 gave `| 11:50 AM 11/10/2026apple |` (te
 ### M3. After Ctrl+M the Tab key leaves the editor ✅ — fixed (05bdd86)
 Press Ctrl+M by mistake and Tab moves focus to the status bar; typing goes nowhere. Nothing shows that a mode changed. Cause: `src/editor/index.ts:212` keeps CodeMirror's `toggleTabFocusMode` from the default keymap. `Ctrl+/`, `Alt+Arrow`, `Ctrl+[` / `]` and `Ctrl+Shift+K` are also active but hidden.
 
-### M4. Heading and Bold produce wrong Markdown on several lines ✅
+### M4. Heading and Bold produce wrong Markdown on several lines ✅ — fixed (d573f19, e68b4e5)
 - Select all, choose H2 → `## ` on empty lines too, and `## - item`, `## > quote`.
 - Select two paragraphs, Bold → `**one\n\ntwo**`, which is not bold.
 - Cause: `src/editor/commands.ts:108` and `:44`.
@@ -203,7 +203,7 @@ With a table at the end of the document, Down arrow or Escape adds a newline and
 ### M6. Save As onto the path of another open tab gives two tabs for one file ✅ — fixed (246833d)
 Both tabs show `a.txt`; saving in one leaves the other in a stale/reload state.
 
-### M7. Links that open wrongly ✅
+### M7. Links that open wrongly ✅ — fixed (ebb2058)
 | Link | What happens |
 | --- | --- |
 | `[x](report.pdf)`, `[x](photo.png)` | The PDF or image bytes open as garbage in a **text tab** |
@@ -214,7 +214,7 @@ Both tabs show `a.txt`; saving in one leaves the other in a stale/reload state.
 | `[x](/docs/a.md)` | Treated as relative to the document's folder |
 Cause: `src/state/logic.ts:145-161` (`decodeURI` leaves reserved characters encoded).
 
-### M8. `.mdx` is Markdown in the installer but plain text in the app ✅
+### M8. `.mdx` is Markdown in the installer but plain text in the app ✅ — fixed (ebb2058)
 `src-tauri/windows/hooks.nsh` registers `.mdx` as a main Markdown type; `src/state/logic.ts:117` does not list it. It is missing from the Open/Save filters too.
 
 ### M9. A file opened during startup can be lost 📖
@@ -244,7 +244,7 @@ Find, Replace, Select all, Ctrl+End, Print, Save As, Go to line and changing the
 - A binary file opens as text and is damaged on save, with no warning.
 - Only code pages 874, 932, 936, 949, 950 and 1250-1258 are supported; all others (for example 866) are read as windows-1252.
 
-### M16. Edit > Cut deletes the text even when the clipboard write fails 📖
+### M16. Edit > Cut deletes the text even when the clipboard write fails 📖 — fixed (d532e03)
 `src/editor/index.ts:611` does not wait for `writeText`. `paste()` (`:623`) has no error handling; if it fails nothing happens and nothing is shown.
 
 ### M17. "Exit" does not quit, and the wrong window can be left over 📖
@@ -272,10 +272,10 @@ When another program has locked the file, the tab opens empty (partial, offset 0
 
 | # | Issue | Status |
 | --- | --- | --- |
-| L1 | `$HOME/$USER` becomes maths (shows "Use HOME/USER for paths") | ✅ |
-| L2 | Colour codes like `#fff`, `#1a2b3c` become tag pills | ✅ |
-| L3 | In `if a==b or c==d`, "b or c" is highlighted and the `==` are hidden | ✅ |
-| L4 | Time/Date (F5) is always US format `3:05 PM 11/10/2026`, not the system format | ✅ |
+| L1 | `$HOME/$USER` becomes maths (shows "Use HOME/USER for paths") | ✅ — fixed (389e22f) |
+| L2 | Colour codes like `#fff`, `#1a2b3c` become tag pills | ✅ — fixed (389e22f) |
+| L3 | In `if a==b or c==d`, "b or c" is highlighted and the `==` are hidden | ✅ — fixed (389e22f) |
+| L4 | Time/Date (F5) is always US format `3:05 PM 11/10/2026`, not the system format | ✅ — fixed (71d6fdf) |
 | L5 | "characters" counts UTF-16 units (an emoji is 2). The total of a partly loaded unsaved file is stale | 📖 |
 | L6 | The font list has false families ("Montserrat Extra"); "Inter" is always listed even when not installed | 📖 |
 | L7 | After 400 undo steps, undoing back to the saved state no longer clears the unsaved dot (`index.ts:57`) | 📖 |
@@ -287,6 +287,14 @@ When another program has locked the file, the tab opens empty (partial, offset 0
 | L13 | Ctrl+click on links works in Formatted mode only, not in Markdown syntax or Plain | 📖 |
 | L14 | `http://` and `file://` images do not show (only `https://`, local paths and data URLs do) | 📖 |
 | L15 | In the Find box, Ctrl+B / Ctrl+I / Ctrl+K / F5 act on the document | 📖 |
+| L8 | In table cells `2 * 3 * 4` turns italic; `_x_`, maths, images and wikilinks are not rendered | 📖 |
+| L9 | In a table without padding (`\|a\|b\|`), a `\` typed at the end of a cell merges it with the next cell | 📖 |
+| L10 | Table commands delete the extra cells of a row that has more cells than the header | 📖 |
+| L11 | An unclosed `$$` or `%%` restyles up to 5,000 lines; unclosed front matter up to 1,000 lines | 📖 — partly fixed (fff807a): an unclosed `$$` ends at the first blank line; unclosed `%%` and front matter unchanged |
+| L12 | Block maths, comment blocks and footnote definitions work at top level only, not inside a list, quote or callout | 📖 — fixed (fff807a) |
+| L13 | Ctrl+click on links works in Formatted mode only, not in Markdown syntax or Plain | 📖 — fixed (ccbb978) |
+| L14 | `http://` and `file://` images do not show (only `https://`, local paths and data URLs do) | 📖 — fixed (249600e) |
+| L15 | In the Find box, Ctrl+B / Ctrl+I / Ctrl+K / F5 act on the document | 📖 — fixed (7ff58db) |
 | L16 | The drafts folder is never cleaned: after a corrupt `session.json` or a crash, draft files stay forever; a draft that cannot be read is deleted | 📖 |
 
 Other small points: Enter on an empty nested list item removes the item instead of outdenting; indenting with Tab does not fix numbering; `pathsEqual` does not understand `..`, 8.3 names or UNC vs mapped drive (one file in two tabs); Ctrl+wheel or pinch zooms 10% per event; a partly loaded file that was deleted first shows "changed" instead of "deleted" (corrects itself within 3 seconds).
@@ -386,6 +394,17 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 | H15 | When no temp file can be created (access denied) but the file exists, it is written in place (not atomic). Rust not compiled here | `529593f` |
 | M15 (most) | UTF-16 without BOM is detected; status bar Encoding menu has "Reopen with encoding". Still open: no binary-file warning, code pages other than 874/932/936/949/950/1250-1258 | `529593f`, `a7319a4` |
 | W8 (part) | Paths of 260+ characters get the `\\?\` prefix before `ReplaceFileW`. FAT/exFAT and network shares still need a Windows check | `529593f` |
+| L1, L2, L3 | `$HOME/$USER` is not maths (a closing `$` is never followed by a letter or digit); hex colour codes are not tags; `==` between word characters is not a highlight marker | `389e22f` |
+| M4 (second part) | Bold/italic/strike over several paragraphs wraps each paragraph | `e68b4e5` |
+| H10 (parts 2, 3), L15 | F3 / Shift+F3 and Edit > Find next/previous go through the find bar, so its counter follows; "1 of 10,000+" with an exact index past the limit; Ctrl+B/I/K and F5 in the Find box no longer edit the document | `7ff58db` |
+| M7, M8 | Links: `[[v1.2 notes]]`, `%23`/`%26`, `file://`, folder links, root-relative `/docs/a.md`; PDFs, images and office files open in their default app (opener `openPath`, capability added, not run on Windows). `.mdx` is Markdown | `ebb2058` |
+| L14 | `http://` images (CSP `img-src` gains `http:`) and `file://` images, in the editor and in print | `249600e` |
+| L4 | F5 uses the locale's short time and date (the WebView's locale, which follows the Windows display language, not the regional format) | `71d6fdf` |
+| M16 | Cut deletes only after the clipboard write succeeded; Cut/Copy/Paste failures show a message | `d532e03` |
+| L13 | Ctrl+click opens links in Markdown syntax mode, and bare web addresses in Plain | `ccbb978` |
+| H6 | Live preview comes back once no long line is left (debounced check after deletions and on tab switch); the status bar says "Formatted (preview off)" with the reason. Skipping only the long line is not done | `0bb62e7` |
+| H9 (rest) | Print renders maths (KaTeX), Mermaid, callouts, highlights, wikilinks, embeds and tags | `f2a908b` |
+| L12, L11 (part) | `$$`, `%%` and footnote definitions work inside lists, quotes and callouts (the live preview still draws block widgets at top level only); an unclosed `$$` ends at a blank line | `fff807a` |
 
 ### Fixed on this branch (new)
 
@@ -402,11 +421,11 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 | H7 | `src/state/actions.test.ts` "H7: a deleted-then-restored file leaves an unedited tab clean" |
 | H14 | `src-tauri/src/files.rs` `mixed_line_endings_are_kept_on_save` (`#[ignore]`) — fixed (529593f), test runs again |
 | H16 | `src/state/actions.test.ts` "H16: a restored tab whose file is gone is not an empty unsaved document" |
-| M4 (second part) | `src/editor/commands.test.ts` "M4: bolding two paragraphs bolds each one" |
-| M7 | `src/state/logic.test.ts` "M7: [[v1.2 notes]] opens v1.2 notes.md" |
+| M4 (second part) — fixed, test un-skipped (e68b4e5) | `src/editor/commands.test.ts` "M4: bolding two paragraphs bolds each one" |
+| M7 — fixed, test un-skipped (ebb2058) | `src/state/logic.test.ts` "M7: [[v1.2 notes]] opens v1.2 notes.md" |
 | M12 | `src/lib/loader.test.ts` "M12: undo still works after a tab was hibernated and woken" |
 | M15 | `src-tauri/src/files.rs` `utf16_without_bom_is_detected` (`#[ignore]`) — fixed (529593f), test runs again |
-| L2, L3 | `src/editor/markdown.test.ts` "L2: colour codes are not tags", "L3: comparison operators are not highlight markers" |
+| L2, L3 — fixed, tests un-skipped (389e22f) | `src/editor/markdown.test.ts` "L2: colour codes are not tags", "L3: comparison operators are not highlight markers" |
 | L8 — fixed, test un-skipped (7d40ede) | `src/editor/tableModel.test.ts` "L8: 2 * 3 * 4 stays plain text" |
 
 ### New, not fixed
@@ -495,3 +514,13 @@ These are not bugs in existing code: Windows Notepad does these things and Notep
 #### FILES-3. The H15 in-place fallback is not atomic 📖
 - **What happens:** when the folder allows no new files, the file is overwritten in place. If the write fails part way (disk full, network drop), the file is damaged and no temp copy exists.
 - **Cause:** `src-tauri/src/files.rs` `write_in_place`. Notepad has the same limit.
+
+### New (markdown)
+
+#### MD-1. Maths and Mermaid inside a list, quote or callout show as source in Formatted mode 📖
+- **What happens:** since L12, `$$` blocks inside a list or quote are parsed as maths, but the live preview only turns top-level blocks into widgets, so they show as styled source (Print renders them).
+- **Cause:** `src/editor/livePreview/block.ts` (block widgets are built for children of `Document` only, the same limit as tables in H5).
+
+#### MD-2. The real regional date/time format is not available to F5 📖
+- **What happens:** L4 now uses the WebView's locale, which follows the Windows display language. With an English UI and a UK or German region, F5 still gives the US order.
+- **Fix:** read the user's locale name in Rust (`GetUserDefaultLocaleName`) and pass it to `formatDateTime`.

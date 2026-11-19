@@ -1,5 +1,6 @@
 // Link and image path resolution, plus the host hooks the widgets call into.
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileUrlToPath } from "../../state/logic";
 
 export const previewContext: {
   baseDir: () => string | null;
@@ -39,7 +40,8 @@ export function resolveWikiTarget(target: string): string {
 
 export function resolveImageSrc(src: string): string {
   if (/^(https?:|data:|blob:|asset:)/i.test(src)) return src;
-  const path = joinBase(src);
+  // file:///C:/x.png is a local file like any other (BUGS.md L14).
+  const path = /^file:/i.test(src) ? (fileUrlToPath(src.split(/[?#]/)[0]) ?? src) : joinBase(src);
   return "__TAURI_INTERNALS__" in window ? convertFileSrc(path) : path;
 }
 

@@ -3,7 +3,15 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { engine } from "../editor";
 import { plainMarkdownParser } from "../editor/markdown";
 import { ensureFullyLoaded } from "./loader";
-import { dirOf, fileNameOf, fontStack, fontWeightOf, headerFooterBoxes, resolveRelative } from "../state/logic";
+import {
+  dirOf,
+  fileNameOf,
+  fileUrlToPath,
+  fontStack,
+  fontWeightOf,
+  headerFooterBoxes,
+  resolveRelative,
+} from "../state/logic";
 import { getTab, useApp } from "../state/store";
 import type { TabMeta } from "../state/types";
 
@@ -28,6 +36,10 @@ const COMMON_ATTRS = ["align", "title"];
 
 function safeImageSrc(src: string, baseDir: string | null): string | null {
   if (/^(https?:|data:image\/)/i.test(src)) return src;
+  if (/^file:/i.test(src)) {
+    const path = fileUrlToPath(src.split(/[?#]/)[0]);
+    return path ? convertFileSrc(path) : null;
+  }
   if (/^[a-zA-Z][a-zA-Z0-9+.-]+:/.test(src) && !/^[a-zA-Z]:[\\/]/.test(src)) return null;
   let decoded = src;
   try {
@@ -97,6 +109,16 @@ function buildStyle(tab: TabMeta): string {
   #${ROOT_ID} blockquote{margin-left:0;padding-left:12px;border-left:3px solid #bbb}
   #${ROOT_ID} img{max-width:100%}
   #${ROOT_ID} h1,#${ROOT_ID} h2,#${ROOT_ID} h3{break-after:avoid}
+  #${ROOT_ID} mark{background:#fff3a3;color:inherit}
+  #${ROOT_ID} .np-tag{padding:0 6px;border:1px solid #bbb;border-radius:9px;font-size:.9em}
+  #${ROOT_ID} .np-wikilink{text-decoration:underline}
+  #${ROOT_ID} .np-math-block{margin:.6em 0;text-align:center}
+  #${ROOT_ID} .np-mermaid{margin:.6em 0;break-inside:avoid}
+  #${ROOT_ID} .np-mermaid svg{max-width:100%;height:auto}
+  #${ROOT_ID} blockquote.np-callout{padding:6px 12px;border-left-width:4px;background:#f4f6f8;break-inside:avoid}
+  #${ROOT_ID} .np-callout-warning,#${ROOT_ID} .np-callout-caution,#${ROOT_ID} .np-callout-attention{border-left-color:#d97706}
+  #${ROOT_ID} .np-callout-danger,#${ROOT_ID} .np-callout-error,#${ROOT_ID} .np-callout-bug,#${ROOT_ID} .np-callout-failure{border-left-color:#dc2626}
+  #${ROOT_ID} .np-callout-tip,#${ROOT_ID} .np-callout-success,#${ROOT_ID} .np-callout-check,#${ROOT_ID} .np-callout-done{border-left-color:#16a34a}
 }
 @page{
   size:${pageSetup.orientation};
@@ -124,10 +146,116 @@ function imagesReady(root: HTMLElement): Promise<unknown> {
 /** Parts of a note that are never shown on paper. */
 const NOT_PRINTED = new Set(["Frontmatter", "CommentBlock", "InlineComment"]);
 
+/** Notepadly syntax that plain `marked` does not know, rendered into the page after sanitising. */
+export type PrintPart =
+  | { kind: "math"; src: string; display: boolean }
+  | { kind: "mermaid"; src: string }
+  | { kind: "wikilink"; text: string }
+  | { kind: "embed"; target: string; alias: string }
+  | { kind: "tag"; text: string }
+  | { kind: "callout"; type: string; titled: boolean };
+
+/** Private-use characters: never typed, kept as they are by `marked` and the sanitiser. */
+const TOKEN = /\uE000(\d+)\uE001/g;
+const token = (index: number) => `\uE000${index}\uE001`;
+
+export interface PrintSource {
+  markdown: string;
+  parts: PrintPart[];
+}
+
 /**
- * The markdown that goes to paper: front matter and `%%comments%%` are left
- * out, as the editor promises. The parser finds them, so `%%` inside code stays.
+ * The markdown that goes to paper. Front matter and `%%comments%%` are left out, as
+ * the editor promises; maths, Mermaid, wikilinks, embeds, tags and callout markers
+ * become placeholders that `renderParts` fills in; `==highlights==` become `<mark>`.
+ * The editor's own parser finds all of them, so the same text inside code stays as is.
  */
+export function preparePrint(text: string): PrintSource {
+  const edits: { from: number; to: number; insert: string }[] = [];
+  const parts: PrintPart[] = [];
+  const add = (from: number, to: number, part: PrintPart, block = false) => {
+    const mark = token(parts.push(part) - 1);
+    edits.push({ from, to, insert: block ? `\n\n${mark}\n\n` : mark });
+  };
+  plainMarkdownParser.parse(text).iterate({
+    enter: (ref) => {
+      const node = ref.node;
+      if (NOT_PRINTED.has(ref.name)) {
+        edits.push({ from: ref.from, to: ref.to, insert: "" });
+        return false;
+      }
+      switch (ref.name) {
+        case "InlineMath":
+        case "BlockMath": {
+          const marks = node.getChildren("MathMark");
+          if (marks.length < 2) return false;
+          // Inside a quote or list, the `>` and list markers of later lines are not maths.
+          let src = "";
+          let at = marks[0].to;
+          for (let child = node.firstChild; child; child = child.nextSibling) {
+            if (child.name === "MathMark" || child.from < at) continue;
+            src += text.slice(at, child.from);
+            at = child.to;
+          }
+          src = (src + text.slice(at, marks[marks.length - 1].from)).trim();
+          const display = ref.name === "BlockMath" || marks[0].to - marks[0].from === 2;
+          const topLevel = node.parent?.name === "Document";
+          add(ref.from, ref.to, { kind: "math", src, display }, ref.name === "BlockMath" && topLevel);
+          return false;
+        }
+        case "FencedCode": {
+          const info = node.getChild("CodeInfo");
+          if (!info || text.slice(info.from, info.to).trim().toLowerCase() !== "mermaid") return false;
+          const body = node.getChild("CodeText");
+          const src = body ? text.slice(body.from, body.to) : "";
+          add(ref.from, ref.to, { kind: "mermaid", src });
+          return false;
+        }
+        case "HighlightMark": {
+          const parent = node.parent;
+          edits.push({ from: ref.from, to: ref.to, insert: parent && parent.from === ref.from ? "<mark>" : "</mark>" });
+          return false;
+        }
+        case "WikiLink": {
+          const shown = node.getChild("WikiAlias") ?? node.getChild("WikiTarget");
+          add(ref.from, ref.to, { kind: "wikilink", text: shown ? text.slice(shown.from, shown.to).trim() : "" });
+          return false;
+        }
+        case "Embed": {
+          const target = node.getChild("WikiTarget");
+          const alias = node.getChild("WikiAlias");
+          add(ref.from, ref.to, {
+            kind: "embed",
+            target: target ? text.slice(target.from, target.to).trim() : "",
+            alias: alias ? text.slice(alias.from, alias.to).trim() : "",
+          });
+          return false;
+        }
+        case "Tag":
+          add(ref.from, ref.to, { kind: "tag", text: text.slice(ref.from, ref.to) });
+          return false;
+        case "CalloutTag": {
+          const type = (/^\[!([\w-]+)\]/.exec(text.slice(ref.from, ref.to))?.[1] ?? "note").toLowerCase();
+          const rest = text.slice(ref.to, text.indexOf("\n", ref.to) < 0 ? text.length : text.indexOf("\n", ref.to));
+          add(ref.from, ref.to, { kind: "callout", type, titled: rest.trim() !== "" });
+          return false;
+        }
+      }
+      return true;
+    },
+  });
+  edits.sort((a, b) => a.from - b.from);
+  let markdown = "";
+  let at = 0;
+  for (const edit of edits) {
+    if (edit.from < at) continue;
+    markdown += text.slice(at, edit.from) + edit.insert;
+    at = edit.to;
+  }
+  return { markdown: markdown + text.slice(at), parts };
+}
+
+/** Only the comment and front-matter removal of `preparePrint`, as plain text. */
 export function printableMarkdown(text: string): string {
   const cuts: [number, number][] = [];
   plainMarkdownParser.parse(text).iterate({
@@ -146,6 +274,103 @@ export function printableMarkdown(text: string): string {
   return out + text.slice(at);
 }
 
+const capitalize = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+
+function element(tag: string, className: string, text = ""): HTMLElement {
+  const el = document.createElement(tag);
+  el.className = className;
+  if (text) el.textContent = text;
+  return el;
+}
+
+async function renderPart(part: PrintPart, baseDir: string | null, holder: Node): Promise<Node> {
+  switch (part.kind) {
+    case "math":
+      try {
+        const { renderMath } = await import("../editor/lazy");
+        // KaTeX escapes its input and runs with `trust: false`: its markup is safe to insert.
+        const el = element(part.display ? "div" : "span", part.display ? "np-math-block" : "np-math");
+        el.innerHTML = (await renderMath(part.src, part.display)).html;
+        return el;
+      } catch {
+        return document.createTextNode(part.display ? `$$${part.src}$$` : `$${part.src}$`);
+      }
+    case "mermaid":
+      try {
+        const { renderMermaid } = await import("../editor/lazy");
+        // Mermaid runs with securityLevel "strict", which sanitises the SVG it returns.
+        const el = element("div", "np-mermaid");
+        el.innerHTML = (await renderMermaid(part.src, false)).html;
+        return el;
+      } catch {
+        const pre = document.createElement("pre");
+        pre.appendChild(document.createElement("code")).textContent = part.src;
+        return pre;
+      }
+    case "wikilink":
+      return element("span", "np-wikilink", part.text);
+    case "embed": {
+      const { isImagePath, parseSize } = await import("../editor/livePreview/context");
+      if (!isImagePath(part.target)) return element("span", "np-wikilink", part.alias || part.target);
+      const image = document.createElement("img");
+      const src = safeImageSrc(part.target.split("#")[0], baseDir);
+      if (src) image.src = src;
+      image.alt = part.target;
+      const size = parseSize(part.alias);
+      if (size?.width) image.width = size.width;
+      if (size?.height) image.height = size.height;
+      return image;
+    }
+    case "tag":
+      return element("span", "np-tag", part.text);
+    case "callout": {
+      const quote = holder.parentElement?.closest("blockquote");
+      quote?.classList.add("np-callout", `np-callout-${part.type}`);
+      // A callout with its own title shows that title; otherwise its kind, as on screen.
+      return part.titled ? document.createTextNode("") : element("strong", "np-callout-title", capitalize(part.type));
+    }
+  }
+}
+
+/** Replaces the placeholders of `preparePrint` with rendered maths, diagrams and the rest. */
+export async function renderParts(root: HTMLElement, parts: PrintPart[], baseDir: string | null): Promise<void> {
+  if (!parts.length) return;
+  const texts: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if ((node as Text).data.includes("\uE000")) texts.push(node as Text);
+  }
+  for (const textNode of texts) {
+    const data = textNode.data;
+    const pieces: (string | number)[] = [];
+    let at = 0;
+    for (const match of data.matchAll(TOKEN)) {
+      pieces.push(data.slice(at, match.index), Number(match[1]));
+      at = (match.index ?? 0) + match[0].length;
+    }
+    pieces.push(data.slice(at));
+    const parent = textNode.parentNode;
+    if (!parent) continue;
+    // A block (display maths, a diagram) alone in a paragraph replaces that paragraph.
+    const lone = pieces.filter((piece) => piece !== "").length === 1 && parent instanceof HTMLParagraphElement && parent.childNodes.length === 1;
+    for (const piece of pieces) {
+      if (typeof piece === "string") {
+        if (piece) parent.insertBefore(document.createTextNode(piece), textNode);
+        continue;
+      }
+      const part = parts[piece];
+      const rendered = part ? await renderPart(part, baseDir, textNode) : document.createTextNode("");
+      const block = part && ((part.kind === "math" && part.display) || part.kind === "mermaid");
+      if (block && lone) {
+        parent.parentNode?.replaceChild(rendered, parent);
+        break;
+      }
+      parent.insertBefore(rendered, textNode);
+    }
+    if (textNode.parentNode) textNode.remove();
+  }
+}
+
 export async function printTab(id: string): Promise<void> {
   await ensureFullyLoaded(id);
   const tab = getTab(id);
@@ -157,8 +382,11 @@ export async function printTab(id: string): Promise<void> {
   root.id = ROOT_ID;
   if (tab.mode === "formatted") {
     const { marked } = await import("marked");
-    const html = marked.parse(printableMarkdown(text), { async: false, gfm: true }) as string;
-    root.appendChild(sanitizeHtml(html, tab.path ? dirOf(tab.path) : null));
+    const baseDir = tab.path ? dirOf(tab.path) : null;
+    const { markdown, parts } = preparePrint(text);
+    const html = marked.parse(markdown, { async: false, gfm: true }) as string;
+    root.appendChild(sanitizeHtml(html, baseDir));
+    await renderParts(root, parts, baseDir);
   } else {
     const pre = document.createElement("pre");
     pre.textContent = text;
