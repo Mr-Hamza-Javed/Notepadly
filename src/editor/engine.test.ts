@@ -5,6 +5,7 @@ import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FormatCommand } from "./api";
 import { engine, urlAt } from ".";
+import { blockField, calloutFolded, toggleCalloutFold } from "./livePreview/block";
 
 const lastDirty = (log: ReturnType<typeof mountEngine>["log"], id: string) =>
   [...log.dirty].reverse().find(([tab]) => tab === id)?.[1] ?? false;
@@ -612,5 +613,105 @@ describe("editor engine: live preview comes back after a long line is gone", () 
     engine.deleteSelection();
     engine.setMode("a", "formatted");
     expect(editorClass()).toContain("cm-mode-formatted");
+  });
+});
+
+describe("editor engine: state kept over hibernation and tab moves", () => {
+  const CALLOUT = "intro\n\n> [!note]- Title\n> hidden body\n\nafter\n";
+  const view = () => EditorView.findFromDOM(document.querySelector(".cm-editor") as HTMLElement)!;
+  const unfold = () => {
+    view().dispatch({ effects: toggleCalloutFold.of(CALLOUT.indexOf("> [!note]")) });
+  };
+  const folded = () => calloutFolded(view().state, CALLOUT.indexOf("> [!note]"), "-");
+
+  beforeEach(() => {
+    mountEngine();
+  });
+
+  it("M12: an unfolded callout stays unfolded after the tab hibernates and wakes", () => {
+    engine.createDoc("a", CALLOUT, "formatted");
+    engine.createDoc("b", "other", "plain");
+    engine.activate("a");
+    expect(folded()).toBe(true);
+    unfold();
+    expect(folded()).toBe(false);
+    engine.activate("b");
+    engine.hibernate("a");
+    engine.wakeDoc("a", CALLOUT, "formatted");
+    engine.activate("a");
+    expect(folded()).toBe(false);
+  });
+
+  it("M12: kept folds are dropped when the line is no longer a callout", () => {
+    engine.createDoc("a", CALLOUT, "formatted");
+    engine.createDoc("b", "other", "plain");
+    engine.activate("a");
+    unfold();
+    engine.activate("b");
+    engine.hibernate("a");
+    engine.wakeDoc("a", "x".repeat(CALLOUT.length + 5), "formatted");
+    engine.activate("a");
+    expect(view().state.field(blockField).toggled).toEqual([]);
+  });
+
+  it("F2: carried state brings undo history, saved point and folds to a new document", () => {
+    const { log } = mountEngine();
+    engine.createDoc("a", CALLOUT, "formatted");
+    engine.activate("a");
+    unfold();
+    engine.restore("a", { anchor: 0, head: 0, scrollTop: 0 });
+    engine.insertText("one ");
+    const carried = JSON.parse(JSON.stringify(engine.carryState!("a")));
+    const text = engine.getText("a");
+    engine.dropDoc("a");
+    expect(engine.adoptDoc!("z", text, "formatted", carried)).toBe(true);
+    engine.activate("z");
+    expect(calloutFolded(view().state, CALLOUT.indexOf("> [!note]") + 4, "-")).toBe(false);
+    expect(log.dirty.at(-1)).toEqual(["z", true]);
+    engine.undo();
+    expect(engine.getText("z")).toBe(CALLOUT);
+    // Undo reached the saved point: the tab is clean again.
+    expect(log.dirty.at(-1)).toEqual(["z", false]);
+    engine.redo();
+    expect(engine.getText("z")).toBe(text);
+  });
+
+  it("F2: a hibernated tab carries its history to wake with in the other window", () => {
+    engine.createDoc("a", "hello", "plain");
+    engine.createDoc("b", "other", "plain");
+    engine.activate("a");
+    engine.restore("a", { anchor: 5, head: 5, scrollTop: 0 });
+    engine.insertText(" world");
+    engine.markSaved("a");
+    engine.activate("b");
+    engine.hibernate("a");
+    const carried = JSON.parse(JSON.stringify(engine.carryState!("a")));
+    engine.dropDoc("a");
+    engine.adoptDoc!("z", null, "plain", carried);
+    expect(engine.hasDoc("z")).toBe(false);
+    expect(engine.wakeDoc("z", "hello world", "plain")).toBe(true);
+    engine.activate("z");
+    engine.undo();
+    expect(engine.getText("z")).toBe("hello");
+  });
+
+  it("F2: history is left behind when it is too big, or does not match the text", () => {
+    engine.createDoc("a", "", "plain");
+    engine.activate("a");
+    engine.insertText("y".repeat(5 * 1024 * 1024));
+    // Undoing a deletion needs the deleted text: that is what makes a history big.
+    engine.selectAll();
+    engine.deleteSelection();
+    const carried = engine.carryState!("a")!;
+    expect(carried.history).toBeNull();
+    engine.createDoc("c", "abc", "plain");
+    engine.activate("c");
+    engine.insertText("d");
+    const small = engine.carryState!("c")!;
+    expect(small.history).not.toBeNull();
+    // Wrong length (the text changed): a fresh history instead of a broken one.
+    expect(engine.adoptDoc!("y", "different", "plain", small)).toBe(false);
+    expect(engine.adoptDoc!("x", "dabc", "plain", { ...small, history: { bad: true } })).toBe(false);
+    expect(engine.getText("x")).toBe("dabc");
   });
 });

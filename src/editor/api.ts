@@ -73,6 +73,20 @@ export interface FindResult {
   invalid?: boolean;
 }
 
+/**
+ * Editor state that can be sent to another window with a moved tab (F2): the undo
+ * history (null when too big) and the callouts whose fold state was flipped.
+ */
+export interface CarriedDocState {
+  /** The undo history as JSON, against a document of `length` characters. */
+  history: unknown;
+  length: number;
+  versions: (number | null)[];
+  depth: number;
+  savedVersion: number;
+  folds: number[];
+}
+
 export interface EditorHost {
   /** User edit only; never fired for appendText or loading. */
   onDirtyChange(tabId: string, dirty: boolean): void;
@@ -115,6 +129,14 @@ export interface EditorEngine {
    * false (and starts a fresh history) when the history could not be restored.
    */
   wakeDoc(tabId: string, text: string, mode: FormatMode): boolean;
+  /** What a tab moving to another window takes: undo history (when not too big) and folds. */
+  carryState?(tabId: string): CarriedDocState | null;
+  /**
+   * Creates the document of a tab moved from another window with its carried state.
+   * `text` null: the tab moved while hibernated, so the state is kept for `wakeDoc`.
+   * Returns true when the undo history was restored.
+   */
+  adoptDoc?(tabId: string, text: string | null, mode: FormatMode, carried: CarriedDocState): boolean;
   hasDoc(tabId: string): boolean;
   activate(tabId: string): void;
   /** Shows an empty, read-only placeholder instead of the active tab until the next activate. */

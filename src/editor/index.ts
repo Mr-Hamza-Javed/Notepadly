@@ -26,6 +26,7 @@ import {
 } from "@codemirror/state";
 import { EditorView, keymap, type ViewUpdate } from "@codemirror/view";
 import type {
+  CarriedDocState,
   CursorInfo,
   EditorConfig,
   EditorEngine,
@@ -46,7 +47,7 @@ import {
   handleTab,
 } from "./commands";
 import { FIND_COUNT_LIMIT, FindController, findExtension } from "./find";
-import { blockPreview, rebuildBlocks } from "./livePreview/block";
+import { CALLOUT_LINE, blockField, blockPreview, rebuildBlocks, toggleCalloutFold } from "./livePreview/block";
 import { documentPathChanged, previewContext, resolveHref } from "./livePreview/context";
 import { ctrlClick, inlinePreview } from "./livePreview/inline";
 import { escapeCellText, focusedTable, tableAt } from "./livePreview/widgets";
@@ -125,7 +126,7 @@ interface DocRecord {
   configSerial: number;
 }
 
-/** What a hibernated tab keeps so its undo history survives (BUGS.md M12). */
+/** What a hibernated tab keeps so its undo history and folds survive (BUGS.md M12). */
 interface SleepRecord {
   /** The history field's value: undo events as changes against a doc of `length`, no text. */
   history: unknown;
@@ -133,6 +134,30 @@ interface SleepRecord {
   versions: number[];
   depth: number;
   savedVersion: number;
+  /** Callouts whose fold state was flipped (line starts). */
+  folds: number[];
+}
+
+/** A tab moving to another window takes its undo history only up to this size (JSON characters). */
+const MAX_CARRIED_HISTORY = 4 * 1024 * 1024;
+/** ...and only for documents up to this many characters (F2). */
+const MAX_CARRIED_DOC = 8 * 1024 * 1024;
+
+const NO_SELECTION = { ranges: [{ anchor: 0, head: 0 }], main: 0 };
+
+/** The history field's value as JSON, without serialising any document text. */
+function historyToJSON(value: unknown): unknown {
+  return EditorState.create({ extensions: historyField.init(() => value) }).toJSON({ history: historyField }).history;
+}
+
+function historyFromJSON(json: unknown): unknown {
+  return EditorState.fromJSON({ doc: "", selection: NO_SELECTION, history: json }, {}, { history: historyField }).field(
+    historyField,
+  );
+}
+
+function foldsOf(state: EditorState): number[] {
+  return state.field(blockField, false)?.toggled.slice() ?? [];
 }
 
 let versionCounter = 0;
@@ -526,25 +551,122 @@ class Engine implements EditorEngine {
     this.docs.set(tabId, this.newRecord(tabId, text, mode));
   }
 
-  hibernate(tabId: string): void {
-    const doc = this.docs.get(tabId);
-    if (!doc) return;
+  private keep(doc: DocRecord): SleepRecord {
     const state = this.stateOf(doc);
-    this.dropDoc(tabId);
-    this.sleeping.set(tabId, {
+    return {
       history: state.field(historyField, false) ?? null,
       length: state.doc.length,
       versions: doc.versions,
       depth: doc.depth,
       savedVersion: doc.savedVersion,
-    });
+      folds: foldsOf(state),
+    };
+  }
+
+  hibernate(tabId: string): void {
+    const doc = this.docs.get(tabId);
+    if (!doc) return;
+    const kept = this.keep(doc);
+    this.dropDoc(tabId);
+    this.sleeping.set(tabId, kept);
   }
 
   wakeDoc(tabId: string, text: string, mode: FormatMode): boolean {
     const sleep = this.sleeping.get(tabId);
     this.createDoc(tabId, text, mode);
-    if (!sleep || sleep.history === null || text.length < sleep.length) return false;
+    if (!sleep || text.length < sleep.length) return false;
     const doc = this.docs.get(tabId) as DocRecord;
+    const restored = this.restoreHistory(doc, text, sleep);
+    this.restoreFolds(doc, sleep.folds);
+    return restored;
+  }
+
+  carryState(tabId: string): CarriedDocState | null {
+    const doc = this.docs.get(tabId);
+    const kept = doc ? this.keep(doc) : this.sleeping.get(tabId);
+    if (!kept) return null;
+    let history: unknown = null;
+    if (kept.history !== null && kept.length <= MAX_CARRIED_DOC) {
+      try {
+        history = historyToJSON(kept.history);
+        if (JSON.stringify(history).length > MAX_CARRIED_HISTORY) history = null;
+      } catch {
+        history = null;
+      }
+    }
+    return {
+      history,
+      length: kept.length,
+      // Holes (undo depths never given a version) become null in JSON anyway.
+      versions: Array.from(kept.versions, (v) => (v === undefined ? null : v)),
+      depth: kept.depth,
+      savedVersion: kept.savedVersion,
+      folds: kept.folds,
+    };
+  }
+
+  adoptDoc(tabId: string, text: string | null, mode: FormatMode, carried: CarriedDocState): boolean {
+    const kept = this.fromCarried(carried);
+    if (text === null) {
+      // The tab moves while hibernated: it wakes here with its history.
+      this.docs.delete(tabId);
+      if (kept) this.sleeping.set(tabId, kept);
+      else this.sleeping.delete(tabId);
+      return false;
+    }
+    this.createDoc(tabId, text, mode);
+    if (!kept || kept.length !== text.length) return false;
+    const doc = this.docs.get(tabId) as DocRecord;
+    const restored = this.restoreHistory(doc, text, kept);
+    this.restoreFolds(doc, kept.folds);
+    return restored;
+  }
+
+  /** Checks state carried from another window and gives it version ids of this window. */
+  private fromCarried(carried: CarriedDocState): SleepRecord | null {
+    try {
+      const { length, depth, versions, savedVersion } = carried;
+      if (!Number.isInteger(length) || !Number.isInteger(depth) || !Array.isArray(versions)) return null;
+      const fresh = new Map<number, number>();
+      const renumber = (v: unknown): number | undefined => {
+        if (typeof v !== "number") return undefined;
+        let id = fresh.get(v);
+        if (id === undefined) fresh.set(v, (id = ++versionCounter));
+        return id;
+      };
+      const mapped: number[] = [];
+      versions.forEach((v, i) => {
+        const id = renumber(v);
+        if (id !== undefined) mapped[i] = id;
+      });
+      return {
+        history: carried.history === null || carried.history === undefined ? null : historyFromJSON(carried.history),
+        length,
+        versions: mapped,
+        depth,
+        savedVersion: renumber(savedVersion) ?? ++versionCounter,
+        folds: Array.isArray(carried.folds) ? carried.folds.filter((pos) => Number.isInteger(pos)) : [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Puts kept folds back on callouts that are still where they were. */
+  private restoreFolds(doc: DocRecord, folds: readonly number[]): void {
+    const state = doc.state;
+    if (!folds.length || !state.field(blockField, false)) return;
+    const valid = folds.filter((pos) => {
+      if (pos < 0 || pos > state.doc.length) return false;
+      const line = state.doc.lineAt(pos);
+      return line.from === pos && line.length < 2000 && CALLOUT_LINE.test(line.text);
+    });
+    if (valid.length) doc.state = state.update({ effects: valid.map((pos) => toggleCalloutFold.of(pos)) }).state;
+  }
+
+  /** Seeds a fresh record's state with kept undo history; `text` starts with the text it had. */
+  private restoreHistory(doc: DocRecord, text: string, sleep: SleepRecord): boolean {
+    if (sleep.history === null || text.length < sleep.length) return false;
     try {
       // The same mechanism EditorState.fromJSON uses to seed a field.
       let state = EditorState.create({
@@ -562,7 +684,7 @@ class Engine implements EditorEngine {
     } catch {
       return false;
     }
-    doc.versions = sleep.versions;
+    doc.versions = sleep.versions.slice();
     doc.depth = sleep.depth;
     doc.savedVersion = sleep.savedVersion;
     doc.dirty = doc.versions[doc.depth] !== doc.savedVersion;
