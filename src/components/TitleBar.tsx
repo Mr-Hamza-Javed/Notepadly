@@ -113,14 +113,14 @@ function tabMenu(id: string): MenuEntry[] {
   const tab = tabs[index];
   const hasPath = !!tab?.path;
   return [
-    { id: "close", label: "Close", onSelect: () => void actions.closeTab(id) },
-    { id: "others", label: "Close others", disabled: tabs.length < 2, onSelect: () => void actions.closeOthers(id) },
-    { id: "right", label: "Close to the right", disabled: index >= tabs.length - 1, onSelect: () => void actions.closeToRight(id) },
+    { id: "close", label: "Close", accessKey: "c", onSelect: () => void actions.closeTab(id) },
+    { id: "others", label: "Close others", accessKey: "o", disabled: tabs.length < 2, onSelect: () => void actions.closeOthers(id) },
+    { id: "right", label: "Close to the right", accessKey: "r", disabled: index >= tabs.length - 1, onSelect: () => void actions.closeToRight(id) },
     { kind: "sep" },
-    { id: "newwindow", label: "Move to new window", disabled: tabs.length < 2, onSelect: () => void actions.moveTabOut(id, true) },
+    { id: "newwindow", label: "Move to new window", accessKey: "n", disabled: tabs.length < 2, onSelect: () => void actions.moveTabOut(id, true) },
     { kind: "sep" },
-    { id: "copy", label: "Copy path", disabled: !hasPath, onSelect: () => void actions.copyPath(id) },
-    { id: "reveal", label: "Reveal in Explorer", disabled: !hasPath, onSelect: () => void actions.revealTab(id) },
+    { id: "copy", label: "Copy path", accessKey: "p", disabled: !hasPath, onSelect: () => void actions.copyPath(id) },
+    { id: "reveal", label: "Reveal in Explorer", accessKey: "e", disabled: !hasPath, onSelect: () => void actions.revealTab(id) },
   ];
 }
 

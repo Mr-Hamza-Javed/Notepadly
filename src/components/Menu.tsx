@@ -12,6 +12,7 @@ import {
 } from "react";
 import { G, Glyph } from "./icons";
 import { focusEditorSoon } from "./focus";
+import { shortcutKey } from "../lib/shortcuts";
 
 export interface AnchorRect {
   left: number;
@@ -133,6 +134,24 @@ export interface MenuItem {
   onSelect?: () => void;
   /** Tooltip, e.g. a recent file's full path. */
   tip?: string;
+  /**
+   * Access key (mnemonic), a letter of the label: underlined, and pressing it runs
+   * the item when no other item in the menu shares it, as in Windows (Alt, F, S saves).
+   */
+  accessKey?: string;
+}
+
+/** The label with its access key letter marked, for the underline. */
+function labelWithKey(label: string, accessKey: string | undefined): ReactNode {
+  const at = accessKey ? label.toLowerCase().indexOf(accessKey.toLowerCase()) : -1;
+  if (at < 0) return label;
+  return (
+    <>
+      {label.slice(0, at)}
+      <span className="mi-key">{label[at]}</span>
+      {label.slice(at + 1)}
+    </>
+  );
 }
 export interface MenuSep {
   kind: "sep";
@@ -291,8 +310,25 @@ export function Menu({
         break;
       default:
         handled = false;
-        if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
-          const k = e.key.toLowerCase();
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+          // Access keys first: a unique one runs its item, a shared one moves between them.
+          const k = shortcutKey(e.key, e.code);
+          const owners = entries.flatMap((it, i) => (enabled(it) && (it as MenuItem).accessKey?.toLowerCase() === k ? [i] : []));
+          if (owners.length === 1) {
+            setActive(owners[0]);
+            setKbd(true);
+            pick(owners[0]);
+            handled = true;
+            break;
+          }
+          if (owners.length > 1) {
+            const next = owners.find((i) => i > active) ?? owners[0];
+            setActive(next);
+            setKbd(true);
+            handled = true;
+            break;
+          }
+          if (e.altKey) break;
           const n = entries.length;
           for (let step = 1; step <= n; step++) {
             const i = (Math.max(active, -1) + step + n) % n;
@@ -349,6 +385,7 @@ export function Menu({
               aria-checked={e.checked}
               aria-disabled={e.disabled || undefined}
               aria-haspopup={e.submenu ? "menu" : undefined}
+              aria-keyshortcuts={e.accessKey?.toUpperCase()}
               className={cls}
               onPointerMove={() => {
                 if (active !== i || kbd) hover(i);
@@ -356,7 +393,7 @@ export function Menu({
               onClick={() => pick(i)}
             >
               {hasChecks && <span className="mi-check">{e.checked && <Glyph cp={G.check} size={12} />}</span>}
-              <span className="mi-label">{e.label}</span>
+              <span className="mi-label">{labelWithKey(e.label, e.accessKey)}</span>
               {e.submenu ? (
                 <Glyph cp={G.right} size={12} className="mi-chevron" />
               ) : (

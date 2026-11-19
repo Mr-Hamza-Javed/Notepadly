@@ -5,6 +5,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Menu, type MenuEntry } from "./Menu";
 
+vi.mock("@tauri-apps/api/core", async () => (await import("../test/fakeTauri")).tauriMocks.core());
+vi.mock("@tauri-apps/api/window", async () => (await import("../test/fakeTauri")).tauriMocks.window());
+vi.mock("@tauri-apps/api/webview", async () => (await import("../test/fakeTauri")).tauriMocks.webview());
+vi.mock("@tauri-apps/api/webviewWindow", async () => (await import("../test/fakeTauri")).tauriMocks.webviewWindow());
+vi.mock("@tauri-apps/plugin-dialog", async () => (await import("../test/fakeTauri")).tauriMocks.dialog());
+vi.mock("@tauri-apps/plugin-opener", async () => (await import("../test/fakeTauri")).tauriMocks.opener());
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 Element.prototype.scrollIntoView ??= () => {};
 
@@ -75,5 +82,106 @@ describe("menu accessibility", () => {
     expect(first.getAttribute("aria-activedescendant")).not.toBe(second.getAttribute("aria-activedescendant"));
     await act(async () => r.unmount());
     other.remove();
+  });
+});
+
+describe("menu access keys", () => {
+  const press = (target: HTMLElement, init: KeyboardEventInit) =>
+    act(async () => {
+      target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    });
+
+  it("runs the item whose access key is pressed, when it is the only one", async () => {
+    const save = vi.fn();
+    const saveAs = vi.fn();
+    const menu = await renderMenu([
+      { id: "save", label: "Save", accessKey: "s", onSelect: save },
+      { id: "saveas", label: "Save as", accessKey: "a", onSelect: saveAs },
+    ]);
+    await press(menu, { key: "s" });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(saveAs).not.toHaveBeenCalled();
+  });
+
+  it("also takes the key with Alt still held, and from a non-Latin layout", async () => {
+    const save = vi.fn();
+    const menu = await renderMenu([
+      { id: "new", label: "New tab", accessKey: "t" },
+      { id: "save", label: "Save", accessKey: "s", onSelect: save },
+    ]);
+    await press(menu, { key: "س", code: "KeyS", altKey: true });
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("moves between items that share an access key instead of running one", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const menu = await renderMenu([
+      { id: "a", label: "Close", accessKey: "c", onSelect: first },
+      { id: "b", label: "Copy", accessKey: "c", onSelect: second },
+    ]);
+    await press(menu, { key: "c" });
+    expect(announced(menu)).toBe("Close");
+    await press(menu, { key: "c" });
+    expect(announced(menu)).toBe("Copy");
+    expect(first).not.toHaveBeenCalled();
+    expect(second).not.toHaveBeenCalled();
+  });
+
+  it("ignores a disabled item's access key", async () => {
+    const cut = vi.fn();
+    const menu = await renderMenu([{ id: "cut", label: "Cut", accessKey: "t", disabled: true, onSelect: cut }]);
+    await press(menu, { key: "t" });
+    expect(cut).not.toHaveBeenCalled();
+  });
+
+  it("marks the access key letter for the underline", async () => {
+    const menu = await renderMenu([{ id: "saveas", label: "Save as", accessKey: "a" }]);
+    expect(menu.querySelector(".mi-key")?.textContent).toBe("a");
+    expect(menu.querySelector("[role='menuitem']")?.getAttribute("aria-keyshortcuts")).toBe("A");
+  });
+
+  it("gives every item of the app's menus a unique access key from its label", async () => {
+    vi.resetModules();
+    const { bootApp } = await import("../test/appHarness");
+    await bootApp();
+    const { buildMenu } = await import("./menus");
+    const check = (entries: MenuEntry[], where: string) => {
+      const seen = new Set<string>();
+      for (const entry of entries) {
+        if (entry.kind === "sep" || entry.id === "none") continue;
+        expect(entry.accessKey, `${where}: ${entry.label}`).toBeTruthy();
+        expect(entry.label.toLowerCase(), where).toContain(entry.accessKey!);
+        expect(seen.has(entry.accessKey!), `${where}: ${entry.label} repeats ${entry.accessKey}`).toBe(false);
+        seen.add(entry.accessKey!);
+        if (entry.submenu && entry.id !== "recent") check(entry.submenu, entry.label);
+      }
+    };
+    for (const id of ["file", "edit", "view"] as const) check(buildMenu(id), id);
+  });
+});
+
+describe("Alt, F, S from the menu bar", () => {
+  it("saves, as in Notepad", async () => {
+    vi.resetModules();
+    const { bootApp } = await import("../test/appHarness");
+    const app = await bootApp();
+    const save = vi.spyOn(app.actions, "save").mockResolvedValue(true);
+    const { MenuBar } = await import("./MenuBar");
+    const el = document.body.appendChild(document.createElement("div"));
+    host = el;
+    const r = createRoot(el);
+    root = r;
+    await act(async () => r.render(createElement(MenuBar)));
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", code: "KeyF", altKey: true, bubbles: true, cancelable: true }));
+    });
+    const menu = el.querySelector<HTMLElement>("[role='menu']")!;
+    expect(menu).not.toBeNull();
+    await act(async () => {
+      menu.dispatchEvent(new KeyboardEvent("keydown", { key: "s", code: "KeyS", bubbles: true, cancelable: true }));
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(el.querySelector("[role='menu']")).toBeNull();
   });
 });
