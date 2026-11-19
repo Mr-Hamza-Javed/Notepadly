@@ -3,6 +3,7 @@ import { mountEngine, nextFrame } from "../test/editorHarness";
 import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { FormatCommand } from "./api";
 import { engine, urlAt } from ".";
 
 const lastDirty = (log: ReturnType<typeof mountEngine>["log"], id: string) =>
@@ -178,6 +179,40 @@ describe("editor engine: dirty state follows the undo history", () => {
     // Undo stops at the oldest kept step, which is past the save.
     expect(engine.getText("a")).toContain("y");
     expect(lastDirty(log, "a")).toBe(true);
+  });
+
+  it("follows undo and redo through every table command, and the save point between them", () => {
+    const table = "| a | b |\n| --- | --- |\n| 1 | 2 |";
+    const text = `intro\n\n${table}\n\nend`;
+    const ops = ["row-above", "row-below", "col-left", "col-right", "del-row", "del-col", "del-table"] as const;
+    const commands: FormatCommand[] = [
+      ...ops.map((op): FormatCommand => ({ type: "table-edit", op })),
+      { type: "table-insert", rows: 2, cols: 2 },
+    ];
+    for (const [mode, command] of commands.flatMap((c) => (["syntax", "formatted"] as const).map((m) => [m, c] as const))) {
+      const id = `t-${mode}-${command.type === "table-edit" ? command.op : "insert"}`;
+      engine.createDoc(id, text, mode);
+      engine.activate(id);
+      const at = command.type === "table-insert" ? text.length : text.indexOf("1 |");
+      engine.restore(id, { anchor: at, head: at, scrollTop: 0 });
+      engine.format(command);
+      const edited = engine.getText(id);
+      expect(edited, id).not.toBe(text);
+      expect(lastDirty(log, id), id).toBe(true);
+      engine.undo();
+      expect(engine.getText(id), id).toBe(text);
+      expect(lastDirty(log, id), id).toBe(false);
+      engine.redo();
+      expect(engine.getText(id), id).toBe(edited);
+      expect(lastDirty(log, id), id).toBe(true);
+      // Saved after the command: undoing it is a change, redoing it is clean again.
+      engine.markSaved(id);
+      expect(lastDirty(log, id), id).toBe(false);
+      engine.undo();
+      expect(lastDirty(log, id), id).toBe(true);
+      engine.redo();
+      expect(lastDirty(log, id), id).toBe(false);
+    }
   });
 
   it("re-announces a dirty tab when it is activated again", () => {
