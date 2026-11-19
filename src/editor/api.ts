@@ -54,12 +54,23 @@ export interface FindQuery {
   replace: string;
   caseSensitive: boolean;
   wrap: boolean;
+  /** Matches only whole words (Notepad's "Match whole word"). */
+  wholeWord?: boolean;
+  /** `search` is a regular expression; `replace` may use `$&`, `$1`… Otherwise both are literal. */
+  regexp?: boolean;
 }
 
 export interface FindResult {
   total: number;
   /** 1-based index of the current match; 0 when none. */
   current: number;
+  /**
+   * The count is still running in the background (a big document): `total` is what was found
+   * so far. The final result goes to the `onFindResult` listener.
+   */
+  pending?: boolean;
+  /** The regular expression does not compile. */
+  invalid?: boolean;
 }
 
 export interface EditorHost {
@@ -140,4 +151,6 @@ export interface EditorEngine {
   replaceCurrent(): FindResult;
   replaceAll(): number;
   clearFind(): void;
+  /** Receives the result of a find whose count finished after `find` returned (BUGS.md M14). */
+  onFindResult?(listener: ((result: FindResult) => void) | null): void;
 }

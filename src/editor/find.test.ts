@@ -3,8 +3,9 @@ import "../test/dom";
 import { history, undo } from "@codemirror/commands";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { describe, expect, it } from "vitest";
-import type { FindQuery } from "./api";
+import { SearchQuery } from "@codemirror/search";
+import { describe, expect, it, vi } from "vitest";
+import type { FindQuery, FindResult } from "./api";
 import { FIND_COUNT_LIMIT, FindController, findExtension } from "./find";
 
 function setup(text: string, cursor = 0) {
@@ -232,5 +233,102 @@ describe("clearing", () => {
     expect(finder.next()).toEqual({ total: 0, current: 0 });
     expect(finder.replaceAll()).toBe(0);
     expect(view.state.doc.toString()).toBe("x x");
+  });
+});
+
+describe("whole word and regular expressions", () => {
+  it("matches whole words only when asked", () => {
+    const { finder } = setup("cat concat cat_x cat.");
+    expect(finder.find(query("cat")).total).toBe(4);
+    expect(finder.find(query("cat", { wholeWord: true })).total).toBe(2);
+  });
+
+  it("searches with a regular expression and fills groups into the replacement", () => {
+    const { view, finder } = setup("a1 b22 c333");
+    expect(finder.find(query("\\d+", { regexp: true }))).toEqual({ total: 3, current: 1 });
+    finder.find(query("([a-z])(\\d+)", { regexp: true, replace: "$2$1[$&]$$" }));
+    expect(finder.replaceAll()).toBe(3);
+    expect(view.state.doc.toString()).toBe("1a[a1]$ 22b[b22]$ 333c[c333]$");
+  });
+
+  it("Replace fills groups for the current match too", () => {
+    const { view, finder } = setup("x=1 y=2");
+    finder.find(query("(\\w)=(\\d)", { regexp: true, replace: "$2=$1" }));
+    finder.replaceCurrent();
+    expect(view.state.doc.toString()).toBe("1=x y=2");
+  });
+
+  it("reports an invalid expression and does nothing with it", () => {
+    const { view, finder } = setup("a(b");
+    expect(finder.find(query("(", { regexp: true }))).toEqual({ total: 0, current: 0, invalid: true });
+    expect(finder.next()).toEqual({ total: 0, current: 0, invalid: true });
+    expect(finder.replaceAll()).toBe(0);
+    expect(view.state.doc.toString()).toBe("a(b");
+  });
+
+  it("skips empty matches instead of getting stuck on them", () => {
+    const { finder, selected } = setup("abc xx abc");
+    expect(finder.find(query("x*", { regexp: true }))).toEqual({ total: 1, current: 1 });
+    expect(selected()).toBe("xx");
+    expect(finder.next()).toEqual({ total: 1, current: 1 });
+  });
+});
+
+// BUGS.md M14: the whole file was scanned on the UI thread on each keystroke.
+describe("M14: counting a big document in slices", () => {
+  const big = (needleAt: "start" | "end" | "both") => {
+    const filler = "lorem ipsum dolor sit amet\n".repeat(400_000); // ~11 MB
+    return needleAt === "start" ? `needle ${filler}` : needleAt === "end" ? `${filler}needle` : `needle ${filler}needle`;
+  };
+  const nextResult = (finder: FindController) =>
+    new Promise<FindResult>((resolve) => finder.setListener((result) => !result.pending && resolve(result)));
+
+  it("returns a partial count at once and delivers the full count when ready", async () => {
+    const { finder, at } = setup(big("both"));
+    const done = nextResult(finder);
+    const first = finder.find(query("needle"));
+    expect(first).toMatchObject({ current: 1, pending: true });
+    expect(at()).toBe(0);
+    expect(await done).toEqual({ total: 2, current: 1 });
+  }, 30_000);
+
+  it("selects a match far past the cursor once the count reaches it", async () => {
+    const { finder, view, selected } = setup(big("end"));
+    const done = nextResult(finder);
+    expect(finder.find(query("needle"))).toMatchObject({ total: 0, current: 0, pending: true });
+    expect(view.state.selection.main.empty).toBe(true);
+    expect(await done).toEqual({ total: 1, current: 1 });
+    expect(selected()).toBe("needle");
+  }, 30_000);
+
+  it("leaves the selection alone if the user moved while it searched", async () => {
+    const { finder, view } = setup(big("end"));
+    const done = nextResult(finder);
+    finder.find(query("needle"));
+    view.dispatch({ selection: { anchor: 5 } });
+    expect(await done).toEqual({ total: 1, current: 0 });
+    expect(view.state.selection.main.head).toBe(5);
+  }, 30_000);
+});
+
+describe("match highlights", () => {
+  it("moves only the current-match mark when the selection changes, without searching again", () => {
+    const { view, finder } = setup("one two one two one");
+    finder.find(query("one"));
+    const marks = () =>
+      [...view.contentDOM.querySelectorAll(".cm-find-match, .cm-find-current")].map((el) => `${el.className}`);
+    expect(marks().filter((c) => c.includes("cm-find-current"))).toHaveLength(1);
+    const search = vi.spyOn(SearchQuery.prototype, "getCursor");
+    view.dispatch({ selection: { anchor: 8, head: 11 } });
+    expect(search).not.toHaveBeenCalled();
+    search.mockRestore();
+    const current = view.contentDOM.querySelector(".cm-find-current");
+    expect(current?.textContent).toBe("one");
+    expect(view.posAtDOM(current!)).toBe(8);
+    expect(view.contentDOM.querySelectorAll(".cm-find-match")).toHaveLength(2);
+    // A selection that is no match leaves no current mark.
+    view.dispatch({ selection: { anchor: 4, head: 7 } });
+    expect(view.contentDOM.querySelectorAll(".cm-find-current")).toHaveLength(0);
+    expect(view.contentDOM.querySelectorAll(".cm-find-match")).toHaveLength(3);
   });
 });

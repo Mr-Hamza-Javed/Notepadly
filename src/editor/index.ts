@@ -881,6 +881,10 @@ class Engine implements EditorEngine {
   clearFind(): void {
     this.finder.clear();
   }
+
+  onFindResult(listener: ((result: FindResult) => void) | null): void {
+    this.finder.setListener(listener);
+  }
 }
 
 export const engine: EditorEngine = new Engine();
