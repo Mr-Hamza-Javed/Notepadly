@@ -614,8 +614,12 @@ async function saveAs(tabId?: string): Promise<boolean> {
     filters: saveFilters(tab.mode),
   });
   if (!chosen) return false;
+  // The dialog is modal only to the window: the tab may have been closed,
+  // moved or saved under another name meanwhile.
+  const current = getTab(id);
+  if (!current) return false;
   const path = chosenSavePath(chosen);
-  const movesFile = !pathsEqual(path, tab.path);
+  const movesFile = !pathsEqual(path, current.path);
   // Another tab showing the file about to be replaced would be left stale.
   const other = movesFile ? state().tabs.find((t) => t.id !== id && pathsEqual(t.path, path)) : undefined;
   if (other?.dirty) {

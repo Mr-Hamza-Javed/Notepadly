@@ -2,7 +2,7 @@
 // File lifecycle edge cases found in the state review (BUGS.md STATE-*): tabs
 // that have no editor state yet, moves between windows, and session writes.
 import { bootApp, newFakeWindow, settle, waitFor, type App } from "../test/appHarness";
-import { backend, fakeWindow } from "../test/fakeTauri";
+import { backend, dialogs, fakeWindow } from "../test/fakeTauri";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", async () => (await import("../test/fakeTauri")).tauriMocks.core());
@@ -110,6 +110,48 @@ describe("STATE-2: closing a window while its drafts are being written", () => {
     expect(fakeWindow.closes).toEqual([true]);
     expect(backend.windowSessions.size).toBe(0);
     expect(backend.drafts.size).toBe(0);
+  });
+});
+
+describe("closing while a draft write hangs", () => {
+  it("clears the session after a while instead of keeping the window open for good", async () => {
+    backend.reset();
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    app.type("note");
+    const hold = holdCommand("draft_write");
+    void app.loader.flushPersistence().catch(() => {});
+    await waitFor(() => hold.held() === 1);
+    backend.isLastWindow = false;
+    const closing = app.actions.closeWindow();
+    await app.answerClose("discard");
+    await closing;
+    expect(fakeWindow.closes).toEqual([true]);
+    expect(backend.windowSessions.size).toBe(0);
+    // The write that hung returns at last: it must not store the session again.
+    hold.release();
+    await settle(20);
+    expect(backend.windowSessions.size).toBe(0);
+  });
+});
+
+describe("Save As after the dialog", () => {
+  it("does nothing when the tab was closed while the dialog was open", async () => {
+    app = await bootApp();
+    app.type("draft text");
+    const id = app.tab().id;
+    await app.actions.newTab();
+    let choose: (path: string) => void = () => {};
+    // The native dialog answers late (a promise in the queue is awaited).
+    (dialogs.saveAnswers as unknown[]).push(new Promise<string>((resolve) => (choose = resolve)));
+    const saving = app.actions.saveAs(id);
+    await settle(5);
+    const closing = app.actions.closeTab(id);
+    await app.answerClose("discard");
+    await closing;
+    choose("C:\\notes\\late.md");
+    expect(await saving).toBe(false);
+    expect(backend.exists("C:\\notes\\late.md")).toBe(false);
+    expect(app.message()).toBeNull();
   });
 });
 

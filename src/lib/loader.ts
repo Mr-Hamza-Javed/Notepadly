@@ -1041,7 +1041,11 @@ export function buildSession(): SessionFile {
   };
 }
 
+/** Bumped when the session is cleared, so a flush still running then does not store it again. */
+let discards = 0;
+
 async function doFlush(): Promise<void> {
+  const discardsAtStart = discards;
   const ids = [...changedDrafts];
   changedDrafts.clear();
   pendingSince = null;
@@ -1067,6 +1071,7 @@ async function doFlush(): Promise<void> {
       changedDrafts.add(id);
     }
   }
+  if (discards !== discardsAtStart) return;
   await writeSession(JSON.stringify(buildSession()));
   if (failure) throw failure;
 }
@@ -1102,15 +1107,24 @@ export async function discardSession(session: SessionFile | null): Promise<void>
   await ipc.sessionWrite(JSON.stringify({ v: 1, activeId: "", tabs: [] }));
 }
 
+/** How long a close waits for a draft write already running before it clears the session anyway. */
+const DISCARD_WAIT_MS = 5000;
+
 /** Clears what this run stored, once every dirty tab has been answered for. */
 export function discardCurrentSession(): Promise<void> {
   if (flushTimer !== null) clearTimeout(flushTimer);
   flushTimer = null;
   pendingSince = null;
   changedDrafts.clear();
+  discards++;
   // On the flush chain: a flush already writing would otherwise store the
   // session and drafts again after they were deleted (STATE-2).
-  const run = flushChain.catch(noop).then(async () => {
+  // A draft write that never returns must not keep the window open for good.
+  const running = Promise.race([
+    flushChain.catch(noop),
+    new Promise<void>((resolve) => setTimeout(resolve, DISCARD_WAIT_MS)),
+  ]);
+  const run = running.then(async () => {
     const ids = useApp.getState().tabs.filter((t) => rtOf(t.id).hasDraft).map((t) => t.id);
     await Promise.all(ids.map((id) => ipc.draftDelete(id).catch(noop)));
     if (sessionKey === null) await ipc.sessionWrite(JSON.stringify({ v: 1, activeId: "", tabs: [] }));
