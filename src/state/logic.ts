@@ -151,10 +151,21 @@ export function resolveRelative(baseDir: string, relative: string): string {
 
 export type HrefTarget =
   | { kind: "web"; url: string }
-  | { kind: "file"; path: string }
+  /**
+   * `remoteHost`: the path is on another computer than the document (`\\host\...`).
+   * Opening it makes Windows send the user's NTLM credentials there, so the user
+   * must agree first (BUGS.md SEC-2).
+   */
+  | { kind: "file"; path: string; remoteHost?: string }
   /** A document or media file that is not text: opened with its default app. */
-  | { kind: "external"; path: string }
+  | { kind: "external"; path: string; remoteHost?: string }
   | { kind: "none" };
+
+/** The server of a `\\host\share` path, lower case; null for a local path. */
+export function uncHost(path: string): string | null {
+  const match = /^[\\/]{2}([^\\/]+)/.exec(path);
+  return match ? match[1].toLowerCase() : null;
+}
 
 /**
  * Linked files that are not text, so they must not open in a tab. Only these reach
@@ -233,8 +244,12 @@ export function classifyHref(href: string, baseDir: string | null): HrefTarget {
   }
   if (!target) return { kind: "none" };
   let path: string;
-  if (/^[a-zA-Z]:[\\/]/.test(target) || target.startsWith("\\\\")) {
+  if (/^[a-zA-Z]:[\\/]/.test(target)) {
     path = target;
+  } else if (/^[\\/]{2}/.test(target)) {
+    // `\\?\` and `\\.\` reach devices and raw volumes: never from a document.
+    if (/^[\\/]{2}[?.](?:[\\/]|$)/.test(target)) return { kind: "none" };
+    path = target.replace(/\//g, "\\");
   } else if (!baseDir) {
     return { kind: "none" };
   } else if (/^[\\/]/.test(target)) {
@@ -245,7 +260,10 @@ export function classifyHref(href: string, baseDir: string | null): HrefTarget {
   } else {
     path = resolveRelative(baseDir, target);
   }
-  return EXTERNAL_EXTENSIONS.has(extOf(path)) ? { kind: "external", path } : { kind: "file", path };
+  const kind = EXTERNAL_EXTENSIONS.has(extOf(path)) ? "external" : "file";
+  const host = uncHost(path);
+  if (host !== null && host !== (baseDir ? uncHost(baseDir) : null)) return { kind, path, remoteHost: host };
+  return { kind, path };
 }
 
 // ---- Modes, titles, names -------------------------------------------------

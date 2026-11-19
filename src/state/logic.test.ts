@@ -87,6 +87,37 @@ describe("links", () => {
     expect(classifyHref("ms-settings:", "C:\\n").kind).toBe("none");
   });
 
+  // BUGS.md SEC-2: a click on a link to another computer's share sent the NTLM hash there.
+  it("marks links to another computer's share, and refuses device paths", () => {
+    expect(classifyHref("\\\\evil.example\\s\\x.md", "C:\\notes")).toEqual({
+      kind: "file",
+      path: "\\\\evil.example\\s\\x.md",
+      remoteHost: "evil.example",
+    });
+    expect(classifyHref("file://evil.example/s/x.md", "C:\\notes")).toMatchObject({ remoteHost: "evil.example" });
+    expect(classifyHref("//evil.example/s/x.md", "C:\\notes")).toEqual({
+      kind: "file",
+      path: "\\\\evil.example\\s\\x.md",
+      remoteHost: "evil.example",
+    });
+    expect(classifyHref("wikilink:\\\\evil.example\\s\\x", "C:\\notes")).toMatchObject({ remoteHost: "evil.example" });
+    expect(classifyHref("\\\\evil.example\\s\\report.doc", null)).toMatchObject({ kind: "external", remoteHost: "evil.example" });
+    // The document's own server is trusted, in any letter case.
+    expect(classifyHref("\\\\Server\\share\\b.md", "\\\\server\\share\\notes")).toEqual({
+      kind: "file",
+      path: "\\\\Server\\share\\b.md",
+    });
+    expect(classifyHref("other.md", "\\\\server\\share\\notes")).toEqual({ kind: "file", path: "\\\\server\\share\\notes\\other.md" });
+    // Climbing out of the share onto another server is still another computer.
+    expect(classifyHref("../../../evil/s/x.md", "\\\\server\\share\\notes")).toMatchObject({ remoteHost: "evil" });
+    expect(classifyHref("C:\\local.md", "C:\\notes").kind).toBe("file");
+    expect(classifyHref("C:\\local.md", "C:\\notes")).not.toHaveProperty("remoteHost");
+    // Device paths never open.
+    for (const href of ["\\\\?\\C:\\x.md", "\\\\.\\PhysicalDrive0", "\\\\.\\pipe\\x.md", "//?/C:/x.md", "file:////?/C:/x.md"]) {
+      expect(classifyHref(href, "C:\\notes").kind, href).toBe("none");
+    }
+  });
+
   it("resolves wikilinks to sibling markdown files", () => {
     expect(classifyHref("wikilink:Another note", "C:\\notes")).toEqual({
       kind: "file",
@@ -342,7 +373,7 @@ describe("links: what a document link may open", () => {
 
   it("opens absolute and network paths as given", () => {
     expect(classifyHref("D:\\other\\x.md", base)).toEqual({ kind: "file", path: "D:\\other\\x.md" });
-    expect(classifyHref("\\\\server\\share\\x.md", base)).toEqual({ kind: "file", path: "\\\\server\\share\\x.md" });
+    expect(classifyHref("\\\\server\\share\\x.md", base)).toEqual({ kind: "file", path: "\\\\server\\share\\x.md", remoteHost: "server" });
   });
 
   it("adds .md to extensionless targets and keeps other extensions", () => {
@@ -394,7 +425,7 @@ describe("links: what a document link may open", () => {
   it("M7: understands file:// links", () => {
     expect(classifyHref("file:///C:/notes/a%20b.md", base)).toEqual({ kind: "file", path: "C:\\notes\\a b.md" });
     expect(classifyHref("file://localhost/D:/x.md#h", base)).toEqual({ kind: "file", path: "D:\\x.md" });
-    expect(classifyHref("file://server/share/x.md", base)).toEqual({ kind: "file", path: "\\\\server\\share\\x.md" });
+    expect(classifyHref("file://server/share/x.md", base)).toEqual({ kind: "file", path: "\\\\server\\share\\x.md", remoteHost: "server" });
     expect(classifyHref("file:///etc/passwd", base).kind).toBe("none");
   });
 

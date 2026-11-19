@@ -876,6 +876,30 @@ describe("links in documents", () => {
     expect(app.state().tabs).toHaveLength(1);
   });
 
+  // BUGS.md SEC-2: a link to another computer's share reached it on one click.
+  it("asks before opening a link to another computer's share", async () => {
+    const { editorHost } = await import("./actions");
+    backend.write("\\\\evil.example\\s\\x.md", "remote");
+    dialogs.askAnswers = [false];
+    editorHost.openLink("\\\\evil.example\\s\\x.md");
+    editorHost.openLink("\\\\.\\pipe\\x.md");
+    await settle(20);
+    expect(dialogs.asked).toHaveLength(1);
+    expect(dialogs.asked[0]).toContain("evil.example");
+    expect(app.state().tabs).toHaveLength(1);
+    expect(backend.calls.some((c) => JSON.stringify(c.args ?? {}).includes("evil.example"))).toBe(false);
+
+    dialogs.askAnswers = [false];
+    editorHost.openLink("file://evil.example/s/report.pdf");
+    await settle(20);
+    expect(dialogs.openedPaths).toEqual([]);
+
+    dialogs.askAnswers = [true];
+    editorHost.openLink("\\\\evil.example\\s\\x.md");
+    await waitFor(() => app.tab().title === "x.md");
+    expect(app.text()).toBe("remote");
+  });
+
   it("never passes other URI schemes to the system", async () => {
     const { editorHost } = await import("./actions");
     editorHost.openLink("ms-settings:privacy");

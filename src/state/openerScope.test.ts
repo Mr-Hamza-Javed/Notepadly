@@ -68,7 +68,7 @@ describe("opener scope: programs and scripts are never launched (BUGS.md 1.6)", 
   it("still opens a program or script as text in a tab", () => {
     expect(classifyHref("build.bat", "C:\\notes")).toEqual({ kind: "file", path: "C:\\notes\\build.bat" });
     expect(classifyHref("file:///C:/x/setup.PS1", "C:\\notes")).toEqual({ kind: "file", path: "C:\\x\\setup.PS1" });
-    expect(classifyHref("\\\\srv\\s\\app.exe", null)).toEqual({ kind: "file", path: "\\\\srv\\s\\app.exe" });
+    expect(classifyHref("\\\\srv\\s\\app.exe", null)).toEqual({ kind: "file", path: "\\\\srv\\s\\app.exe", remoteHost: "srv" });
     for (const ext of denied) {
       expect(classifyHref(`tool${ext}`, "C:\\notes"), ext).toEqual({ kind: "file", path: `C:\\notes\\tool${ext}` });
     }

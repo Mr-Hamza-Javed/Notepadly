@@ -147,6 +147,19 @@ async function openExternal(url: string): Promise<void> {
   await openUrl(url);
 }
 
+/**
+ * A link to another computer's share sends the user's Windows credentials to it
+ * (BUGS.md SEC-2): ask first, as Windows does for files from the internet.
+ */
+async function mayOpenFrom(host: string | undefined): Promise<boolean> {
+  if (!host) return true;
+  const { ask } = await import("@tauri-apps/plugin-dialog");
+  return ask(
+    `This link opens a file on another computer (${host}).\n\nWindows may send your sign-in details to that computer. Open it only if you trust it.\n\nDo you want to open it?`,
+    { title: "Notepadly", kind: "warning" },
+  ).catch(() => false);
+}
+
 /** PDFs, images and other non-text files a document links to; `classifyHref` decides which. */
 async function openWithDefaultApp(path: string): Promise<void> {
   const { openPath } = await import("@tauri-apps/plugin-opener");
@@ -176,9 +189,14 @@ export const editorHost: EditorHost = {
     const base = editorHost.baseDir(state().activeId);
     const target = classifyHref(href, base);
     if (target.kind === "web") openExternal(target.url).catch(reportError("Could not open link"));
-    // A link opens next to the document it is in, whatever "Open files in" says (M10).
-    else if (target.kind === "file") void openHere([target.path]);
-    else if (target.kind === "external") openWithDefaultApp(target.path).catch(reportError("Could not open link"));
+    else if (target.kind === "file" || target.kind === "external") {
+      void mayOpenFrom(target.remoteHost).then((ok) => {
+        if (!ok) return;
+        // A link opens next to the document it is in, whatever "Open files in" says (M10).
+        if (target.kind === "file") void openHere([target.path]);
+        else openWithDefaultApp(target.path).catch(reportError("Could not open link"));
+      });
+    }
   },
   baseDir: (id) => {
     const path = getTab(id)?.path;
