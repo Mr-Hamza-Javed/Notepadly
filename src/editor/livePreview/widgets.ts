@@ -162,12 +162,22 @@ function bindBlockSource(view: EditorView, host: HTMLElement, offset: number, wi
 export interface Nest {
   classes: string;
   indent: number;
+  /**
+   * The block starts on its list item's marker line (`- $$`): the bullet or number to show
+   * in the indent, and the column it sits at.
+   */
+  marker?: { text: string; at: number };
 }
 
 export const TOP_LEVEL: Nest = { classes: "", indent: 0 };
 
 function sameNest(a: Nest, b: Nest): boolean {
-  return a.classes === b.classes && a.indent === b.indent;
+  return (
+    a.classes === b.classes &&
+    a.indent === b.indent &&
+    a.marker?.text === b.marker?.text &&
+    a.marker?.at === b.marker?.at
+  );
 }
 
 function applyNest(dom: HTMLElement, nest: Nest): void {
@@ -175,7 +185,21 @@ function applyNest(dom: HTMLElement, nest: Nest): void {
     if (name.startsWith("cm-md-q") || name.startsWith("cm-md-callout") || name === "cm-md-nested") dom.classList.remove(name);
   }
   if (nest.classes) dom.classList.add("cm-md-nested", ...nest.classes.split(" "));
-  dom.style.marginInlineStart = nest.indent ? `${nest.indent}ch` : "";
+  const { marker } = nest;
+  // The marker is drawn by CSS (::before), so it survives the widget replacing its content.
+  dom.classList.toggle("cm-md-marked", !!marker);
+  if (marker) {
+    dom.dataset.marker = marker.text;
+    dom.style.setProperty("--nl-marker-at", `${marker.at}ch`);
+    dom.style.marginInlineStart = "";
+    // Padding, not margin: the bullet sits inside the box, which may clip what overflows.
+    dom.style.paddingInlineStart = `${nest.indent}ch`;
+  } else {
+    delete dom.dataset.marker;
+    dom.style.removeProperty("--nl-marker-at");
+    dom.style.paddingInlineStart = "";
+    dom.style.marginInlineStart = nest.indent ? `${nest.indent}ch` : "";
+  }
 }
 
 abstract class SourceWidget extends WidgetType {

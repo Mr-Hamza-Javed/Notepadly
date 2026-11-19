@@ -53,13 +53,15 @@ export interface TableRowModel {
 }
 
 const ROW_PREFIX = /^(?:[ \t]*>)*[ \t]*/;
+/** A table written on its list item's marker line (`- | a | b |`) has the marker in its first row. */
+const FIRST_ROW_PREFIX = /^(?:[ \t]*>)*[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+(?=\|))?/;
 
 /** Rows in source order; index 1 is the delimiter row. A table inside a quote keeps its `> ` as a prefix. */
 export function parseTable(source: string): TableRowModel[] {
   const rows: TableRowModel[] = [];
   let offset = 0;
   for (const text of source.split("\n")) {
-    const prefix = ROW_PREFIX.exec(text)![0];
+    const prefix = (rows.length ? ROW_PREFIX : FIRST_ROW_PREFIX).exec(text)![0];
     const cells = splitRow(text.slice(prefix.length)).map((cell) => ({
       from: cell.from + prefix.length,
       to: cell.to + prefix.length,

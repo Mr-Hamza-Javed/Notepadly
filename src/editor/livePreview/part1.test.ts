@@ -221,8 +221,42 @@ describe("blocks inside lists, quotes and callouts", () => {
     expect(cells).toEqual(["c", "d"]);
   });
 
-  it("MD-1: a block on a list marker's line and blocks in a folded callout stay source", () => {
-    expect(widgets(preview("- $$\n  x\n  $$\n\nend", 0))).toEqual([]);
+  it("MD-1: a maths block on a list marker's line is rendered with the bullet beside it", () => {
+    const view = preview("- $$\n  x^2\n  $$\n\nend");
+    const [math] = widgets(view) as MathWidget[];
+    expect(math).toBeInstanceOf(MathWidget);
+    expect(math.source).toBe("x^2");
+    expect(math.nest.marker).toEqual({ text: "•", at: 0 });
+    const host = view.dom.querySelector<HTMLElement>(".cm-md-math-block")!;
+    expect(host.classList.contains("cm-md-marked")).toBe(true);
+    expect(host.dataset.marker).toBe("•");
+    expect(host.style.paddingInlineStart).toBe("2ch");
+  });
+
+  it("MD-1: a nested item's diagram and a numbered item's table show their markers", () => {
+    const diagram = widgets(preview("- top\n  - ```mermaid\n    graph TD; A-->B\n    ```\n\nend"));
+    expect(diagram[0]).toBeInstanceOf(MermaidWidget);
+    expect((diagram[0] as MermaidWidget).source).toBe("graph TD; A-->B");
+    expect((diagram[0] as MermaidWidget).nest.marker).toEqual({ text: "◦", at: 2 });
+    const view = preview("1. | a | b |\n   | - | - |\n   | c | d |\n\nend");
+    const [table] = widgets(view) as TableWidget[];
+    expect(table).toBeInstanceOf(TableWidget);
+    expect(table.nest.marker).toEqual({ text: "1.", at: 0 });
+    const heads = Array.from(view.dom.querySelectorAll(".cm-md-table th")).map((th) => th.textContent);
+    expect(heads).toEqual(["a", "b"]);
+  });
+
+  it("MD-1: typing in the header of a table on a marker line keeps the marker", async () => {
+    const view = preview("- | a | b |\n  | - | - |\n  | c | d |\n\nend");
+    const cell = await focusCell(view.dom, "a");
+    typeInCell(cell, "aa");
+    await tick();
+    expect(view.state.doc.line(1).text).toBe("- | aa | b |");
+  });
+
+  it("MD-1: a task item's block and blocks in a folded callout stay source", () => {
+    expect(widgets(preview("- [ ] $$\n  x\n  $$\n\nend"))).toEqual([]);
+    expect(widgets(preview("> - $$\n>   x\n>   $$\n\nend"))).toEqual([]);
     const folded = widgets(preview("> [!note]-\n> $$\n> x\n> $$\n\nend", 0));
     expect(folded.some((w) => w instanceof MathWidget)).toBe(false);
   });
