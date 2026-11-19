@@ -7,14 +7,17 @@ import {
   isolateHistory,
   redo,
   redoDepth,
+  redoSelection,
   selectAll,
   toggleTabFocusMode,
   undo,
   undoDepth,
+  undoSelection,
 } from "@codemirror/commands";
 import {
   Annotation,
   Compartment,
+  EditorSelection,
   EditorState,
   Prec,
   Transaction,
@@ -49,6 +52,7 @@ import { ctrlClick, inlinePreview } from "./livePreview/inline";
 import { escapeCellText, focusedTable, tableAt } from "./livePreview/widgets";
 import { markdownSupport, parseAhead } from "./markdown";
 import { editorRootClass, lineDirections, tokenClasses, watchTheme } from "./theme";
+import { wheelZoomHandler } from "./wheelZoom";
 import "./editor.css";
 
 export { FIND_COUNT_LIMIT };
@@ -209,11 +213,8 @@ class Engine implements EditorEngine {
     this.view = view;
     this.applyCssVariables();
 
-    const onWheel = (event: WheelEvent) => {
-      if (!event.ctrlKey) return;
-      event.preventDefault();
-      if (event.deltaY !== 0) host.onZoomDelta(event.deltaY < 0 ? 10 : -10);
-    };
+    // One zoom step per notch's worth of movement, not per event: a pinch sends dozens.
+    const onWheel = wheelZoomHandler((direction) => host.onZoomDelta(direction * 10));
     view.dom.addEventListener("wheel", onWheel, { passive: false });
     const stopWatching = watchTheme(view.dom, () => {
       this.view?.dispatch({ effects: rebuildBlocks.of(null) });
@@ -269,8 +270,9 @@ class Engine implements EditorEngine {
         ]),
       ),
       // Mod-i is italic; Ctrl+M (tab focus mode) made Tab leave the editor with no sign (BUGS.md M3).
+      // historyKeymap also binds Ctrl+U / Alt+U (undo/redo selection), which Notepad does not have.
       keymap.of([
-        ...historyKeymap,
+        ...historyKeymap.filter((binding) => binding.run !== undoSelection && binding.run !== redoSelection),
         ...defaultKeymap.filter((binding) => binding.key !== "Mod-i" && binding.run !== toggleTabFocusMode),
       ]),
     ];
@@ -787,8 +789,15 @@ class Engine implements EditorEngine {
   }
 
   async paste(): Promise<void> {
+    const view = this.view;
+    if (!view) return;
+    const tab = this.activeId;
+    const { selection } = view.state;
     const text = await navigator.clipboard.readText();
-    if (text) this.insertText(text);
+    // The read is async (and may wait on a permission prompt): paste where it was asked for,
+    // never into a tab switched to meanwhile or at a cursor moved since (BUGS.md EDIT-10).
+    if (!text || this.view !== view || this.activeId !== tab || !view.state.selection.eq(selection)) return;
+    this.insertText(text);
   }
 
   deleteSelection(): void {
@@ -806,10 +815,16 @@ class Engine implements EditorEngine {
     const view = this.view;
     if (!view) return;
     // Text for a table cell (Paste, F5, a link) must not break the row with a newline or pipe.
-    const { from, to } = view.state.selection.main;
-    const table = tableAt(view, from);
-    const insert = table && table === tableAt(view, to) ? escapeCellText(text) : text;
-    view.dispatch(view.state.replaceSelection(insert), { userEvent: "input", scrollIntoView: true });
+    // Decided per cursor: with several, only those in a table get escaped text (BUGS.md EDIT-11).
+    const spec = view.state.changeByRange((range) => {
+      const table = tableAt(view, range.from);
+      const insert = table && table === tableAt(view, range.to) ? escapeCellText(text) : text;
+      return {
+        changes: { from: range.from, to: range.to, insert },
+        range: EditorSelection.cursor(range.from + insert.length),
+      };
+    });
+    view.dispatch(spec, { userEvent: "input", scrollIntoView: true });
   }
 
   selectionText(): string {
