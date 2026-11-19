@@ -282,6 +282,10 @@ async function doActivate(id: string): Promise<void> {
     await loader.materialiseOrFlag(id);
   }
   if (token !== activationToken || !engine.hasDoc(id)) return;
+  if (leaving.has(id)) {
+    engine.park(); // moving to another window: shown read-only until it goes
+    return;
+  }
   engine.activate(id);
   engine.focus();
   loader.scheduleSessionWrite();
@@ -740,6 +744,8 @@ export interface TabTransfer {
 }
 
 const receipts = new Map<string, () => void>();
+/** Tabs whose text has been sent to another window; they stay read-only meanwhile. */
+const leaving = new Set<string>();
 
 function waitForReceipt(id: string): { done: Promise<boolean>; cancel: () => void } {
   let cancel = () => {};
@@ -773,9 +779,23 @@ async function moveTabOut(id: string): Promise<void> {
     const next = neighbourAfterClose(tabs.map((t) => t.id), id);
     if (next) await activate(next);
   }
+  // A pending name from the first line goes with the tab (STATE-4, like T2).
+  const pendingTitle = titleTimers.get(id);
+  if (pendingTitle !== undefined) {
+    clearTimeout(pendingTitle);
+    updateTitle(id);
+  }
   const current = getTab(id);
   if (!current) return;
   const transfer: TabTransfer = { from: windowLabel, tab: current, handoff: loader.handOff(id) };
+  // Its text is on the way: an edit made here now would be lost (STATE-3).
+  leaving.add(id);
+  if (state().activeId === id) engine.park();
+  const stay = (message: string) => {
+    leaving.delete(id);
+    if (state().activeId === id) void activate(id);
+    showMessage("Could not move the tab", message);
+  };
   const receipt = waitForReceipt(id);
   try {
     if (target) {
@@ -785,13 +805,14 @@ async function moveTabOut(id: string): Promise<void> {
     }
   } catch (error) {
     receipt.cancel();
-    showMessage("Could not move the tab", errorText(error));
+    stay(errorText(error));
     return;
   }
   if (!(await receipt.done)) {
-    showMessage("Could not move the tab", "The other window did not take the tab, so it stays here.");
+    stay("The other window did not take the tab, so it stays here.");
     return;
   }
+  leaving.delete(id);
   if (state().tabs.length > 1) {
     removeFromList(id, true);
     return;
