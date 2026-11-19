@@ -1165,32 +1165,134 @@ fn append_tail(target: &Path, offset: u64, output: &mut impl Write) -> Result<()
 
 /// For a folder where the file can be written but no new file can be created
 /// (some ACLs, drive roots, some network shares), so no temp file is possible.
-/// Not atomic. The tail is read into memory first, because writing over the
-/// file destroys the bytes it would be copied from.
 fn write_in_place(target: &Path, req: &SaveRequest, bytes: &[u8]) -> Result<FileStamp, String> {
-    let mut tail = Vec::new();
-    if let Some(offset) = req.tail_offset {
-        append_tail(target, offset, &mut tail)?;
+    overwrite_in_place(target, req, &backup_dir(), |dest, tail| {
+        dest.write_all(req.encoding.bom())?;
+        dest.write_all(bytes)?;
+        io::copy(tail, dest)?;
+        Ok(())
+    })
+}
+
+/// Where the copy of a file being overwritten in place is kept while it is
+/// written: the user's temp folder, since the file's own folder takes no new
+/// files.
+fn backup_dir() -> PathBuf {
+    std::env::temp_dir().join("Notepadly").join("backup")
+}
+
+/// A copy of a file taken before it is overwritten in place (FILES-3). Removed
+/// on drop unless `keep` is set.
+struct Backup {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Backup {
+    fn create(target: &Path, dir: &Path) -> io::Result<Self> {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        fs::create_dir_all(dir)?;
+        let name = target
+            .file_name()
+            .map_or_else(|| "file".to_owned(), |n| n.to_string_lossy().into_owned());
+        loop {
+            let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!("{}-{seq}-{name}", std::process::id()));
+            let mut file = match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .share_mode(SHARE_ALL)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            };
+            let backup = Self { path, keep: false };
+            io::copy(&mut open_shared(target)?, &mut file)?;
+            file.sync_all()?;
+            return Ok(backup);
+        }
     }
+}
+
+impl Drop for Backup {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Writes `target` in place through `write`, which gets the file at offset 0
+/// and a reader (empty unless this is a tail save) over the original bytes from `tail_offset`.
+/// The file is cut to what `write` wrote. Not atomic by nature, so the original
+/// is first copied to `backup_dir` (FILES-3): a write that fails part way
+/// (disk full, network drop) puts the original back, and if even that fails
+/// the copy is kept and named in the error. When no copy can be made, the save
+/// still goes ahead with the tail held in memory, as before.
+fn overwrite_in_place(
+    target: &Path,
+    req: &SaveRequest,
+    backup_dir: &Path,
+    write: impl FnOnce(&mut File, &mut dyn Read) -> io::Result<()>,
+) -> Result<FileStamp, String> {
     let _serial = save_lock();
     ensure_fresh(target, req.expected_stamp)?;
+    let mut backup = Backup::create(target, backup_dir).ok();
+    // The tail is read from the copy, or from memory: writing over the file
+    // destroys the bytes it would be copied from.
+    let mut tail: Box<dyn Read> = match (req.tail_offset, &backup) {
+        (None, _) => Box::new(io::empty()),
+        (Some(offset), Some(backup)) => {
+            let mut source = open_shared(&backup.path).map_err(err)?;
+            if offset > source.metadata().map_err(err)?.len() {
+                return Err(STALE.to_owned());
+            }
+            source.seek(SeekFrom::Start(offset)).map_err(err)?;
+            Box::new(source)
+        }
+        (Some(offset), None) => {
+            let mut bytes = Vec::new();
+            append_tail(target, offset, &mut bytes)?;
+            Box::new(io::Cursor::new(bytes))
+        }
+    };
     let mut dest = OpenOptions::new()
         .write(true)
         .truncate(false)
         .share_mode(SHARE_ALL)
         .open(target)
         .map_err(err)?;
-    let bom = req.encoding.bom();
-    let len = (bom.len() + bytes.len() + tail.len()) as u64;
-    let mut write = || -> io::Result<()> {
-        dest.write_all(bom)?;
-        dest.write_all(bytes)?;
-        dest.write_all(&tail)?;
+    let written = write(&mut dest, &mut *tail).and_then(|()| {
+        let len = dest.stream_position()?;
         dest.set_len(len)?;
         dest.sync_all()
-    };
-    write().map_err(err)?;
+    });
+    drop(tail);
+    if let Err(e) = written {
+        let Some(backup) = backup.as_mut() else {
+            return Err(err(e));
+        };
+        let restored = open_shared(&backup.path).and_then(|mut source| {
+            dest.seek(SeekFrom::Start(0))?;
+            let len = io::copy(&mut source, &mut dest)?;
+            dest.set_len(len)?;
+            dest.sync_all()
+        });
+        return Err(match restored {
+            Ok(()) => format!("{e}; the file was left as it was"),
+            Err(_) => {
+                backup.keep = true;
+                format!(
+                    "{e}; a copy of the file as it was is in {}",
+                    backup.path.display()
+                )
+            }
+        });
+    }
     drop(dest);
+    drop(backup);
     stat(target)?.ok_or_else(|| "file disappeared after saving".to_owned())
 }
 
@@ -2251,6 +2353,57 @@ mod tests {
         assert_eq!(write_in_place(&path, &stale, b"x").unwrap_err(), STALE);
         assert_eq!(fs::read(&path).unwrap(), b"\xEF\xBB\xBFh-tail");
         assert_eq!(dir.entries(), 1);
+    }
+
+    // BUGS.md FILES-3: a failed in-place write left the file damaged.
+    #[test]
+    fn a_failed_in_place_write_puts_the_original_back() {
+        let dir = TestDir::new();
+        let backups = dir.0.join("backups");
+        let path = dir.file(b"original text");
+        let mut req = request(&path, "", Eol::Lf, Encoding::Utf8);
+        req.tail_offset = Some(9);
+        let error = overwrite_in_place(&path, &req, &backups, |dest, tail| {
+            let mut rest = String::new();
+            tail.read_to_string(&mut rest)?;
+            assert_eq!(rest, "text");
+            dest.write_all(b"PART")?;
+            Err(io::Error::other("disk full"))
+        })
+        .unwrap_err();
+        assert_eq!(error, "disk full; the file was left as it was");
+        assert_eq!(fs::read(&path).unwrap(), b"original text");
+        assert_eq!(fs::read_dir(&backups).unwrap().count(), 0);
+
+        // A successful write leaves no copy behind, and the tail comes from it.
+        let stamp = overwrite_in_place(&path, &req, &backups, |dest, tail| {
+            dest.write_all(b"new ")?;
+            io::copy(tail, dest).map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new text");
+        assert_eq!(stat(&path).unwrap(), Some(stamp));
+        assert_eq!(fs::read_dir(&backups).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn an_in_place_write_works_when_no_copy_can_be_made() {
+        let dir = TestDir::new();
+        let path = dir.file(b"HEAD-tail");
+        // A folder under a file cannot be created.
+        let backups = path.join("backups");
+        let mut req = request(&path, "", Eol::Lf, Encoding::Utf8);
+        req.tail_offset = Some(5);
+        overwrite_in_place(&path, &req, &backups, |dest, tail| {
+            dest.write_all(b"h-")?;
+            io::copy(tail, dest).map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"h-tail");
+        req.tail_offset = Some(99);
+        let stale = overwrite_in_place(&path, &req, &dir.0.join("b"), |_, _| Ok(()));
+        assert_eq!(stale.unwrap_err(), STALE);
+        assert_eq!(fs::read(&path).unwrap(), b"h-tail");
     }
 
     // BUGS.md W8: ReplaceFileW gets no long-path handling from std.
