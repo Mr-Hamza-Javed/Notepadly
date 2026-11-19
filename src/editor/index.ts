@@ -493,7 +493,8 @@ class Engine implements EditorEngine {
   private runNearEnd(): void {
     const view = this.view;
     const doc = this.activeDoc();
-    if (!view || !doc || !this.host) return;
+    // A timer can fire after a test environment (or the page) has been torn down.
+    if (!view || !doc || !this.host || typeof window === "undefined") return;
     // Height-map queries only: no layout read, and no cost that grows with the document.
     const remaining = view.contentHeight - view.lineBlockAt(view.viewport.to).bottom;
     if (remaining <= window.innerHeight * 2) this.host.onNearEnd(doc.id);
