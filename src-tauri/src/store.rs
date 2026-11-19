@@ -24,6 +24,7 @@ pub fn process_start() -> SystemTime {
 }
 
 pub fn session_read(base: &Path) -> Result<Option<String>, String> {
+    remove_old_temps(base, "session.", grace_cutoff());
     read_optional(&base.join(SESSION_FILE))
 }
 
@@ -54,6 +55,7 @@ pub fn window_sessions_read(base: &Path) -> Result<Vec<(String, String)>, String
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.to_string()),
     };
+    remove_old_temps(&base.join(SESSIONS_DIR), "", grace_cutoff());
     let mut sessions = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -99,8 +101,7 @@ fn window_session_path(base: &Path, key: &str) -> Result<PathBuf, String> {
 /// have stored its session yet (MERGE-1), and a temp file younger than a minute
 /// may be a write in progress in another window.
 pub fn drafts_prune(base: &Path, keep: &[String]) -> Result<(), String> {
-    let now = SystemTime::now();
-    let recent = now.checked_sub(PRUNE_GRACE).unwrap_or(now);
+    let recent = grace_cutoff();
     drafts_prune_before(base, keep, process_start().min(recent), recent)
 }
 
@@ -174,6 +175,34 @@ fn read_optional(path: &Path) -> Result<Option<String>, String> {
     let mut text = String::new();
     file.read_to_string(&mut text).map_err(|e| e.to_string())?;
     Ok(Some(text))
+}
+
+fn grace_cutoff() -> SystemTime {
+    let now = SystemTime::now();
+    now.checked_sub(PRUNE_GRACE).unwrap_or(now)
+}
+
+/// Removes temp files (`<prefix>*.tmp`) older than `cutoff` that a crash in
+/// `write_atomic` left in `dir`. Each write has its own temp name, so they would
+/// otherwise pile up.
+fn remove_old_temps(dir: &Path, prefix: &str, cutoff: SystemTime) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with(prefix) || !name.ends_with(".tmp") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| modified < cutoff);
+        if old && entry.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// A temp name of its own for each write (`<name>.<pid>-<n>.tmp`), so two writes
@@ -454,5 +483,28 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, ["shared.txt"], "temp file left behind");
+    }
+
+    #[test]
+    fn old_session_temp_files_are_removed_when_sessions_are_read() {
+        let base = TempBase::new("session-temps");
+        let sessions = base.0.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let hour = Duration::from_secs(3600);
+        let old_window = sessions.join("w1.1-0.tmp");
+        let new_window = sessions.join("w1.1-1.tmp");
+        let old_main = base.0.join("session.1-2.tmp");
+        let other = base.0.join("other.tmp");
+        for path in [&old_window, &new_window, &old_main, &other] {
+            fs::write(path, "half").unwrap();
+        }
+        for path in [&old_window, &old_main, &other] {
+            age(path, hour);
+        }
+        window_sessions_read(&base.0).unwrap();
+        session_read(&base.0).unwrap();
+        assert!(!old_window.exists() && !old_main.exists());
+        // A write in progress, and files that are not ours, stay.
+        assert!(new_window.exists() && other.exists());
     }
 }
