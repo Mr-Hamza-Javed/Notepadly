@@ -83,12 +83,10 @@ export const ipc = {
   draftWrite: (id: string, text: string) => invoke<void>("draft_write", { id, text }),
   draftDelete: (id: string) => invoke<void>("draft_delete", { id }),
   /**
-   * Deletes every draft whose id is not in `keep`. With `beforeMs` (Unix ms), a
-   * draft last written at or after that time is kept too: it belongs to this
-   * run, even if no stored session lists it yet (MERGE-1).
+   * Deletes every draft whose id is not in `keep`. Rust spares drafts created
+   * during this run, even if no stored session lists them yet (MERGE-1).
    */
-  draftsPrune: (keep: string[], beforeMs: number | null = null) =>
-    invoke<void>("drafts_prune", { keep, beforeMs }),
+  draftsPrune: (keep: string[]) => invoke<void>("drafts_prune", { keep }),
 
   /** Every window's stored session (one per window, see loader.setSessionKey). */
   windowSessionsRead: () => invoke<WindowSession[]>("window_sessions_read"),
@@ -118,9 +116,9 @@ export const ipc = {
    * window on screen is closing too (STATE-8). Two windows closed together can
    * then not both think another window stays.
    */
-  windowCloseBegin: () => invoke<boolean>("window_close_begin"),
+  windowClosing: () => invoke<boolean>("window_closing"),
   /** This window's close was cancelled or it went to the background: it counts as staying again. */
-  windowCloseEnd: () => invoke<void>("window_close_end"),
+  windowCloseCancelled: () => invoke<void>("window_close_cancelled"),
   /** Hides this window and suspends its webview; the next launch wakes it. */
   enterBackground: () => invoke<void>("enter_background"),
 

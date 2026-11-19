@@ -730,7 +730,7 @@ const CLOSE_TOGETHER_MS = 300;
  * came meanwhile makes it an exit, and no window asks (STATE-8).
  */
 async function isLastToStay(): Promise<boolean> {
-  const ask = () => ipc.windowCloseBegin().catch(() => ipc.isLastWindow().catch(() => true));
+  const ask = () => ipc.windowClosing().catch(() => ipc.isLastWindow().catch(() => true));
   if (await ask()) return true;
   await new Promise((resolve) => setTimeout(resolve, CLOSE_TOGETHER_MS));
   return ask();
@@ -748,7 +748,7 @@ async function prepareWindowClose(exiting = false): Promise<boolean> {
   let marked = false;
   try {
     const allowed = await decideWindowClose(exiting, () => (marked = true));
-    if (!allowed && marked) await ipc.windowCloseEnd().catch(() => {});
+    if (!allowed && marked) await ipc.windowCloseCancelled().catch(() => {});
     return allowed;
   } finally {
     closeInProgress = false;
@@ -1153,7 +1153,7 @@ async function wireWindowEvents(ready: Promise<void>): Promise<void> {
       if (!state().settings.background || !(await ipc.isLastWindow().catch(() => false))) return;
       event.preventDefault();
       // It stays, hidden: it is not closing any more.
-      await ipc.windowCloseEnd().catch(() => {});
+      await ipc.windowCloseCancelled().catch(() => {});
       await resetForBackground();
       await ipc
         .enterBackground()
@@ -1237,9 +1237,9 @@ async function adoptSession(boot: WindowBoot): Promise<{ restored: boolean; merg
   }
   // Drafts that no stored session owns are left by a crash (L16). They are
   // cleared before any other window opens and writes drafts of its own, and
-  // Rust keeps any draft written since this run started (MERGE-1).
+  // Rust spares any draft created during this run (MERGE-1).
   await loader
-    .pruneDrafts(stored.flatMap((s) => s.session.tabs.filter((t) => t.hasDraft).map((t) => t.id)), runStartedAt)
+    .pruneDrafts(stored.flatMap((s) => s.session.tabs.filter((t) => t.hasDraft).map((t) => t.id)))
     .catch(() => {});
   if (stored.length === 0) return none;
   const [mine, ...others] = stored;
@@ -1256,9 +1256,6 @@ async function adoptSession(boot: WindowBoot): Promise<{ restored: boolean; merg
   }
   return { restored: await restoreSession(mine.session), merged: [] };
 }
-
-/** When this window's code loaded; drafts written since are this run's own (MERGE-1). */
-const runStartedAt = Date.now();
 
 async function runInit(): Promise<void> {
   windowLabel = getCurrentWindow().label;

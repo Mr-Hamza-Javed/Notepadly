@@ -50,6 +50,8 @@ export async function bootApp(options: BootOptions = {}) {
     document.body.insertAdjacentHTML("beforeend", '<div id="editor-root"></div>');
   } else {
     backend.calls = [];
+    // A new app process: drafts from before it are not this run's (MERGE-1).
+    backend.runStartedAt = Date.now();
     dialogs.reset();
     fakeWindows.clear();
     fakeWindows.set(win.label, win);

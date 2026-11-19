@@ -137,15 +137,17 @@ export class FakeBackend {
   readOnly = new Set<string>();
   /** Draft ids whose reads fail (a draft file that cannot be read). */
   unreadableDrafts = new Set<string>();
-  /** When each draft was last written, in Date.now() milliseconds (for `drafts_prune`'s `beforeMs`). */
+  /** When each draft was last written, in Date.now() milliseconds. */
   draftTimes = new Map<string, number>();
-  /** False makes `is_last_window` and `window_close_begin` say another window is on screen. */
+  /** When the app process started (bootApp of a first window); drafts written since are this run's. */
+  runStartedAt = 0;
+  /** False makes `is_last_window` and `window_closing` say another window is on screen. */
   isLastWindow = true;
   /** Labels of the app's windows that are on screen (bootApp adds them). */
   windows = new Set<string>();
-  /** Windows that have started closing (`window_close_begin`, cleared by `window_close_end`). */
+  /** Windows that have started closing (`window_closing`, cleared by `window_close_cancelled`). */
   closingWindows = new Set<string>();
-  /** The paths each window has open (`window_open_paths_set`). */
+  /** The paths each window has open (`open_paths_set`). */
   openPaths = new Map<string, string[]>();
   private clock = 1_000;
 
@@ -248,13 +250,12 @@ export class FakeBackend {
         this.session = args.json as string;
         return null;
       case "drafts_prune": {
-        // store.rs `drafts_prune`: a draft written at or after `beforeMs` belongs to
-        // this run, even when no stored session lists it yet (MERGE-1).
+        // store.rs `drafts_prune`: a draft created during this run is spared, even
+        // when no stored session lists it yet (MERGE-1).
         const keep = args.keep as string[];
-        const before = typeof args.beforeMs === "number" ? args.beforeMs : null;
         for (const id of [...this.drafts.keys()]) {
           if (keep.includes(id)) continue;
-          if (before !== null && (this.draftTimes.get(id) ?? 0) >= before) continue;
+          if ((this.draftTimes.get(id) ?? 0) >= this.runStartedAt) continue;
           this.drafts.delete(id);
           this.draftTimes.delete(id);
         }
@@ -302,18 +303,18 @@ export class FakeBackend {
       }
       case "is_last_window":
         return this.isLastWindow && [...this.windows].every((w) => w === caller);
-      case "window_close_begin": {
+      case "window_closing": {
         // Rust decides "last" atomically: windows that started closing do not count.
         this.closingWindows.add(caller);
         return this.isLastWindow && [...this.windows].every((w) => w === caller || this.closingWindows.has(w));
       }
-      case "window_close_end":
+      case "window_close_cancelled":
         this.closingWindows.delete(caller);
         return null;
-      case "window_open_paths_set":
+      case "open_paths_set":
         this.openPaths.set(caller, [...(args.paths as string[])]);
         return null;
-      case "window_path_owner": {
+      case "path_open_elsewhere": {
         const wanted = key(args.path as string);
         for (const [label, paths] of this.openPaths) {
           if (label !== caller && this.windows.has(label) && paths.some((p) => key(p) === wanted)) return label;
