@@ -341,7 +341,12 @@ const NotepadlyMarkdown: MarkdownConfig = {
     {
       name: "BlockMath",
       parse: (cx, line) => parseDelimitedBlock(cx, line, "$$", "BlockMath", "MathMark", true, true),
-      endLeaf: (_cx, line) => line.indent < 4 && line.text.startsWith("$$", line.pos),
+      // Inside a paragraph only a lone `$$`, or a line that also holds its closing `$$`,
+      // is display maths: `$$5 total` is text (BUGS.md EDIT-9).
+      endLeaf: (_cx, line) =>
+        line.indent < 4 &&
+        line.text.startsWith("$$", line.pos) &&
+        (line.text.slice(line.pos + 2).trim() === "" || line.text.indexOf("$$", line.pos + 2) >= 0),
       before: "FencedCode",
     },
     {

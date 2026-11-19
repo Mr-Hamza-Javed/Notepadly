@@ -134,6 +134,16 @@ describe("markdown extensions: edge cases", () => {
     expect(texts("$$\na\n\n# Heading\n\ntext", "ATXHeading1")).toEqual(["# Heading"]);
   });
 
+  // BUGS.md EDIT-9: a paragraph line starting with $$ turned the rest of the paragraph into maths.
+  it("EDIT-9: a paragraph line that only starts with $$ stays text", () => {
+    expect(texts("Cost:\n$$5 total\nmore text", "BlockMath")).toEqual([]);
+    expect(texts("Cost:\n$$5 total\nmore text", "Paragraph")).toEqual(["Cost:\n$$5 total\nmore text"]);
+    // A lone $$, or a line holding its closing $$, still starts display maths.
+    expect(texts("text\n$$\nx\n$$", "BlockMath")).toEqual(["$$\nx\n$$"]);
+    expect(texts("text\n$$  \nx\n$$", "BlockMath")).toEqual(["$$  \nx\n$$"]);
+    expect(texts("text\n$$x$$\nmore", "BlockMath")).toEqual(["$$x$$"]);
+  });
+
   it("does not let an unclosed $$ run past its line limit", () => {
     const doc = "$$\n" + "x\n".repeat(6000);
     const [math] = texts(doc, "BlockMath");
