@@ -321,6 +321,8 @@ class TableController {
   private active: CellRef | null = null;
   private pendingFocus: (CellRef & { atEnd: boolean }) | null = null;
   private rebuilding = false;
+  /** An IME composition is running in a cell: its text is written once, when it ends. */
+  private composing = false;
   /** Parsed rows of `source`, parsed once per text (it was parsed ~5 times per keystroke). */
   private parsed: TableRowModel[] = [];
   /** Cells by source row and column; the delimiter row (1) has none. */
@@ -339,6 +341,14 @@ class TableController {
     this.wrap.addEventListener("focusin", (event) => this.onFocusIn(event));
     this.wrap.addEventListener("focusout", (event) => this.onFocusOut(event));
     this.wrap.addEventListener("input", (event) => this.onInput(event));
+    this.wrap.addEventListener("compositionstart", () => {
+      this.composing = true;
+    });
+    this.wrap.addEventListener("compositionend", (event) => {
+      this.composing = false;
+      // Chrome sends the last input before compositionend: write the committed text now.
+      this.onInput(event);
+    });
     this.wrap.addEventListener("keydown", (event) => this.onKeyDown(event));
     liveTables.add(this);
   }
@@ -378,6 +388,8 @@ class TableController {
     const ref = this.refOf(cell);
     const text = cellText(rows[ref.row], ref.col);
     if (this.isActive(ref)) {
+      // The IME owns the cell's DOM until the composition ends; touching it would cancel it.
+      if (this.composing) return;
       // Markdown trims cells, so compare trimmed text or a trailing space would be undone.
       if (escapeCellText(cell.textContent ?? "").trim() !== text) {
         cell.textContent = text;
@@ -715,6 +727,9 @@ class TableController {
   private onInput(event: Event): void {
     const cell = (event.target as HTMLElement).closest<HTMLElement>("th,td");
     if (!cell) return;
+    // Text still being composed (pinyin, kana) is not written: each step would be an undo
+    // step of its own, and a redraw of the cell meanwhile would cancel the composition.
+    if (this.composing || (event as InputEvent).isComposing) return;
     this.writeCell(this.refOf(cell), escapeCellText(cell.textContent ?? "").trim());
     if (this.isActive(this.refOf(cell))) this.syncSelection();
   }

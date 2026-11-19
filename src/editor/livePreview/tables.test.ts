@@ -265,3 +265,67 @@ describe("engine keys", () => {
     expect(engine.getText("t")).toBe("\ttext");
   });
 });
+
+describe("IME composition in a table cell", () => {
+  /** What an IME does: edits the cell's own text node in place, firing composition and input events. */
+  function compose(cell: HTMLElement, steps: string[], final: string): Text {
+    const node = cell.firstChild as Text;
+    const base = node.data;
+    cell.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+    for (const step of steps) {
+      node.data = base + step;
+      getSelection()!.setBaseAndExtent(node, node.data.length, node, node.data.length);
+      cell.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: step }));
+      cell.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertCompositionText", data: step, isComposing: true }));
+    }
+    node.data = base + final;
+    getSelection()!.setBaseAndExtent(node, node.data.length, node, node.data.length);
+    cell.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: final }));
+    cell.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertCompositionText", data: final }));
+    return node;
+  }
+
+  it("keeps the cell's text node through the composition and writes the committed text once", async () => {
+    const view = preview(fruit + "\n\nend", 0);
+    const cell = await focusCell(view.dom, "apple");
+    const node = cell.firstChild as Text;
+    const kept = compose(cell, ["n", "ni", "nih"], "你好");
+    await tick();
+    // The DOM the IME is working in was never replaced, so the composition is not broken.
+    expect(cell.firstChild).toBe(node);
+    expect(kept.data).toBe("apple你好");
+    expect(view.state.doc.line(3).text).toBe("| apple你好 | 2 |");
+    expect(cell.classList.contains("is-editing")).toBe(true);
+    // The caret stays at the end of the committed text, in the cell and in the editor.
+    const from = view.state.doc.line(3).from + 2;
+    expect(view.state.selection.main.head).toBe(from + "apple你好".length);
+    // The pinyin typed on the way is not left behind as separate undo steps.
+    expect(undoDepth(view.state)).toBe(1);
+  });
+
+  it("an editor update while composing leaves the composed text in the cell alone", async () => {
+    const view = preview(fruit + "\n\nend", 0);
+    const cell = await focusCell(view.dom, "apple");
+    const node = cell.firstChild as Text;
+    cell.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+    node.data = "appleか";
+    cell.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertCompositionText", data: "か", isComposing: true }));
+    // Something else changes the table's text (an edit through the editor, a reload).
+    view.dispatch({ changes: { from: view.state.doc.line(3).to - 2, insert: "0" } });
+    await tick();
+    expect(cell.firstChild).toBe(node);
+    expect(node.data).toBe("appleか");
+    node.data = "apple蚊";
+    cell.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "蚊" }));
+    await tick();
+    expect(view.state.doc.line(3).text).toBe("| apple蚊 | 20 |");
+  });
+
+  it("an Urdu composition in an empty cell fills the cell", async () => {
+    const view = preview("| a | b |\n| - | - |\n| x |  |\n\nend", 0);
+    const cell = await focusCell(view.dom, "x");
+    compose(cell, ["ا", "اس"], "اسلام");
+    await tick();
+    expect(view.state.doc.line(3).text).toBe("| xاسلام |  |");
+  });
+});
