@@ -82,8 +82,13 @@ export const ipc = {
   draftRead: (id: string) => invoke<string | null>("draft_read", { id }),
   draftWrite: (id: string, text: string) => invoke<void>("draft_write", { id, text }),
   draftDelete: (id: string) => invoke<void>("draft_delete", { id }),
-  /** Deletes every draft whose id is not in `keep`. */
-  draftsPrune: (keep: string[]) => invoke<void>("drafts_prune", { keep }),
+  /**
+   * Deletes every draft whose id is not in `keep`. With `beforeMs` (Unix ms), a
+   * draft last written at or after that time is kept too: it belongs to this
+   * run, even if no stored session lists it yet (MERGE-1).
+   */
+  draftsPrune: (keep: string[], beforeMs: number | null = null) =>
+    invoke<void>("drafts_prune", { keep, beforeMs }),
 
   /** Every window's stored session (one per window, see loader.setSessionKey). */
   windowSessionsRead: () => invoke<WindowSession[]>("window_sessions_read"),

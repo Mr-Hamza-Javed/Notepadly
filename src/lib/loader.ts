@@ -1038,11 +1038,14 @@ export function flushPersistence(): Promise<void> {
  * Deletes drafts no tab owns (left by a crash or a corrupt session, BUGS.md L16).
  * Runs on the flush chain, so a draft written by this run is never pruned.
  */
-/** `alsoKeep`: drafts owned by other windows' stored sessions. */
-export function pruneDrafts(alsoKeep: string[] = []): Promise<void> {
+/**
+ * `alsoKeep`: drafts owned by other windows' stored sessions. `beforeMs`: when
+ * this run started; drafts written since then are never pruned (MERGE-1).
+ */
+export function pruneDrafts(alsoKeep: string[] = [], beforeMs: number | null = null): Promise<void> {
   const run = flushChain.catch(noop).then(() => {
     const keep = [...useApp.getState().tabs.filter((t) => rtOf(t.id).hasDraft).map((t) => t.id), ...alsoKeep];
-    return ipc.draftsPrune(keep);
+    return ipc.draftsPrune(keep, beforeMs);
   });
   flushChain = run.catch(noop);
   return run;

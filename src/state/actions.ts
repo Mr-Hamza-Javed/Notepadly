@@ -1235,6 +1235,12 @@ async function adoptSession(boot: WindowBoot): Promise<{ restored: boolean; merg
     discardStoredSessions(stored).catch(() => {});
     return none;
   }
+  // Drafts that no stored session owns are left by a crash (L16). They are
+  // cleared before any other window opens and writes drafts of its own, and
+  // Rust keeps any draft written since this run started (MERGE-1).
+  await loader
+    .pruneDrafts(stored.flatMap((s) => s.session.tabs.filter((t) => t.hasDraft).map((t) => t.id)), runStartedAt)
+    .catch(() => {});
   if (stored.length === 0) return none;
   const [mine, ...others] = stored;
   loader.setSessionKey(mine.key);
@@ -1250,6 +1256,9 @@ async function adoptSession(boot: WindowBoot): Promise<{ restored: boolean; merg
   }
   return { restored: await restoreSession(mine.session), merged: [] };
 }
+
+/** When this window's code loaded; drafts written since are this run's own (MERGE-1). */
+const runStartedAt = Date.now();
 
 async function runInit(): Promise<void> {
   windowLabel = getCurrentWindow().label;
@@ -1272,13 +1281,6 @@ async function runInit(): Promise<void> {
   if (engine.hasDoc(activeId)) {
     engine.activate(activeId);
     engine.focus();
-  }
-  // The first window clears out drafts that no stored session owns. Drafts of
-  // the other stored sessions are kept: their windows are restoring them now.
-  if (isFirstWindow() && keepsSession()) {
-    readStoredSessions()
-      .then((stored) => loader.pruneDrafts(stored.flatMap((s) => s.session.tabs.filter((t) => t.hasDraft).map((t) => t.id))))
-      .catch(() => {});
   }
   loader.setPersistence(keepsSession());
   initFinished = true;

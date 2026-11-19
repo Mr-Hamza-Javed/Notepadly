@@ -314,6 +314,48 @@ describe("a read-only file", () => {
   });
 });
 
+describe("MERGE-1: the start-up draft clean-up", () => {
+  const untitled = (id: string) => ({
+    id,
+    path: null,
+    title: id,
+    dirty: true,
+    mode: "plain",
+    eol: "CRLF",
+    encoding: "utf-8",
+    stamp: null,
+    loadedOffset: 0,
+    fullyLoaded: true,
+    hasDraft: true,
+    snap: null,
+  });
+
+  it("keeps a draft another window writes while it runs, and runs before other windows open", async () => {
+    backend.reset();
+    backend.session = JSON.stringify({ v: 1, activeId: "mine", tabs: [untitled("mine")] });
+    backend.windowSessions.set("wother", JSON.stringify({ v: 1, activeId: "theirs", tabs: [untitled("theirs")] }));
+    backend.drafts.set("mine", "my text");
+    backend.drafts.set("theirs", "their text");
+    backend.drafts.set("orphan", "left by a crash");
+    for (const id of ["mine", "theirs", "orphan"]) backend.draftTimes.set(id, 0);
+    const original = backend.invoke.bind(backend);
+    vi.spyOn(backend, "invoke").mockImplementation(async (cmd, args, caller) => {
+      // A window of this run stores a brand-new tab's draft just as the clean-up starts.
+      if (cmd === "drafts_prune") await original("draft_write", { id: "fresh", text: "new tab" }, "wother");
+      return original(cmd, args, caller);
+    });
+    app = await bootApp({ keepDisk: true });
+    await settle(20);
+    expect(backend.drafts.get("fresh")).toBe("new tab");
+    expect(backend.drafts.has("orphan")).toBe(false);
+    expect(backend.drafts.get("mine")).toBe("my text");
+    expect(backend.drafts.get("theirs")).toBe("their text");
+    const order = backend.calls.map((c) => c.cmd);
+    expect(order.indexOf("drafts_prune")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("drafts_prune")).toBeLessThan(order.indexOf("window_new"));
+  });
+});
+
 // ---- Two windows over one backend ---------------------------------------------
 
 /** Window "main" (the shared fakeWindow) and "window-1", running side by side. */
