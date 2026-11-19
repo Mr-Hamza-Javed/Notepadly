@@ -45,6 +45,7 @@ import {
   handleShiftTab,
   handleTab,
 } from "./commands";
+import { codePointLength, codePointsIn, surrogatePairField } from "./charCount";
 import { FIND_COUNT_LIMIT, FindController, findExtension } from "./find";
 import { blockPreview, rebuildBlocks } from "./livePreview/block";
 import { documentPathChanged, previewContext, resolveHref } from "./livePreview/context";
@@ -301,6 +302,7 @@ class Engine implements EditorEngine {
         wrapCompartment.of(this.wrapExtension()),
         attributesCompartment.of(this.attributesExtension()),
         findExtension,
+        surrogatePairField,
         this.keymapExtension(),
         EditorView.updateListener.of((update) => this.onUpdate(update)),
     ];
@@ -456,11 +458,12 @@ class Engine implements EditorEngine {
     const head = state.selection.main.head;
     const line = state.doc.lineAt(head);
     let selected = 0;
-    for (const range of state.selection.ranges) selected += range.to - range.from;
+    // Characters are code points, so an emoji counts once (BUGS.md L5).
+    for (const range of state.selection.ranges) selected += codePointsIn(state, range.from, range.to);
     const info: CursorInfo = {
       line: line.number,
       col: head - line.from + 1,
-      chars: state.doc.length,
+      chars: codePointLength(state),
       selected,
       canUndo: undoDepth(state) > 0,
       canRedo: redoDepth(state) > 0,
@@ -680,9 +683,16 @@ class Engine implements EditorEngine {
     return doc ? this.stateOf(doc).doc.line(1).text : "";
   }
 
+  /** In UTF-16 units, like every CodeMirror position. */
   length(tabId: string): number {
     const doc = this.docs.get(tabId);
     return doc ? this.stateOf(doc).doc.length : 0;
+  }
+
+  /** Characters in code points, as the status bar counts them (BUGS.md L5). */
+  charCount(tabId: string): number {
+    const doc = this.docs.get(tabId);
+    return doc ? codePointLength(this.stateOf(doc)) : 0;
   }
 
   markSaved(tabId: string): void {

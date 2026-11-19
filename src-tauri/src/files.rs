@@ -674,8 +674,8 @@ fn is_read_only(path: &Path, meta: &fs::Metadata) -> bool {
     matches!(opened, Err(e) if e.kind() == io::ErrorKind::PermissionDenied)
 }
 
-/// Counts characters (UTF-16 code units, matching JS string length) and lines
-/// after newline normalisation, with a fixed-size buffer.
+/// Counts characters (code points, so an emoji counts once: BUGS.md L5) and
+/// lines after newline normalisation, with a fixed-size buffer.
 pub fn scan(path: &Path, encoding: Encoding) -> Result<FileScan, String> {
     let mut file = open_shared(path).map_err(err)?;
     let bom = encoding.bom();
@@ -740,7 +740,9 @@ impl ScanCounter {
     fn unit(&mut self, unit: u16) {
         let crlf_tail = self.after_cr && unit == 0x0A;
         self.after_cr = unit == 0x0D;
-        if crlf_tail {
+        // The second half of a surrogate pair: its character is already counted.
+        // The decoders turn unpaired halves into U+FFFD, so pairs are whole.
+        if crlf_tail || (0xDC00..=0xDFFF).contains(&unit) {
             return;
         }
         self.chars += 1;
@@ -1989,7 +1991,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_counts_like_a_js_string_across_buffer_boundaries() {
+    fn scan_counts_code_points_across_buffer_boundaries() {
         let dir = TestDir::new();
         // The CRLF pairs and surrogate pairs land on every alignment of the buffer.
         let pad = "x".repeat(STREAM_BUFFER - 1);
@@ -1997,7 +1999,8 @@ mod tests {
         let path = dir.file(text.as_bytes());
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         let expected = FileScan {
-            chars: normalized.encode_utf16().count() as u64,
+            // BUGS.md L5: characters are code points, so an emoji counts once.
+            chars: normalized.chars().count() as u64,
             lines: normalized.matches('\n').count() as u64 + 1,
             invalid: false,
         };

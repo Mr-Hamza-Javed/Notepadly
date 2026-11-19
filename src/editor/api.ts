@@ -123,7 +123,10 @@ export interface EditorEngine {
   getText(tabId: string): string;
   /** Text of line 1, without materialising the document. */
   firstLine?(tabId: string): string;
+  /** In UTF-16 units, like every CodeMirror position. */
   length(tabId: string): number;
+  /** Characters in code points, as the status bar counts them (BUGS.md L5). */
+  charCount(tabId: string): number;
   markSaved(tabId: string): void;
   /** The tab's file path changed (first save, Save As): relative images resolve again. */
   pathChanged(tabId: string): void;

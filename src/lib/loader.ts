@@ -1,6 +1,7 @@
 // File I/O rules 2, 3, 6, 7, 8 and 9 of the spec: chunked loading, partial saves,
 // external change polling, background scans, drafts, session and hibernation.
 import { engine } from "../editor";
+import { countCodePoints } from "../editor/charCount";
 import type { ScrollSnapshot } from "../editor/api";
 import { ipc, type Encoding, type Eol, type FileStamp } from "./ipc";
 import {
@@ -74,7 +75,7 @@ interface TabRuntime {
   cleanDelete: number | null;
   /** The file could not be read, so the editor does not hold its text: never save over it. */
   unreadable: boolean;
-  /** Characters read from the file into the editor; null when unknown (restored draft). */
+  /** Characters (code points) read from the file into the editor; null when unknown (restored draft). */
   diskChars: number | null;
   /** The file state a hibernated tab's kept undo history belongs to. */
   sleep: { stamp: FileStamp | null; encoding: Encoding } | null;
@@ -174,7 +175,7 @@ function startScan(id: string): void {
       if (!current) return;
       if (!current.fullyLoaded) {
         // A restored draft's loaded part is not a known slice of the file: estimate.
-        const loaded = rt.diskChars ?? engine.length(id);
+        const loaded = rt.diskChars ?? engine.charCount(id);
         patchTab(id, { tailChars: Math.max(0, result.chars - loaded) });
       }
       if (result.invalid && current.encoding === tab.encoding) onInvalidUtf8(id);
@@ -266,13 +267,15 @@ function loadStep(id: string, maxBytes: number): Promise<void> {
     if (chunk.nextOffset <= offset && !chunk.eof) throw new Error("The file could not be read any further.");
     if (chunk.text) engine.appendText(id, chunk.text);
     if (chunk.binary) warnBinary(id);
-    if (rt.diskChars !== null) rt.diskChars += chunk.text.length;
+    // Code points, as Rust's scan counts them (BUGS.md L5).
+    const chunkChars = countCodePoints(chunk.text);
+    if (rt.diskChars !== null) rt.diskChars += chunkChars;
     patchTab(id, {
       loadedOffset: chunk.nextOffset,
       fullyLoaded: chunk.eof,
       stamp: chunk.stamp,
       tailChars:
-        chunk.eof || current.tailChars === null ? null : Math.max(0, current.tailChars - chunk.text.length),
+        chunk.eof || current.tailChars === null ? null : Math.max(0, current.tailChars - chunkChars),
       ...(chunk.mixedEol ? { mixedEol: true } : {}),
     });
     if (current.dirty) markDraftChanged(id);
@@ -435,7 +438,7 @@ async function applyFromDisk(
   rt.unreadable = false;
   rt.dismissed = null;
   rt.scanStarted = false;
-  rt.diskChars = read.text.length;
+  rt.diskChars = countCodePoints(read.text);
   rt.diskEncoding = read.encoding;
   if (read.binary) warnBinary(id);
   rt.ioSeq++;
@@ -672,7 +675,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
       await applyFromDisk(id, tailOffset, engine.snapshot(id), false);
     } else {
       patchTab(id, { ...shared, loadedOffset: next, tailChars: null });
-      rt.diskChars = text.length;
+      rt.diskChars = countCodePoints(text);
       rt.scanStarted = false;
       startScan(id);
     }

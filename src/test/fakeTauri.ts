@@ -339,7 +339,8 @@ export class FakeBackend {
         const raw = all.subarray(encoding === "utf-8" ? 0 : bomLength(all, encoding));
         const text = normalize(decodeAs(raw, encoding));
         const utf8 = !singleByte(encoding) && !isUtf16(encoding);
-        return { chars: text.length, lines: text.split("\n").length, invalid: utf8 && !isUtf8(raw) };
+        // Code points, like files.rs `scan` (BUGS.md L5).
+        return { chars: [...text].length, lines: text.split("\n").length, invalid: utf8 && !isUtf8(raw) };
       }
       case "session_read":
         return this.session;

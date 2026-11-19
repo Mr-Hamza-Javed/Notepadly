@@ -72,6 +72,7 @@ export interface SaveRequest {
 }
 
 export interface FileScan {
+  /** Characters in code points (an emoji is 1), after CRLF counts as one. */
   chars: number;
   lines: number;
   /** Some bytes are not valid in the encoding scanned with (they show as U+FFFD). */
