@@ -128,6 +128,12 @@ describe("Notepadly syntax on paper", () => {
     ]);
   });
 
+  it("takes maths inside a quote without its > markers, keeping the quote whole", () => {
+    const { markdown, parts } = preparePrint("> $$\n> a+b\n> $$\n> after");
+    expect(parts).toEqual([{ kind: "math", src: "a+b", display: true }]);
+    expect(markdown).toMatch(/^> \uE0000\uE001\n> after$/);
+  });
+
   it("takes Mermaid diagrams and embeds, and leaves code alone", () => {
     const text = "```mermaid\ngraph TD; A-->B\n```\n\n![[pic.png|200]]\n\n```\n$x$ ==y== #z\n```";
     const { markdown, parts } = preparePrint(text);

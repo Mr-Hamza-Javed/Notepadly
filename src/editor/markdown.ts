@@ -180,6 +180,18 @@ function atTopLevel(cx: BlockContext): boolean {
   return cx.parentType().name === "Document";
 }
 
+/**
+ * Whether the current line still belongs to the list item, quote or callout the block
+ * started in. `Line.depth` is how many enclosing blocks the line continues; it is
+ * public at runtime (the built-in fenced code parser uses it) but not in the typings.
+ */
+function continuesBlock(cx: BlockContext, line: Line): boolean {
+  return (line as Line & { depth: number }).depth >= cx.depth;
+}
+
+/** Indentation counted from the enclosing list item's content, not the line start. */
+const ownIndent = (line: Line) => line.indent - line.baseIndent;
+
 function parseFrontmatter(cx: BlockContext, line: Line): boolean {
   if (cx.lineStart !== 0 || line.text.trimEnd() !== "---") return false;
   // The parser cannot backtrack, so require the next line to look like YAML.
@@ -199,7 +211,12 @@ function parseFrontmatter(cx: BlockContext, line: Line): boolean {
   return true;
 }
 
-/** Shared by `$$` math and `%%` comments, which delimit multi-line blocks the same way. */
+/**
+ * Shared by `$$` math and `%%` comments, which delimit multi-line blocks the same way.
+ * They work inside lists, quotes and callouts too, ending with their container.
+ * `stopAtBlank`: display maths cannot contain a blank line, so an unclosed `$$` ends
+ * at the first one instead of restyling the rest of the document.
+ */
 function parseDelimitedBlock(
   cx: BlockContext,
   line: Line,
@@ -207,8 +224,9 @@ function parseDelimitedBlock(
   nodeName: string,
   markName: string,
   allowSameLine: boolean,
+  stopAtBlank: boolean,
 ): boolean {
-  if (line.indent >= 4 || !atTopLevel(cx) || !line.text.startsWith(delim, line.pos)) return false;
+  if (ownIndent(line) >= 4 || !line.text.startsWith(delim, line.pos)) return false;
   const from = cx.lineStart + line.pos;
   const sameLine = line.text.indexOf(delim, line.pos + 2);
   if (sameLine >= 0) {
@@ -223,9 +241,12 @@ function parseDelimitedBlock(
   const marks = [cx.elt(markName, from, from + 2)];
   let to = cx.lineStart + line.text.length;
   let lines = 0;
-  while (cx.nextLine() && lines++ < 5000) {
+  while (cx.nextLine() && continuesBlock(cx, line) && lines++ < 5000) {
+    // The blank line is left for the next block.
+    if (stopAtBlank && line.pos >= line.text.length) break;
+    marks.push(...line.markers);
     to = cx.lineStart + line.text.length;
-    const close = line.text.indexOf(delim);
+    const close = line.text.indexOf(delim, line.pos);
     if (close >= 0) {
       to = cx.lineStart + close + 2;
       marks.push(cx.elt(markName, to - 2, to));
@@ -240,7 +261,7 @@ function parseDelimitedBlock(
 const FOOTNOTE_DEF = /^\[\^([^\]\s]+)\]:[ \t]*/;
 
 function parseFootnoteDefinition(cx: BlockContext, line: Line): boolean {
-  if (line.indent >= 4 || !atTopLevel(cx)) return false;
+  if (ownIndent(line) >= 4) return false;
   const match = FOOTNOTE_DEF.exec(line.text.slice(line.pos));
   if (!match) return false;
   const from = cx.lineStart + line.pos;
@@ -248,7 +269,8 @@ function parseFootnoteDefinition(cx: BlockContext, line: Line): boolean {
   const inlineFrom = from + match[0].length;
   let content = line.text.slice(line.pos + match[0].length);
   let to = cx.lineStart + line.text.length;
-  while (/^( {2,}|\t)\S/.test(cx.peekLine())) {
+  // Indented continuation lines are only read at top level, where they carry no quote or list markers.
+  while (atTopLevel(cx) && /^( {2,}|\t)\S/.test(cx.peekLine())) {
     if (!cx.nextLine()) break;
     content += "\n" + line.text;
     to = cx.lineStart + line.text.length;
@@ -314,13 +336,13 @@ const NotepadlyMarkdown: MarkdownConfig = {
     { name: "Frontmatter", parse: parseFrontmatter, before: "HorizontalRule" },
     {
       name: "BlockMath",
-      parse: (cx, line) => parseDelimitedBlock(cx, line, "$$", "BlockMath", "MathMark", true),
+      parse: (cx, line) => parseDelimitedBlock(cx, line, "$$", "BlockMath", "MathMark", true, true),
       endLeaf: (_cx, line) => line.indent < 4 && line.text.startsWith("$$", line.pos),
       before: "FencedCode",
     },
     {
       name: "CommentBlock",
-      parse: (cx, line) => parseDelimitedBlock(cx, line, "%%", "CommentBlock", "CommentMark", false),
+      parse: (cx, line) => parseDelimitedBlock(cx, line, "%%", "CommentBlock", "CommentMark", false, false),
       endLeaf: (_cx, line) =>
         line.indent < 4 && line.text.startsWith("%%", line.pos) && line.text.indexOf("%%", line.pos + 2) < 0,
       before: "FencedCode",

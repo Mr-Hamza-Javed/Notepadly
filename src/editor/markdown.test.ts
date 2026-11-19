@@ -108,10 +108,30 @@ describe("markdown extensions: edge cases", () => {
     expect(texts("$unclosed", "InlineMath")).toEqual([]);
   });
 
-  it("reads multi-line and one-line block maths, at top level only", () => {
+  it("reads multi-line and one-line block maths", () => {
     expect(texts("$$\na\nb\n$$\nafter", "BlockMath")).toEqual(["$$\na\nb\n$$"]);
     expect(texts("$$x$$", "BlockMath")).toEqual(["$$x$$"]);
-    expect(texts("- $$\n  a\n  $$", "BlockMath")).toEqual([]);
+  });
+
+  // BUGS.md L12: block maths, comment blocks and footnotes worked at top level only.
+  it("L12: reads block maths, comments and footnotes inside lists, quotes and callouts", () => {
+    expect(texts("- $$\n  a\n  $$", "BlockMath")).toEqual(["$$\n  a\n  $$"]);
+    expect(texts("> $$\n> a *b* c\n> $$\n\nafter", "BlockMath")).toEqual(["$$\n> a *b* c\n> $$"]);
+    expect(texts("> [!note]\n> %%\n> hidden\n> %%", "CommentBlock")).toEqual(["%%\n> hidden\n> %%"]);
+    expect(texts("> [^1]: a quoted note", "FootnoteDefinition")).toEqual(["[^1]: a quoted note"]);
+    // Text inside the block is not Markdown.
+    expect(texts("> $$\n> a *b* c\n> $$", "Emphasis")).toEqual([]);
+  });
+
+  it("L12: a block inside a quote ends with the quote", () => {
+    expect(texts("> $$\n> a\n\noutside", "BlockMath")).toEqual(["$$\n> a"]);
+    expect(texts("> %%\n> a\n\noutside *x*", "Emphasis")).toEqual(["*x*"]);
+  });
+
+  // BUGS.md L11: an unclosed $$ restyled up to 5,000 lines.
+  it("L11: an unclosed $$ ends at the first blank line", () => {
+    expect(texts("$$\na\n\n# Heading\n\ntext", "BlockMath")).toEqual(["$$\na"]);
+    expect(texts("$$\na\n\n# Heading\n\ntext", "ATXHeading1")).toEqual(["# Heading"]);
   });
 
   it("does not let an unclosed $$ run past its line limit", () => {

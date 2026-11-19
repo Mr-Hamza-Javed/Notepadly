@@ -189,9 +189,18 @@ export function preparePrint(text: string): PrintSource {
         case "BlockMath": {
           const marks = node.getChildren("MathMark");
           if (marks.length < 2) return false;
-          const src = text.slice(marks[0].to, marks[marks.length - 1].from).trim();
+          // Inside a quote or list, the `>` and list markers of later lines are not maths.
+          let src = "";
+          let at = marks[0].to;
+          for (let child = node.firstChild; child; child = child.nextSibling) {
+            if (child.name === "MathMark" || child.from < at) continue;
+            src += text.slice(at, child.from);
+            at = child.to;
+          }
+          src = (src + text.slice(at, marks[marks.length - 1].from)).trim();
           const display = ref.name === "BlockMath" || marks[0].to - marks[0].from === 2;
-          add(ref.from, ref.to, { kind: "math", src, display }, ref.name === "BlockMath");
+          const topLevel = node.parent?.name === "Document";
+          add(ref.from, ref.to, { kind: "math", src, display }, ref.name === "BlockMath" && topLevel);
           return false;
         }
         case "FencedCode": {
