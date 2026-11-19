@@ -113,6 +113,40 @@ describe("find bar", () => {
     expect(app.engine.findNext()).toMatchObject({ total: 1 });
   });
 
+  // BUGS.md 1.5: the test above passes even without actions.whenActivated, because the
+  // load happens to settle after the activation. Here the activation settles last.
+  it("M21: searches again once the activation has put the tab in the editor, even after its load", async () => {
+    backend.write(A, "needle in a");
+    backend.write(B, "nothing here");
+    await app.actions.openPaths([A, B]);
+    const a = app.tabByName("a.txt");
+    app.actions.openFind(false);
+    const el = await renderFindBar();
+    await typeInto(field(el, "Find"), "needle");
+    await flushUi();
+    expect(count(el)).toBe("No results");
+    let settleActivation: () => void = () => {};
+    const activated = new Promise<void>((resolve) => (settleActivation = resolve));
+    vi.spyOn(app.actions, "whenActivated").mockReturnValue(activated);
+    const realActivate = app.engine.activate.bind(app.engine);
+    const shown: string[] = [];
+    // The editor shows the tab only later (as when a slow tab switch ends last).
+    vi.spyOn(app.engine, "activate").mockImplementation((id: string) => void shown.push(id));
+    let switching: Promise<void> = Promise.resolve();
+    act(() => {
+      switching = app.actions.activate(a.id);
+    });
+    await act(() => switching);
+    await flushUi(); // the whole file is loaded by now
+    expect(shown).toEqual([a.id]);
+    await act(async () => {
+      realActivate(a.id);
+      settleActivation();
+    });
+    await flushUi();
+    expect(count(el)).toBe("1 of 1");
+  });
+
   // BUGS.md UI-5: the counter is the only answer to Enter or F3, so a screen reader must hear it.
   it("the match counter is a polite live region", async () => {
     app.type("one two one");
