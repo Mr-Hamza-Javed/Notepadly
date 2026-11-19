@@ -96,7 +96,7 @@ describe("Settings page", () => {
     const group = el.querySelector<HTMLElement>("[role='radiogroup'][aria-label='Load remote images']")!;
     const radios = [...group.querySelectorAll<HTMLElement>("[role='radio']")];
     expect(radios.map((r) => r.textContent)).toEqual(["Always", "Ask per document", "Never"]);
-    expect(radios[1].getAttribute("aria-checked")).toBe("true");
+    expect(radios[0].getAttribute("aria-checked")).toBe("true");
     await act(async () => radios[2].click());
     expect(app.state().settings.remoteImages).toBe("never");
     expect(app.engine.remoteImageAllowed?.(app.tab().id, "https://a.b/c.png")).toBe(false);

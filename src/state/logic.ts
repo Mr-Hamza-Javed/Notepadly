@@ -19,7 +19,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autocorrect: true,
   statusBar: true,
   zoom: 100,
-  remoteImages: "ask",
+  remoteImages: "always",
 };
 
 export const DEFAULT_PAGE_SETUP: PageSetup = {

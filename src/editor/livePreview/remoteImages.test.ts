@@ -28,10 +28,10 @@ describe("Load remote images", () => {
     mountEngine();
   });
 
-  it("is 'Ask per document' by default and kept as stored", () => {
-    expect(sanitizeSettings({}).remoteImages).toBe("ask");
+  it("is 'Always' by default (as before the setting existed) and kept as stored", () => {
+    expect(sanitizeSettings({}).remoteImages).toBe("always");
     expect(sanitizeSettings({ remoteImages: "never" }).remoteImages).toBe("never");
-    expect(sanitizeSettings({ remoteImages: "sometimes" }).remoteImages).toBe("ask");
+    expect(sanitizeSettings({ remoteImages: "sometimes" }).remoteImages).toBe("always");
   });
 
   it("'Always' loads web images at once", async () => {
