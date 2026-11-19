@@ -47,7 +47,7 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - **Cause:** `src/state/actions.ts:383` (`withDefaultExtension`), `src/state/logic.ts:198`.
 - **Fix:** keep the path the user chose. Add an extension only when the Markdown/Text filter is selected, and ask again if the new name exists.
 
-### C2. "Replace all" before the file has loaded changes only the loaded part ✅
+### C2. "Replace all" before the file has loaded changes only the loaded part ✅ — fixed (2f064ce)
 - **What happens:** open a file over 2 MB and press Ctrl+H → Replace all straight away. Only the text in memory at that moment is changed. The rest loads later, unchanged. No warning.
 - **Test:** 5.4 MB file with 150,000 "foo". After Replace all: 7,521 replaced, **142,479 left**.
 - **Cause:** `src/components/FindBar.tsx:176`. `openFind` starts the full load but Replace all does not wait for it.
@@ -86,7 +86,7 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - **Cause:** `src-tauri/src/files.rs:174` (`detect_encoding`); later chunks use `from_utf8_lossy`.
 - **Fix:** when a later chunk has invalid UTF-8, reload the tab as ANSI, or at least block saving with a warning.
 
-### C8. Typing goes into the previous tab's file while a tab is loading ✅
+### C8. Typing goes into the previous tab's file while a tab is loading ✅ — fixed (e641629)
 - **What happens:** click a tab that is not loaded yet (restored from the session, hibernated, or on a slow drive). The tab strip shows the new tab as active at once, but the editor still holds the **previous** file until loading ends. Anything typed in between goes into the previous file and marks it unsaved.
 - **Test:** clicked `a.txt` (1.5 s read delay), typed "TYPED" → `b.txt` became "TYPEDBBB file", `a.txt` untouched.
 - **Cause:** `src/state/actions.ts:227-238`: `activeId` is set first, `engine.activate` runs after the load.
@@ -129,12 +129,12 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - **Cause:** `src/editor/index.ts:323` (`checkDegrade`); the `degraded` flag never clears.
 - **Fix:** turn preview back on when the long line is gone; show the reason in the status bar; better, skip only that line.
 
-### H7. A file that is deleted and created again turns a clean tab into "unsaved" ✅
+### H7. A file that is deleted and created again turns a clean tab into "unsaved" ✅ — fixed (d8a8ef6)
 - `git checkout`, OneDrive, or editors that save by delete + rename. The tab is flagged "deleted" and marked unsaved, then when the file is back it shows "This file changed on disk" and asks "save changes?" on close, though the user typed nothing.
 - **Cause:** `src/lib/loader.ts:590` forces dirty on `flag-deleted`; `decideExternal` then refuses to reload a dirty tab.
 - **Fix:** if the user made no edit, reload silently when the file returns and clear the dirty mark.
 
-### H8. The whole document is written to the draft file after every typing pause ✅
+### H8. The whole document is written to the draft file after every typing pause ✅ — fixed (1123dea)
 - In a 1.59 MB unsaved file, each "x" wrote a full 1.59 MB draft (4 keystrokes, 4 full writes). For a 100 MB file that is 100 MB over IPC and to disk every 800 ms.
 - The spec says "no work proportional to document length per keystroke".
 - **Cause:** `src/lib/loader.ts:729`. Save also sends the whole text over IPC.
@@ -174,7 +174,7 @@ This report covers **functionality**: broken features, wrong results, data loss 
 - The file itself is writable but a temp file cannot be made in its folder (some ACLs, drive roots, some network shares). Save gives "Access is denied" although writing in place would work.
 - **Cause:** `src-tauri/src/files.rs:644`. The in-place fallback covers a failed replace, not a failed temp file.
 
-### H16. A file deleted while the app was closed comes back as an empty "unsaved" tab ✅
+### H16. A file deleted while the app was closed comes back as an empty "unsaved" tab ✅ — fixed (3463b7a)
 - The session had `gone.md`; the file was deleted. On start: empty document, dirty dot, "deleted" bar. "Keep mine" + Save writes an **empty file** to disk. Closing asks "save changes?" for an empty document.
 - **Cause:** `src/lib/loader.ts:397` (`materialiseOrFlag`).
 - **Fix:** do not mark such a tab dirty; ask "file not found, close this tab?".
@@ -229,7 +229,7 @@ The `open-paths` listener is added **after** `openHere(pending)` (`src/state/act
 ### M11. Giving a new file name on the command line does nothing 📖
 `notepadly newfile.txt` (file does not exist) → empty Untitled. Notepad asks "create a new file?". Launching again while the app runs only focuses the old window; no new tab or window. File names that start with `-` cannot be opened. Cause: `src-tauri/src/lib.rs:229`.
 
-### M12. Hibernation wipes the Undo history 📖
+### M12. Hibernation wipes the Undo history 📖 — fixed (72e2d01)
 A clean tab over 1 MB that is inactive for 60 seconds has its editor state dropped. On return Ctrl+Z does nothing and callout fold state is reset. Cause: `src/lib/loader.ts:634`.
 
 ### M13. Whole-file actions fill memory on very big files 📖
@@ -260,10 +260,10 @@ Only the `main` window writes the session and drafts and remembers size and posi
 ### M20. Wrong name in the "could not open" message, and Recent is not cleaned 📖
 `src/state/actions.ts:320` always uses the **last** file in the list. The failed file stays in Recent because the entry is "name: error" and never matches a path.
 
-### M21. With the find bar open, moving to an unloaded tab makes F3 say "No results" 📖
+### M21. With the find bar open, moving to an unloaded tab makes F3 say "No results" 📖 — fixed (2f064ce)
 Find runs on the old tab's document, then `engine.activate` clears the session. Next does not work until the query is typed again.
 
-### M22. If a restored file cannot be read, the tab is empty 📖
+### M22. If a restored file cannot be read, the tab is empty 📖 — fixed (3463b7a)
 When another program has locked the file, the tab opens empty (partial, offset 0). Text typed there and saved is **added to the start** of the real file. Nothing is lost, but the screen and the disk do not match.
 
 ---
@@ -276,9 +276,9 @@ When another program has locked the file, the tab opens empty (partial, offset 0
 | L2 | Colour codes like `#fff`, `#1a2b3c` become tag pills | ✅ |
 | L3 | In `if a==b or c==d`, "b or c" is highlighted and the `==` are hidden | ✅ |
 | L4 | Time/Date (F5) is always US format `3:05 PM 11/10/2026`, not the system format | ✅ |
-| L5 | "characters" counts UTF-16 units (an emoji is 2). The total of a partly loaded unsaved file is stale | 📖 |
+| L5 | "characters" counts UTF-16 units (an emoji is 2). The total of a partly loaded unsaved file is stale | 📖 — second part fixed (42e6a30) |
 | L6 | The font list has false families ("Montserrat Extra"); "Inter" is always listed even when not installed | 📖 |
-| L7 | After 400 undo steps, undoing back to the saved state no longer clears the unsaved dot (`index.ts:57`) | 📖 |
+| L7 | After 400 undo steps, undoing back to the saved state no longer clears the unsaved dot (`index.ts:57`) | 📖 — fixed (7ea4fbd) |
 | L8 | In table cells `2 * 3 * 4` turns italic; `_x_`, maths, images and wikilinks are not rendered | 📖 |
 | L9 | In a table without padding (`\|a\|b\|`), a `\` typed at the end of a cell merges it with the next cell | 📖 |
 | L10 | Table commands delete the extra cells of a row that has more cells than the header | 📖 |
@@ -287,7 +287,7 @@ When another program has locked the file, the tab opens empty (partial, offset 0
 | L13 | Ctrl+click on links works in Formatted mode only, not in Markdown syntax or Plain | 📖 |
 | L14 | `http://` and `file://` images do not show (only `https://`, local paths and data URLs do) | 📖 |
 | L15 | In the Find box, Ctrl+B / Ctrl+I / Ctrl+K / F5 act on the document | 📖 |
-| L16 | The drafts folder is never cleaned: after a corrupt `session.json` or a crash, draft files stay forever; a draft that cannot be read is deleted | 📖 |
+| L16 | The drafts folder is never cleaned: after a corrupt `session.json` or a crash, draft files stay forever; a draft that cannot be read is deleted | 📖 — first part fixed (90c52a9) |
 
 Other small points: Enter on an empty nested list item removes the item instead of outdenting; indenting with Tab does not fix numbering; `pathsEqual` does not understand `..`, 8.3 names or UNC vs mapped drive (one file in two tabs); Ctrl+wheel or pinch zooms 10% per event; a partly loaded file that was deleted first shows "changed" instead of "deleted" (corrects itself within 3 seconds).
 
@@ -363,6 +363,18 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 | H10 (first part) | Find Next/Previous report the real index after the cursor was moved. Parts 2 (F3 does not update the bar) and 3 ("10000+") are still open | `96a6e76` |
 | H9 (part) | `%%comments%%` and front matter are left out of printing. Maths, Mermaid, callouts, highlights, wikilinks and tags still print raw | `ccacdde` |
 | L6 (part) | "Montserrat Extra Bold" no longer lists a false "Montserrat Extra"; bitmap `.fon` fonts ("Courier 10,12,15", "MS Sans Serif 8,10,12,14,18,24") are left out. "Inter" is still always listed | `ea5c821`, `fec7557` |
+| H7 | A clean tab whose deleted file comes back before any edit is clean again; it reloads if the content changed | `d8a8ef6` |
+| H16 | A restored tab whose file is gone stays clean with the "deleted" bar; Save does not write an empty file | `3463b7a` |
+| M22 | A tab whose file could not be read refuses to save until reloaded; the poll retries the read for a clean tab | `3463b7a` |
+| T2 | Pending untitled-tab titles are applied before the session is stored on close | `0670f55` |
+| L7 | Dirty tracking follows the undo history when it trims its oldest steps, so the saved point stays reachable after 400 steps | `7ea4fbd` |
+| M12 | Hibernation keeps the undo history (no text) and restores it when the file is unchanged on wake. Callout fold state is still reset | `72e2d01` |
+| C8 | While a tab loads, the editor shows an empty read-only placeholder instead of the previous tab | `e641629` |
+| C2 | Replace and Replace all wait for the whole file and are disabled while it loads | `2f064ce` |
+| M21 | The find bar searches again once the editor shows the newly activated tab (`actions.whenActivated`) | `2f064ce` |
+| H8 | The draft debounce grows with the document (800 ms up to 1 MB, about +2 s per MB, max 30 s; a draft is never older than 60 s). Save still sends the whole text over IPC | `1123dea` |
+| L5 (second part) | The character total of a partly loaded file counts edits and later chunks (`tailChars` replaces `totalChars`). Emoji still count as 2 | `42e6a30` |
+| L16 (first part) | At startup the main window deletes drafts no restored tab owns, and leftover `.tmp` files (new Rust command `drafts_prune`, not compiled here). A draft that cannot be read is still deleted | `90c52a9` |
 
 ### Fixed on this branch (new)
 
@@ -376,19 +388,19 @@ Nothing above was removed. Bugs from the report that a test now pins down are li
 | # | Test |
 | --- | --- |
 | H5 | `src/editor/commands.test.ts` "H5: adding a row to a table inside a blockquote keeps it in the quote" |
-| H7 | `src/state/actions.test.ts` "H7: a deleted-then-restored file leaves an unedited tab clean" |
+| H7 | `src/state/actions.test.ts` "H7: a deleted-then-restored file leaves an unedited tab clean" — fixed (d8a8ef6) |
 | H14 | `src-tauri/src/files.rs` `mixed_line_endings_are_kept_on_save` (`#[ignore]`) |
-| H16 | `src/state/actions.test.ts` "H16: a restored tab whose file is gone is not an empty unsaved document" |
+| H16 | `src/state/actions.test.ts` "H16: a restored tab whose file is gone is not an empty unsaved document" — fixed (3463b7a) |
 | M4 (second part) | `src/editor/commands.test.ts` "M4: bolding two paragraphs bolds each one" |
 | M7 | `src/state/logic.test.ts` "M7: [[v1.2 notes]] opens v1.2 notes.md" |
-| M12 | `src/lib/loader.test.ts` "M12: undo still works after a tab was hibernated and woken" |
+| M12 | `src/lib/loader.test.ts` "M12: undo still works after a tab was hibernated and woken" — fixed (72e2d01) |
 | M15 | `src-tauri/src/files.rs` `utf16_without_bom_is_detected` (`#[ignore]`) |
 | L2, L3 | `src/editor/markdown.test.ts` "L2: colour codes are not tags", "L3: comparison operators are not highlight markers" |
 | L8 | `src/editor/tableModel.test.ts` "L8: 2 * 3 * 4 stays plain text" |
 
 ### New, not fixed
 
-#### T2. An untitled tab closed right after typing comes back named "Untitled" ✅
+#### T2. An untitled tab closed right after typing comes back named "Untitled" ✅ — fixed (0670f55)
 - **What happens:** type the first line of a new note and close the window within a quarter of a second. Next start the tab has its text and its draft, but the tab is called "Untitled" until the next edit.
 - **Steps:** new tab, type `Shopping list`, close the window at once (background mode, continue session), start again.
 - **Expected:** title "Shopping list". **Actual:** "Untitled".
@@ -436,3 +448,15 @@ These are not bugs in existing code: Windows Notepad does these things and Notep
   - Use the drag position on screen to tell a drop outside every window (new window) from a drop on another window's tab bar (move).
   - Make sure the moved tab's draft and session entry belong to the new window, so nothing is lost or duplicated on restart.
 - **Related:** M18, C5 and H12. Test the move with a dirty tab, a partly loaded big file and an untitled tab.
+
+### New (loader)
+
+#### LOAD-1. The find bar left an unhandled promise rejection when the full load failed ✅ — fixed (2f064ce)
+- **What happened:** with the find bar open on a partly loaded file that changed on disk, `actions.ensureFullyLoaded` rejects (after showing its message). `FindBar.tsx` called it as `void ensureFullyLoaded(...).then(...)` with no `catch`, so every such switch logged an unhandled rejection.
+- **Fix:** the chain in `src/components/FindBar.tsx` (find effect) now ends in `.catch`.
+
+#### LOAD-2. Not fixed in this group, with reasons 📖
+- **M13** (whole-file actions load everything, no cancel, `getText()` over 500 MB): needs streaming Find/Print/Save As and a cancellable full load across loader, engine and print; too big for this pass.
+- **M14** (Find scans the whole file per keystroke): needs an incremental or background count in `src/editor/find.ts` with an async result in the find bar; it overlaps the Find counter work (H10). Left open.
+- **L5, first part** (an emoji counts as 2): the count is UTF-16 units on purpose in both `engine` (`doc.length`) and Rust `files.rs` `scan()`; counting code points needs an incremental count per document and a Rust change.
+- **L16, second part** (a draft that cannot be read is deleted): `materialise` in `src/lib/loader.ts` treats a read error like a missing draft, loads the file clean, and the next flush deletes the draft. Keeping it needs a "draft unreadable" state that neither overwrites nor deletes the draft and tells the user.
