@@ -155,8 +155,9 @@ describe("leaving a table from the keyboard", () => {
     expect(engine.getText("t")).toBe(`before\n\n${fruit}`);
     expect(document.activeElement).toBe(cell);
     key(cell, { key: "Escape" });
-    // A line to land on is added, but it is not an edit: no undo step, no unsaved dot.
-    expect(engine.getText("t")).toBe(`before\n\n${fruit}\n`);
+    // A blank line and a line to land on are added, but they are not an edit: no undo step,
+    // no unsaved dot. Without the blank line, what is typed next would be a table row.
+    expect(engine.getText("t")).toBe(`before\n\n${fruit}\n\n`);
     expect(log.dirty.filter(([, dirty]) => dirty)).toEqual([]);
     const view = EditorView.findFromDOM(document.querySelector(".cm-editor") as HTMLElement)!;
     expect(undoDepth(view.state)).toBe(0);
