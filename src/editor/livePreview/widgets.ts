@@ -155,6 +155,29 @@ function bindBlockSource(view: EditorView, host: HTMLElement, offset: number, wi
   host.appendChild(button);
 }
 
+/**
+ * Where a block widget sits when it is inside a list, quote or callout (BUGS.md MD-1): the
+ * quote and callout classes its lines would have had, and the list indentation in characters.
+ */
+export interface Nest {
+  classes: string;
+  indent: number;
+}
+
+export const TOP_LEVEL: Nest = { classes: "", indent: 0 };
+
+function sameNest(a: Nest, b: Nest): boolean {
+  return a.classes === b.classes && a.indent === b.indent;
+}
+
+function applyNest(dom: HTMLElement, nest: Nest): void {
+  for (const name of Array.from(dom.classList)) {
+    if (name.startsWith("cm-md-q") || name.startsWith("cm-md-callout") || name === "cm-md-nested") dom.classList.remove(name);
+  }
+  if (nest.classes) dom.classList.add("cm-md-nested", ...nest.classes.split(" "));
+  dom.style.marginInlineStart = nest.indent ? `${nest.indent}ch` : "";
+}
+
 abstract class SourceWidget extends WidgetType {
   /** Rendered widgets take their own clicks and turn them into a cursor placement. */
   override ignoreEvent(): boolean {
@@ -212,13 +235,17 @@ export class CheckboxWidget extends WidgetType {
 }
 
 export class HorizontalRuleWidget extends SourceWidget {
-  override eq(): boolean {
-    return true;
+  constructor(readonly nest: Nest = TOP_LEVEL) {
+    super();
+  }
+  override eq(other: HorizontalRuleWidget): boolean {
+    return sameNest(other.nest, this.nest);
   }
   toDOM(view: EditorView): HTMLElement {
     const wrap = element("div", "cm-md-hr");
     wrap.appendChild(document.createElement("hr"));
     bindBlockSource(view, wrap, 0, false);
+    applyNest(wrap, this.nest);
     return wrap;
   }
 }
@@ -956,11 +983,14 @@ export const tableFocus = ViewPlugin.fromClass(
 );
 
 export class TableWidget extends SourceWidget {
-  constructor(readonly source: string) {
+  constructor(
+    readonly source: string,
+    readonly nest: Nest = TOP_LEVEL,
+  ) {
     super();
   }
   override eq(other: TableWidget): boolean {
-    return other.source === this.source;
+    return other.source === this.source && sameNest(other.nest, this.nest);
   }
   override get estimatedHeight(): number {
     return 34 * Math.max(1, this.source.split("\n").length - 1) + 12;
@@ -968,6 +998,7 @@ export class TableWidget extends SourceWidget {
   toDOM(view: EditorView): HTMLElement {
     const controller = new TableController(view);
     controller.render(this.source);
+    applyNest(controller.wrap, this.nest);
     tableControllers.set(controller.wrap, controller);
     return controller.wrap;
   }
@@ -976,6 +1007,7 @@ export class TableWidget extends SourceWidget {
     const controller = tableControllers.get(dom);
     if (!controller) return false;
     controller.render(this.source);
+    applyNest(dom, this.nest);
     return true;
   }
   override destroy(dom: HTMLElement): void {
@@ -1003,12 +1035,18 @@ export class MathWidget extends SourceWidget {
     readonly display: boolean,
     /** Offset of the math text from the start of the replaced range. */
     readonly sourceOffset: number,
+    readonly nest: Nest = TOP_LEVEL,
   ) {
     super();
   }
   override eq(other: MathWidget): boolean {
     // The offset is baked into the click handlers, so a moved source needs a new DOM.
-    return other.source === this.source && other.display === this.display && other.sourceOffset === this.sourceOffset;
+    return (
+      other.source === this.source &&
+      other.display === this.display &&
+      other.sourceOffset === this.sourceOffset &&
+      sameNest(other.nest, this.nest)
+    );
   }
   override get estimatedHeight(): number {
     if (!this.display) return -1;
@@ -1029,6 +1067,7 @@ export class MathWidget extends SourceWidget {
     }
     if (this.display) {
       bindBlockSource(view, host, this.sourceOffset, true);
+      applyNest(host, this.nest);
     } else {
       // Inline math reveals like other inline syntax when clicked.
       host.addEventListener("mousedown", (event) => {
@@ -1045,11 +1084,17 @@ export class MermaidWidget extends SourceWidget {
     readonly source: string,
     readonly dark: boolean,
     readonly sourceOffset: number,
+    readonly nest: Nest = TOP_LEVEL,
   ) {
     super();
   }
   override eq(other: MermaidWidget): boolean {
-    return other.source === this.source && other.dark === this.dark && other.sourceOffset === this.sourceOffset;
+    return (
+      other.source === this.source &&
+      other.dark === this.dark &&
+      other.sourceOffset === this.sourceOffset &&
+      sameNest(other.nest, this.nest)
+    );
   }
   override get estimatedHeight(): number {
     return cachedMermaid(this.source, this.dark)?.height || 260;
@@ -1080,6 +1125,7 @@ export class MermaidWidget extends SourceWidget {
         });
     }
     bindBlockSource(view, host, this.sourceOffset, true);
+    applyNest(host, this.nest);
     return host;
   }
 }

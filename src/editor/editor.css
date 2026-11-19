@@ -173,6 +173,13 @@
 .cm-editor.notepadly-cm .cm-line.cm-md-q4:dir(rtl) { padding-right: 64px; }
 .cm-editor.notepadly-cm .cm-line.cm-md-callout:dir(rtl) { padding-left: 16px; padding-right: 20px; }
 
+/* Maths, diagrams, tables and rules inside a quote or callout keep its bar (BUGS.md MD-1). */
+.notepadly-cm .cm-md-nested.cm-md-q1 { padding-inline-start: 16px; background-size: 16px 100%; }
+.notepadly-cm .cm-md-nested.cm-md-q2 { padding-inline-start: 32px; background-size: 32px 100%; }
+.notepadly-cm .cm-md-nested.cm-md-q3 { padding-inline-start: 48px; background-size: 48px 100%; }
+.notepadly-cm .cm-md-nested.cm-md-q4 { padding-inline-start: 64px; background-size: 64px 100%; }
+.notepadly-cm .cm-md-nested.cm-md-quote:dir(rtl) { background-position: right top; }
+
 /* Callouts */
 .notepadly-cm .cm-md-callout {
   --callout: #086ddd;
@@ -187,6 +194,12 @@
   background-repeat: no-repeat;
   padding-left: 20px;
   padding-right: 16px;
+}
+.notepadly-cm .cm-md-nested.cm-md-callout {
+  background-size: 3px 100%;
+  background-repeat: no-repeat;
+  padding-inline-start: 20px;
+  padding-inline-end: 16px;
 }
 .cm-editor.notepadly-cm .cm-line.cm-md-callout.cm-md-q2 { padding-left: 36px; }
 .cm-editor.notepadly-cm .cm-line.cm-md-callout.cm-md-q3 { padding-left: 52px; }

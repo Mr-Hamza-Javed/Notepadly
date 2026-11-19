@@ -108,8 +108,8 @@ describe("block widgets", () => {
     expect(blocks(preview("| a | b |\n| 1 | 2 |"))).toEqual([]);
   });
 
-  it("leaves a rule inside a list or quote as source", () => {
-    expect(blocks(preview("> ---\n\nx"))).toEqual([]);
+  it("renders a rule inside a quote too (BUGS.md MD-1)", () => {
+    expect(blocks(preview("> ---\n\nx"))).toEqual([["HorizontalRule", "> ---"]]);
   });
 
   // Text added past the scanned region is picked up by the viewport reporter a moment later.

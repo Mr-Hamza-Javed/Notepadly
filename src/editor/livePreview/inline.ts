@@ -276,7 +276,7 @@ class Builder {
         this.eachVisibleLine(from, to, (lineFrom) => this.addLine(lineFrom, "cm-md-html-block"));
         return false;
       case "HorizontalRule": {
-        // Top-level rules are block widgets; a nested one stays styled source.
+        // Rules are block widgets (also in lists and quotes, BUGS.md MD-1); a revealed nested one is dimmed.
         if (ref.node.parent?.name !== "Document") this.dim(from, to);
         return false;
       }

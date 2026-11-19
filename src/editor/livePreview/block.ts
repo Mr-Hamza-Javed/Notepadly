@@ -14,8 +14,17 @@ import {
   type Transaction,
 } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
 import { isDarkTheme } from "../theme";
-import { HorizontalRuleWidget, MathWidget, MermaidWidget, TableWidget, tableFocus } from "./widgets";
+import {
+  HorizontalRuleWidget,
+  MathWidget,
+  MermaidWidget,
+  TableWidget,
+  TOP_LEVEL,
+  tableFocus,
+  type Nest,
+} from "./widgets";
 
 /** Characters scanned on each side of the reported viewport. */
 const SCAN_PADDING = 4000;
@@ -89,6 +98,42 @@ function paddedSpan(view: Span, length: number): Span {
   return { from: Math.max(0, view.from - SCAN_PADDING), to: Math.min(length, view.to + SCAN_PADDING) };
 }
 
+/** Containers whose maths, diagrams, tables and rules are rendered too (BUGS.md MD-1). */
+const CONTAINERS = new Set(["BulletList", "OrderedList", "ListItem"]);
+
+/**
+ * Strips the quote markers and list indentation (`prefix`, as written before the block's first
+ * line) from the following lines of a block's content.
+ */
+function stripNest(text: string, prefix: string): string {
+  if (!prefix) return text;
+  const depth = (prefix.match(/>/g) ?? []).length;
+  const indent = prefix.replace(/^.*>[ \t]?/, "").length;
+  const pattern = new RegExp(`^(?:[ \\t]*>[ \\t]?){0,${depth}}[ \\t]{0,${indent}}`);
+  return text
+    .split("\n")
+    .map((line, i) => (i === 0 ? line : line.startsWith(prefix) ? line.slice(prefix.length) : line.replace(pattern, "")))
+    .join("\n");
+}
+
+/** The quote and callout classes and list indent of a nested block, like its lines would get. */
+function nestOf(state: EditorState, node: SyntaxNodeRef, prefix: string): Nest {
+  let depth = 0;
+  let outer: SyntaxNode | null = null;
+  for (let parent = node.node.parent; parent; parent = parent.parent) {
+    if (parent.name === "Blockquote") {
+      depth++;
+      outer = parent;
+    }
+  }
+  const indent = prefix.replace(/^.*>[ \t]?/, "").length;
+  if (!depth) return indent ? { classes: "", indent } : TOP_LEVEL;
+  let classes = `cm-md-quote cm-md-q${Math.min(depth, 4)}`;
+  const callout = CALLOUT_LINE.exec(state.doc.lineAt(outer!.from).text);
+  if (callout) classes += ` cm-md-callout cm-md-callout-${callout[2].toLowerCase()}`;
+  return { classes, indent };
+}
+
 function collectBlocks(state: EditorState, span: Span, toggled: readonly number[]): Range<Decoration>[] {
   const found: Range<Decoration>[] = [];
   const { doc } = state;
@@ -97,23 +142,30 @@ function collectBlocks(state: EditorState, span: Span, toggled: readonly number[
     to: span.to,
     enter: (node) => {
       if (node.name === "Document") return true;
+      if (CONTAINERS.has(node.name)) return true;
       const startLine = doc.lineAt(node.from);
       const endLine = doc.lineAt(node.to);
+      // Inside a list or quote, only blocks that start their line (after `> ` and indentation)
+      // are rendered: replacing the line of `- $$` would hide the list marker.
+      const prefix = doc.sliceString(startLine.from, node.from);
+      const nested = prefix.length > 0;
+      if (nested && !/^[ \t>]*$/.test(prefix) && node.name !== "Blockquote") return false;
+      const nest = nested ? nestOf(state, node, prefix) : TOP_LEVEL;
       const replace = (widget: Decoration["spec"]["widget"], reveal: RevealMode = "explicit") =>
         found.push(Decoration.replace({ widget, block: true, reveal }).range(startLine.from, endLine.to));
 
       switch (node.name) {
         case "Table":
-          replace(new TableWidget(doc.sliceString(startLine.from, endLine.to)), "never");
+          replace(new TableWidget(doc.sliceString(startLine.from, endLine.to), nest), "never");
           break;
         case "HorizontalRule":
-          if (startLine.number === endLine.number) replace(new HorizontalRuleWidget());
+          if (startLine.number === endLine.number) replace(new HorizontalRuleWidget(nest));
           break;
         case "BlockMath": {
           const marks = node.node.getChildren("MathMark");
           if (marks.length === 2) {
-            const text = doc.sliceString(marks[0].to, marks[1].from).trim();
-            replace(new MathWidget(text, true, marks[0].to - startLine.from));
+            const text = stripNest(doc.sliceString(marks[0].to, marks[1].from), prefix).trim();
+            replace(new MathWidget(text, true, marks[0].to - startLine.from, nest));
           }
           break;
         }
@@ -123,9 +175,8 @@ function collectBlocks(state: EditorState, span: Span, toggled: readonly number[
             const body = node.node.getChild("CodeText");
             const fences = node.node.getChildren("CodeMark");
             if (body && fences.length === 2) {
-              replace(
-                new MermaidWidget(doc.sliceString(body.from, body.to), isDarkTheme(), body.from - startLine.from),
-              );
+              const source = stripNest(doc.sliceString(body.from, body.to), prefix);
+              replace(new MermaidWidget(source, isDarkTheme(), body.from - startLine.from, nest));
             }
           }
           break;
@@ -137,9 +188,11 @@ function collectBlocks(state: EditorState, span: Span, toggled: readonly number[
               found.push(
                 Decoration.replace({ revealFrom: 1 }).range(startLine.to, endLine.to),
               );
+              // A folded callout hides its content, blocks included.
+              return false;
             }
           }
-          break;
+          return true;
         }
       }
       return false;

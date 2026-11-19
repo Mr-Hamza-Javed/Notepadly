@@ -4,7 +4,7 @@ import "../../test/dom";
 import { history } from "@codemirror/commands";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, type WidgetType } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 import { markdownSupport } from "../markdown";
 import { blockField, blockPreview } from "./block";
@@ -12,7 +12,7 @@ import { cursorCharLeft, cursorCharRight } from "@codemirror/commands";
 import { inlinePreview } from "./inline";
 import { previewContext, resolveImageSrc } from "./context";
 import { classifyHref } from "../../state/logic";
-import { renderCellHtml } from "./widgets";
+import { HorizontalRuleWidget, MathWidget, MermaidWidget, TableWidget, renderCellHtml } from "./widgets";
 import { mountEngine } from "../../test/editorHarness";
 import { engine } from "..";
 
@@ -176,6 +176,65 @@ function typeInCell(cell: HTMLElement, text: string): void {
 function key(target: Element | null, init: KeyboardEventInit): void {
   target!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
 }
+
+describe("blocks inside lists, quotes and callouts", () => {
+  function widgets(view: EditorView): WidgetType[] {
+    const out: WidgetType[] = [];
+    view.state.field(blockField).shown.between(0, view.state.doc.length, (_f, _t, deco) => {
+      if (deco.spec.widget) out.push(deco.spec.widget as WidgetType);
+    });
+    return out;
+  }
+
+  it("MD-1: a maths block in a list item is rendered, indented like the item", () => {
+    const view = preview("- item\n\n  $$\n  x^2\n  $$\n\nend", 0);
+    const [math] = widgets(view);
+    expect(math).toBeInstanceOf(MathWidget);
+    expect((math as MathWidget).source).toBe("x^2");
+    expect((math as MathWidget).nest.indent).toBe(2);
+    const host = view.dom.querySelector<HTMLElement>(".cm-md-math-block")!;
+    expect(host.style.marginInlineStart).toBe("2ch");
+  });
+
+  it("MD-1: a maths block in a quote is rendered without the quote markers, with the quote bar", () => {
+    const view = preview("> $$\n> a +\n> b\n> $$\n\nend", 0);
+    const [math] = widgets(view) as MathWidget[];
+    expect(math).toBeInstanceOf(MathWidget);
+    expect(math.source).toBe("a +\nb");
+    const host = view.dom.querySelector<HTMLElement>(".cm-md-math-block")!;
+    expect(host.classList.contains("cm-md-q1")).toBe(true);
+  });
+
+  it("MD-1: a Mermaid diagram in a callout is rendered with the callout's colours", () => {
+    const view = preview("> [!tip]\n> ```mermaid\n> graph TD; A-->B\n> ```\n\nend", 0);
+    const [diagram] = widgets(view) as MermaidWidget[];
+    expect(diagram).toBeInstanceOf(MermaidWidget);
+    expect(diagram.source).toBe("graph TD; A-->B");
+    expect(diagram.nest.classes).toContain("cm-md-callout-tip");
+  });
+
+  it("MD-1: a table and a rule in a quote are rendered", () => {
+    const view = preview("> | a | b |\n> | - | - |\n> | c | d |\n>\n> ---\n\nend", 0);
+    const kinds = widgets(view).map((w) => w.constructor);
+    expect(kinds).toEqual([TableWidget, HorizontalRuleWidget]);
+    const cells = Array.from(view.dom.querySelectorAll(".cm-md-table td")).map((td) => td.textContent);
+    expect(cells).toEqual(["c", "d"]);
+  });
+
+  it("MD-1: a block on a list marker's line and blocks in a folded callout stay source", () => {
+    expect(widgets(preview("- $$\n  x\n  $$\n\nend", 0))).toEqual([]);
+    const folded = widgets(preview("> [!note]-\n> $$\n> x\n> $$\n\nend", 0));
+    expect(folded.some((w) => w instanceof MathWidget)).toBe(false);
+  });
+
+  it("MD-1: typing in a table inside a quote keeps the quote markers", async () => {
+    const view = preview("> | a | b |\n> | - | - |\n> | c | d |\n\nend", 0);
+    const cell = await focusCell(view.dom, "c");
+    typeInCell(cell, "cc");
+    await tick();
+    expect(view.state.doc.line(3).text).toBe("> | cc | d |");
+  });
+});
 
 describe("entering maths and diagrams from the keyboard", () => {
   async function focusedEngineView(text: string): Promise<EditorView> {
