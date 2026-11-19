@@ -125,22 +125,44 @@ fn marker_path(app: &AppHandle) -> Option<PathBuf> {
         .map(|dir| dir.join(RESUME_MARKER))
 }
 
-/// True (once) when this launch is the restart after an update installed from the
-/// background. Consumes the marker.
-pub fn take_resume_marker(app: &AppHandle) -> bool {
-    marker_path(app).is_some_and(|path| consume_marker(&path, SystemTime::now()))
+/// True (once) when this launch, with command-line `args`, is the restart after
+/// an update installed from the background. Consumes the marker.
+pub fn take_resume_marker(app: &AppHandle, args: &[String]) -> bool {
+    marker_path(app).is_some_and(|path| consume_marker(&path, SystemTime::now(), args))
 }
 
-/// True when the marker exists and was written at most `MARKER_MAX_AGE` before
-/// `now`. The marker is removed either way, so it works only once.
-fn consume_marker(path: &Path, now: SystemTime) -> bool {
+/// A second instance that is the installer's restart, arriving after a launch
+/// the user made during the install already started this process. Consumes the
+/// marker.
+pub fn is_late_update_restart(app: &AppHandle, args: &[String]) -> bool {
+    take_resume_marker(app, args)
+}
+
+/// True when the marker exists, was written at most `MARKER_MAX_AGE` before
+/// `now`, and names exactly `args`: the installer restarts the app with the
+/// command line of the process that installed the update, so a launch with
+/// anything else (a double-clicked file during the install) is the user's and
+/// starts normally (RUST-6). Such a launch leaves the marker for the real
+/// restart; a match or a stale marker removes it, so it works only once. A
+/// marker without arguments (written by an older version) matches any launch.
+fn consume_marker(path: &Path, now: SystemTime, args: &[String]) -> bool {
     let fresh = std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| now.duration_since(t).ok())
         .is_some_and(|age| age <= MARKER_MAX_AGE);
-    let _ = std::fs::remove_file(path);
-    fresh
+    if !fresh {
+        let _ = std::fs::remove_file(path);
+        return false;
+    }
+    let recorded: Option<Vec<String>> = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let matches = recorded.is_none_or(|recorded| recorded == args);
+    if matches {
+        let _ = std::fs::remove_file(path);
+    }
+    matches
 }
 
 /// Starts the background checker thread.
@@ -187,7 +209,7 @@ async fn check(app: &AppHandle) -> Status {
     }
     // Already waiting in the background: nothing is open, so update right away.
     let ready = state.ready.lock().unwrap().is_some();
-    if ready && no_window_on_screen(app) {
+    if ready && !crate::any_window_on_screen(app) {
         install_if_ready(app, true);
     }
     status_of(app)
@@ -216,12 +238,6 @@ async fn check_and_download(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn no_window_on_screen(app: &AppHandle) -> bool {
-    app.webview_windows()
-        .values()
-        .all(|w| !w.is_visible().unwrap_or(false))
-}
-
 /// Installs a downloaded update, if there is one. Only call this when every tab is
 /// saved or stored as a draft: on success the installer replaces the app and this
 /// process exits. `relaunch_hidden` starts the new version back up in the background.
@@ -237,7 +253,8 @@ pub fn install_if_ready(app: &AppHandle, relaunch_hidden: bool) {
     };
     let marker = marker_path(app).filter(|_| relaunch_hidden);
     if let Some(path) = &marker {
-        write_marker(path);
+        // The installer restarts the app with this process's own arguments.
+        write_marker(path, &crate::lossy_args(std::env::args_os().skip(1)));
     }
     let update = update.restart_after_install(relaunch_hidden);
     if let Err(error) = update.install(&bytes) {
@@ -250,11 +267,13 @@ pub fn install_if_ready(app: &AppHandle, relaunch_hidden: bool) {
     }
 }
 
-fn write_marker(path: &Path) {
+/// Records the arguments the installer will restart the app with.
+fn write_marker(path: &Path, args: &[String]) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(path, b"1");
+    let json = serde_json::to_vec(args).unwrap_or_default();
+    let _ = std::fs::write(path, json);
 }
 
 /// Turns automatic checks on or off ("Update automatically" in Settings).
@@ -304,10 +323,10 @@ mod tests {
     #[test]
     fn a_fresh_marker_means_resume_hidden_exactly_once() {
         let path = temp_marker("fresh");
-        write_marker(&path);
-        assert!(consume_marker(&path, SystemTime::now()));
+        write_marker(&path, &[]);
+        assert!(consume_marker(&path, SystemTime::now(), &[]));
         assert!(!path.exists());
-        assert!(!consume_marker(&path, SystemTime::now()));
+        assert!(!consume_marker(&path, SystemTime::now(), &[]));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -315,16 +334,53 @@ mod tests {
     fn a_stale_marker_is_ignored_and_removed() {
         // A marker left by an install that failed must not hide a later normal start.
         let path = temp_marker("stale");
-        write_marker(&path);
+        write_marker(&path, &[]);
         let later = SystemTime::now() + MARKER_MAX_AGE + Duration::from_secs(60);
-        assert!(!consume_marker(&path, later));
+        assert!(!consume_marker(&path, later, &[]));
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
     fn a_missing_marker_is_a_normal_start() {
-        assert!(!consume_marker(&temp_marker("missing"), SystemTime::now()));
+        assert!(!consume_marker(
+            &temp_marker("missing"),
+            SystemTime::now(),
+            &[]
+        ));
+    }
+
+    // BUGS.md RUST-6: a file double-clicked while the installer ran started hidden
+    // and was dropped.
+    #[test]
+    fn a_launch_with_other_arguments_during_the_install_starts_normally() {
+        let path = temp_marker("args");
+        let old = vec![r"C:\first.txt".to_owned()];
+        write_marker(&path, &old);
+        let now = SystemTime::now();
+        // The user opens another file: a normal start; the marker stays.
+        assert!(!consume_marker(&path, now, &[r"C:\other.txt".to_owned()]));
+        assert!(!consume_marker(&path, now, &[]));
+        assert!(path.exists());
+        // The installer's restart, with the old process's arguments: hidden, once.
+        assert!(consume_marker(&path, now, &old));
+        assert!(!path.exists());
+        assert!(!consume_marker(&path, now, &old));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_marker_from_an_older_version_still_resumes_hidden() {
+        let path = temp_marker("legacy");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"1").unwrap();
+        assert!(consume_marker(
+            &path,
+            SystemTime::now(),
+            &["x.txt".to_owned()]
+        ));
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
