@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// Dialogs against the real app.
+// Dialogs against the real app, and menu commands that wait for a big file to load.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { bootApp, type App } from "../test/appHarness";
+import { bootApp, settle, type App } from "../test/appHarness";
 import { backend } from "../test/fakeTauri";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -105,5 +105,30 @@ describe("Go to line in a file that is still loading", () => {
     await wait(100);
     expect(app.state().dialog?.kind).toBe("link");
     expect(app.engine.snapshot(big)?.head).toBe(0);
+  });
+});
+
+describe("Edit > Select all in a file that is still loading", () => {
+  beforeEach(async () => {
+    app = await bootApp();
+  });
+
+  // BUGS.md UI-8: the menu item selected all in whatever tab was shown when the load ended.
+  it("does not select all in the tab the user switched to", async () => {
+    await bigPartialFile();
+    const big = app.tab().id;
+    backend.write(SMALL, "small");
+    await app.actions.openPaths([SMALL]);
+    const small = app.tabByName("small.txt").id;
+    await app.actions.activate(big);
+    slowReads(20);
+    const { buildMenu } = await import("./menus");
+    const item = buildMenu("edit").find((e) => "id" in e && e.id === "all");
+    (item as { onSelect: () => void }).onSelect();
+    await app.actions.activate(small);
+    for (let i = 0; i < 200 && !app.store.getTab(big)!.fullyLoaded; i++) await wait(50);
+    await settle();
+    const sel = app.engine.snapshot(small)!;
+    expect(sel.anchor).toBe(sel.head);
   });
 });

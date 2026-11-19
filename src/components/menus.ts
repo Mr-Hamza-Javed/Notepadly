@@ -1,5 +1,6 @@
 import { engine } from "../editor";
 import { findStep } from "../lib/findBar";
+import { selectAllLoaded } from "../lib/shortcuts";
 import { actions } from "../state/actions";
 import { useApp } from "../state/store";
 import type { MenuEntry } from "./Menu";
@@ -42,7 +43,7 @@ function fileMenu(): MenuEntry[] {
 }
 
 function editMenu(): MenuEntry[] {
-  const { cursor, find, activeId } = useApp.getState();
+  const { cursor, find } = useApp.getState();
   const noSel = cursor.selected === 0;
   const empty = cursor.chars === 0;
   const findAgain = (run: () => void) => () => {
@@ -69,7 +70,7 @@ function editMenu(): MenuEntry[] {
       id: "all",
       label: "Select all",
       shortcut: "Ctrl+A",
-      onSelect: () => void actions.ensureFullyLoaded(activeId).then(() => engine.selectAll()),
+      onSelect: selectAllLoaded,
     },
     { id: "date", label: "Time/Date", shortcut: "F5", onSelect: () => actions.insertDateTime() },
     SEP,

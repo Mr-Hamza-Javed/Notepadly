@@ -86,7 +86,8 @@ function isTextSurface(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && !!target.closest("input, textarea, select, [contenteditable='true'], .cm-content");
 }
 
-function selectAllLoaded(): void {
+/** Select all, once a partly loaded file is whole, in the tab that asked for it only (BUGS.md UI-8). */
+export function selectAllLoaded(): void {
   const id = useApp.getState().activeId;
   actions
     .ensureFullyLoaded(id)
