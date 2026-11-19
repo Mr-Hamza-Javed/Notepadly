@@ -1,6 +1,18 @@
 // Geometry of dragging a tab: reordering inside the strip, pulling it out of the
 // window (F2), and where a tab dropped on another window's tab bar goes.
 
+/**
+ * True while a tab is being dragged. The drag's own Escape handler cancels it,
+ * so the global shortcuts must leave that Escape alone (BUGS.md UI-13).
+ */
+let tabDragging = false;
+
+export const isTabDragging = (): boolean => tabDragging;
+
+export function setTabDragging(dragging: boolean): void {
+  tabDragging = dragging;
+}
+
 /** How far past the tab strip, up or down, the pointer must go to pull a tab out. */
 export const DETACH_DISTANCE = 32;
 

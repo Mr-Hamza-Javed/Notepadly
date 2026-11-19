@@ -1371,6 +1371,24 @@ describe("moving tabs between windows (F2)", () => {
     expect(app.tab().dirty).toBe(true);
   });
 
+  it("Move to new window always opens a new window, even over another window", async () => {
+    backend.reset();
+    backend.write(A, "on disk");
+    app = await bootApp({ keepDisk: true });
+    await app.actions.openPaths([A]);
+    const moved = app.tab().id;
+    await app.actions.newTab();
+    backend.dropTarget = { label: "window-1", x: 0, y: 0 };
+    const moving = app.actions.moveTabOut(moved, true);
+    await waitFor(() => backend.calls.some((c) => c.cmd === "window_new"));
+    expect(fakeWindow.emitted.some((e) => e.event === "tab-incoming")).toBe(false);
+    const call = backend.calls.find((c) => c.cmd === "window_new")!;
+    expect(call.args).toMatchObject({ paths: [], atCursor: false });
+    fakeWindow.deliver("tab-received", { id: moved });
+    await moving;
+    expect(app.state().tabs.map((t) => t.id)).not.toContain(moved);
+  });
+
   it("keeps the tab when the other window never answers", async () => {
     const { moving } = await sendDirtyTab({ label: "window-1", x: 0, y: 0 });
     vi.useFakeTimers();

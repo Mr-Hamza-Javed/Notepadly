@@ -769,10 +769,12 @@ function waitForReceipt(id: string): { done: Promise<boolean>; cancel: () => voi
  * Moves a tab dragged out of the tab strip: onto the window under the mouse, or
  * into a new window there. The tab is removed here only once the other window
  * has it, so a failed move leaves it where it was. Nothing is saved or reloaded.
+ * `toNewWindow` (the tab menu's "Move to new window", for keyboard and touch):
+ * always a new window, placed as usual rather than at the mouse.
  */
-async function moveTabOut(id: string): Promise<void> {
+async function moveTabOut(id: string, toNewWindow = false): Promise<void> {
   if (!getTab(id)) return;
-  const target = await ipc.tabDropTarget().catch(() => null);
+  const target = toNewWindow ? null : await ipc.tabDropTarget().catch(() => null);
   await loader.settleTabIo(id);
   const tab = getTab(id);
   if (!tab) return;
@@ -804,7 +806,7 @@ async function moveTabOut(id: string): Promise<void> {
     if (target) {
       await getCurrentWebviewWindow().emitTo(target.label, TAB_INCOMING_EVENT, { transfer, x: target.x, y: target.y });
     } else {
-      await ipc.newWindow([], { transfer: JSON.stringify(transfer), atCursor: true });
+      await ipc.newWindow([], { transfer: JSON.stringify(transfer), atCursor: !toNewWindow });
     }
   } catch (error) {
     receipt.cancel();

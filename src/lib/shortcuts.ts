@@ -1,6 +1,7 @@
 // Global keyboard handling, in the capture phase so it runs before the editor.
 import { engine } from "../editor";
 import { findStep } from "./findBar";
+import { isTabDragging } from "./tabDrag";
 import { actions } from "../state/actions";
 import { getActiveTab, useApp } from "../state/store";
 
@@ -188,6 +189,8 @@ function onKeyDown(event: KeyboardEvent): void {
   };
 
   if (event.key === "Escape") {
+    // The tab drag cancels itself on this Escape; nothing else may close (BUGS.md UI-13).
+    if (isTabDragging()) return;
     if (dialog) {
       // Focus inside the dialog: its own handler answers and restores focus.
       if (event.target instanceof HTMLElement && event.target.closest(".smoke")) return;

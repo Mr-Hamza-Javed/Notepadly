@@ -184,3 +184,94 @@ describe("tab drag", () => {
     expect(ids()).toEqual([b, c, a]);
   });
 });
+
+describe("Escape during a tab drag (BUGS.md UI-13)", () => {
+  beforeEach(async () => {
+    app = await bootApp();
+  });
+
+  it("cancels the drag only: the find bar stays open", async () => {
+    const el = await renderTitleBar();
+    const [a] = await threeTabs();
+    app.actions.openFind(false);
+    expect(app.state().find.open).toBe(true);
+    await act(async () => {
+      tabEl(el, a).dispatchEvent(pointer("pointerdown", { clientX: 10, clientY: 10, buttons: 1 }));
+    });
+    window.dispatchEvent(pointer("pointermove", { clientX: 60, clientY: 10, buttons: 1 }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(tabEl(el, a).classList.contains("dragging")).toBe(false);
+    expect(app.state().find.open).toBe(true);
+    // Without a drag, Escape closes the find bar as before.
+    window.dispatchEvent(pointer("pointerup", { clientX: 60, clientY: 10 }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(app.state().find.open).toBe(false);
+  });
+});
+
+describe("tab strip for keyboard and screen readers", () => {
+  beforeEach(async () => {
+    app = await bootApp();
+  });
+
+  it("says a tab is unsaved in its accessible name", async () => {
+    const el = await renderTitleBar();
+    const id = app.state().activeId;
+    expect(tabEl(el, id).getAttribute("aria-label")).toBe("Untitled");
+    await act(async () => app.type("hello"));
+    await act(async () => settle(50));
+    const title = app.tab().title;
+    expect(app.tab().dirty).toBe(true);
+    expect(tabEl(el, id).getAttribute("aria-label")).toBe(`${title}, unsaved`);
+  });
+
+  it("Home and End move the focus to the first and last tab", async () => {
+    const el = await renderTitleBar();
+    const [a, , c] = await threeTabs();
+    await act(async () => settle());
+    const middle = el.querySelectorAll<HTMLElement>("[role='tab']")[1];
+    middle.focus();
+    await act(async () => {
+      middle.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(tabEl(el, c));
+    await act(async () => {
+      tabEl(el, c).dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(tabEl(el, a));
+  });
+
+  it("has no focusable control nested inside a tab", async () => {
+    const el = await renderTitleBar();
+    await threeTabs();
+    await act(async () => settle());
+    for (const tab of el.querySelectorAll("[role='tab']")) {
+      for (const inner of tab.querySelectorAll<HTMLElement>("button, [tabindex]")) {
+        expect(inner.tabIndex).toBe(-1);
+        expect(inner.getAttribute("aria-hidden")).toBe("true");
+      }
+    }
+  });
+
+  it("the tab menu moves a tab to a new window", async () => {
+    const el = await renderTitleBar();
+    const [, b] = await threeTabs();
+    const moveOut = vi.spyOn(app.actions, "moveTabOut").mockResolvedValue();
+    await act(async () => {
+      tabEl(el, b).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 50, clientY: 20 }));
+    });
+    const item = [...el.querySelectorAll<HTMLElement>("[role='menuitem']")].find((i) => i.textContent?.includes("Move to new window"))!;
+    expect(item).toBeTruthy();
+    await act(async () => item.click());
+    expect(moveOut).toHaveBeenCalledWith(b, true);
+  });
+
+  it("Move to new window is off for the only tab", async () => {
+    const el = await renderTitleBar();
+    await act(async () => {
+      tabEl(el, app.state().activeId).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 50, clientY: 20 }));
+    });
+    const item = [...el.querySelectorAll<HTMLElement>("[role='menuitem']")].find((i) => i.textContent?.includes("Move to new window"))!;
+    expect(item.getAttribute("aria-disabled")).toBe("true");
+  });
+});
