@@ -72,6 +72,22 @@ describe("key chords", () => {
     expect(chordToCommand(chord("Enter"))).toBeNull();
   });
 
+  // BUGS.md UI-1: with an Urdu, Arabic or Russian layout Chromium reports the layout's
+  // letter (Ctrl+S gives key "س"), but Windows accelerators work by the physical key.
+  it("works with a keyboard layout that types another script", () => {
+    expect(chordToCommand(chord("س", { ctrl: true, code: "KeyS" }))).toBe("save");
+    expect(chordToCommand(chord("ы", { ctrl: true, code: "KeyS" }))).toBe("save");
+    expect(chordToCommand(chord("ن", { ctrl: true, shift: true, code: "KeyN" }))).toBe("newWindow");
+    expect(chordToCommand(chord("س", { ctrl: true, alt: true, code: "KeyS" }))).toBe("saveAll");
+    // Typing Urdu without Ctrl stays typing.
+    expect(chordToCommand(chord("س", { code: "KeyS" }))).toBeNull();
+    // Ctrl+P and Ctrl+F must not reach WebView2's print dialog or find bar either.
+    expect(isSuppressedDefault(chord("پ", { ctrl: true, code: "KeyP" }), true)).toBe(true);
+    expect(isSuppressedDefault(chord("ف", { ctrl: true, code: "KeyF" }), true)).toBe(true);
+    // A layout that types Latin letters keeps its own letter (AZERTY Ctrl+A is "a" on the Q key).
+    expect(chordToCommand(chord("a", { ctrl: true, code: "KeyQ" }))).toBe("selectAll");
+  });
+
   it("does not take clipboard keys from the editor", () => {
     for (const key of ["x", "c", "v"]) expect(chordToCommand(chord(key, { ctrl: true }))).toBeNull();
   });
@@ -288,6 +304,33 @@ describe("keyboard handling in the window", () => {
       expect(steps).toEqual([1, -1]);
     } finally {
       setFindStepHandler(null);
+    }
+  });
+
+  it("UI-1: Ctrl+N works with an Urdu keyboard layout", async () => {
+    const event = press("ن", { ctrlKey: true, code: "KeyN" });
+    await settle();
+    expect(app.state().tabs).toHaveLength(2);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("UI-1: Alt+F opens the File menu with an Urdu keyboard layout", async () => {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { MenuBar } = await import("../components/MenuBar");
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    Element.prototype.scrollIntoView ??= () => {};
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    await act(async () => root.render(createElement(MenuBar)));
+    try {
+      await act(async () => {
+        press("ف", { altKey: true, code: "KeyF" });
+      });
+      expect(host.querySelector("[role='menu']")).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
     }
   });
 

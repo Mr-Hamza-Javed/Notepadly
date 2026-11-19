@@ -4,6 +4,7 @@ import { useApp } from "../state/store";
 import { firstEnabled, Menu, rectOf } from "./Menu";
 import { buildMenu, type MenuId } from "./menus";
 import { focusEditorSoon } from "./focus";
+import { shortcutKey } from "../lib/shortcuts";
 
 const HEADS: { id: MenuId; label: string; key: string }[] = [
   { id: "file", label: "File", key: "f" },
@@ -41,7 +42,7 @@ export const MenuBar = memo(function MenuBar() {
       }
       altOnly = false;
       if (!e.altKey || e.ctrlKey || e.shiftKey || e.metaKey || blocked()) return;
-      const hit = HEADS.find((h) => h.key === e.key.toLowerCase());
+      const hit = HEADS.find((h) => h.key === shortcutKey(e.key, e.code));
       if (hit) {
         e.preventDefault();
         e.stopPropagation();
