@@ -188,6 +188,7 @@ These were written on Linux and only type-checked, or only read. Do this before 
 - **Opener permission:** `src-tauri/capabilities/default.json` gives `opener:allow-open-path` for every path (`"path": "**"`), so links to PDFs, images and office files can open in their default app.
 - **What protects it now:** the frontend never sends programs or scripts to `openPath`; they open as text.
 - **Recommendation:** add a deny list for executable types (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`, `.vbs`, `.js`, `.msi`, `.lnk`, `.scr`…) in the capability, so a future frontend bug cannot launch a program. Check it on Windows.
+- **What the deny list does not change:** these files still open as text in Notepadly, as in Windows Notepad, through File > Open, Explorer, drag and drop, and links. The deny list only stops the app from asking Windows to *run* them with their default program.
 
 ---
 
