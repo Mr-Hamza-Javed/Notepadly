@@ -300,6 +300,27 @@ function findLine(text: string, complete: boolean, pattern: RegExp, maxLines: nu
   return -1;
 }
 
+const TASK_BOX_BEFORE_MATH = /^\[[ xX]\][ \t]+(?=\$\$)/;
+const LIST_MARKER_END = /(?:[-+*]|\d{1,9}[.)])[ \t]+$/;
+
+/**
+ * `- [ ] $$`: a task item whose content starts with display maths. The task list parser
+ * would read `$$` as the task's text, so the box is skipped here and the maths parsed after
+ * it, as `- $$` is (BUGS.md MD-1). The box stays plain text in the tree.
+ */
+function parseTaskMath(cx: BlockContext, line: Line): boolean {
+  if (cx.parentType().name !== "ListItem" || ownIndent(line) >= 4) return false;
+  // Only on the item's own marker line.
+  if (!LIST_MARKER_END.test(line.text.slice(0, line.pos))) return false;
+  const box = TASK_BOX_BEFORE_MATH.exec(line.text.slice(line.pos));
+  if (!box) return false;
+  const start = line.pos;
+  line.pos += box[0].length;
+  if (parseDelimitedBlock(cx, line, "$$", "BlockMath", "MathMark", true, true)) return true;
+  line.pos = start;
+  return false;
+}
+
 const FRONTMATTER_CLOSE = /^(---|\.\.\.)\s*$/;
 const MAX_FRONTMATTER_LINES = 1000;
 
@@ -462,7 +483,8 @@ const NotepadlyMarkdown: MarkdownConfig = {
     { name: "Frontmatter", parse: parseFrontmatter, before: "HorizontalRule" },
     {
       name: "BlockMath",
-      parse: (cx, line) => parseDelimitedBlock(cx, line, "$$", "BlockMath", "MathMark", true, true),
+      parse: (cx, line) =>
+        parseDelimitedBlock(cx, line, "$$", "BlockMath", "MathMark", true, true) || parseTaskMath(cx, line),
       // Inside a paragraph only a lone `$$`, or a line that also holds its closing `$$`,
       // is display maths: `$$5 total` is text (BUGS.md EDIT-9).
       endLeaf: (_cx, line) =>

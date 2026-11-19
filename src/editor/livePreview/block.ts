@@ -136,12 +136,13 @@ function nestOf(state: EditorState, node: SyntaxNodeRef, prefix: string): Nest {
   return { classes, indent };
 }
 
-const MARKER_LINE = /^([ \t]*)([-+*]|\d{1,9}[.)])[ \t]+$/;
+// Quote markers, then the indent, the list marker and an optional task box (`> - [ ] `).
+const MARKER_LINE = /^(?:[ \t]*>[ \t]?)*([ \t]*)([-+*]|\d{1,9}[.)])[ \t]+(?:\[([ xX])\][ \t]+)?$/;
 const MARKED_BLOCKS = new Set(["Table", "HorizontalRule", "BlockMath", "FencedCode"]);
 
 /**
- * The bullet or number for a block written on its list item's marker line, outside quotes
- * (`- $$`, `1. | a |`). Undefined for anything else, such as a task item, which stays source.
+ * The bullet, number or task box for a block written on its list item's marker line
+ * (`- $$`, `1. | a |`, `- [ ] $$`, `> - $$`). Undefined for anything else.
  */
 function markerOf(node: SyntaxNodeRef, prefix: string): Nest["marker"] {
   const match = MARKER_LINE.exec(prefix);
@@ -150,6 +151,8 @@ function markerOf(node: SyntaxNodeRef, prefix: string): Nest["marker"] {
     return undefined;
   }
   const at = match[1].replace(/\t/g, "    ").length;
+  // A task item shows its box, ticked or not (the box itself is edited in the source).
+  if (match[3] !== undefined) return { text: match[3] === " " ? "☐" : "☑", at };
   if (/\d/.test(match[2])) return { text: match[2], at };
   let depth = 0;
   for (let parent = item.parent; parent; parent = parent.parent) {
