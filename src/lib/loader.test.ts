@@ -200,6 +200,18 @@ describe("drafts", () => {
     expect(JSON.parse(backend.session!).tabs[0]).toMatchObject({ dirty: true, hasDraft: true });
   });
 
+  it("H8: waits for a longer pause before writing the draft of a big document", async () => {
+    expect(app.loader.draftDelay(1000)).toBe(800);
+    expect(app.loader.draftDelay(10 * 1024 * 1024)).toBeGreaterThan(10_000);
+    expect(app.loader.draftDelay(1e9)).toBe(30_000);
+
+    app.type("x".repeat(1_600_000));
+    await settle(1200);
+    expect(backend.count("draft_write")).toBe(0);
+    await waitFor(() => backend.drafts.size === 1, 6000);
+    expect(backend.count("draft_write")).toBe(1);
+  });
+
   it("retries a draft that failed to write on the next flush", async () => {
     app.type("text");
     backend.failNext.set("draft_write", "disk full");

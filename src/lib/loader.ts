@@ -23,6 +23,12 @@ const RELOAD_CHUNK = 4 * 1024 * 1024;
 const MIN_READ = 64 * 1024;
 const POLL_MS = 3000;
 const DRAFT_DEBOUNCE_MS = 800;
+/** Above this a draft write is costly enough to wait longer for a pause (BUGS.md H8). */
+const BIG_DRAFT_CHARS = 1024 * 1024;
+const DRAFT_MS_PER_BIG = 2000;
+const DRAFT_MAX_DEBOUNCE_MS = 30_000;
+/** However long the typing goes on, a draft is never older than this. */
+const DRAFT_MAX_WAIT_MS = 60_000;
 const HIBERNATE_AFTER_MS = 60_000;
 const HIBERNATE_SWEEP_MS = 15_000;
 const HIBERNATE_MIN_BYTES = 1024 * 1024;
@@ -711,6 +717,8 @@ export function startHibernation(): void {
 
 let persistence = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+/** When the oldest change not yet written was made. */
+let pendingSince: number | null = null;
 let flushChain: Promise<void> = Promise.resolve();
 const changedDrafts = new Set<string>();
 
@@ -724,12 +732,32 @@ export function setPersistence(enabled: boolean): void {
   }
 }
 
+/**
+ * The typing pause to wait for before writing drafts of this many characters. A
+ * draft is the whole text, so a big document waits for a longer pause.
+ */
+export function draftDelay(chars: number): number {
+  if (chars <= BIG_DRAFT_CHARS) return DRAFT_DEBOUNCE_MS;
+  return Math.min(DRAFT_MAX_DEBOUNCE_MS, Math.round(DRAFT_DEBOUNCE_MS + (chars / BIG_DRAFT_CHARS) * DRAFT_MS_PER_BIG));
+}
+
+function pendingDraftChars(): number {
+  let largest = 0;
+  for (const id of changedDrafts) {
+    if (getTab(id)?.dirty && engine.hasDoc(id)) largest = Math.max(largest, engine.length(id));
+  }
+  return largest;
+}
+
 function scheduleFlush(): void {
   if (flushTimer !== null) clearTimeout(flushTimer);
+  const now = Date.now();
+  pendingSince ??= now;
+  const delay = Math.max(0, Math.min(draftDelay(pendingDraftChars()), pendingSince + DRAFT_MAX_WAIT_MS - now));
   flushTimer = setTimeout(() => {
     flushTimer = null;
     flushPersistence().catch((error) => console.error("Notepadly: session write failed", error));
-  }, DRAFT_DEBOUNCE_MS);
+  }, delay);
 }
 
 export function markDraftChanged(id: string): void {
@@ -774,6 +802,7 @@ export function buildSession(): SessionFile {
 async function doFlush(): Promise<void> {
   const ids = [...changedDrafts];
   changedDrafts.clear();
+  pendingSince = null;
   let failure: unknown = null;
   for (const id of ids) {
     const tab = getTab(id);
