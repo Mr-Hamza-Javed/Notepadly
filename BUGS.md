@@ -9,7 +9,8 @@
 - The full first report, with the original steps for every bug, is in git history (`git show 28f46c2:BUGS.md`).
 
 **Tests:**
-- `npm test`: 743 tests pass, none skipped (after the multi-agent fix pass; 594 before it).
+- `npm test`: 793 tests pass, none skipped (after the second agent pass; 743 after the first, 594 before).
+- `npm run e2e`: 42 Playwright tests in real Chromium pass (new; see section 1.0b).
 - `npm run typecheck` is clean.
 - The Rust code (`src-tauri`) does not build on Linux, so the Rust changes on this branch were made by careful reading and have **not been compiled or run on Windows yet**. See section 1.4.
 
@@ -23,9 +24,35 @@
 
 # Part 1: Still to do
 
+## 1.0b Second agent pass (19 November 2026)
+
+Four more agents: big files, Rust files/encodings/paths, editor features, and browser e2e tests. Fixed: M13 (mostly), M14 rest, H6, H8 (part), W7 (a 5 MB one-line file now parses in ~30 ms instead of not finishing), the quadratic Lezer `[a](` link parsing, M12, F2 undo history, MD-1 `- $$`, M15 rest, FILES-2, FILES-3, L5, pathsEqual for 8.3 names and mapped drives (`path_identity`), and the Rust test gaps (auto-updater decisions in `update_plan.rs`, second-launch routing and window set-up in `window_state.rs`).
+
+**New:** setting **Load remote images** (Always / Ask per document / Never; default Always). **E2E tests:** `npm run e2e` (Playwright against the Vite frontend with Tauri faked, `e2e/`), also a CI job.
+
+**New bugs found and fixed:**
+- Up/Down skipped tables, maths and diagrams entirely with real layout (H2 really fixed only now).
+- Typing on the empty line under a table scattered the text; Escape out of a table at the end gave a table row, not a paragraph.
+- A space typed at the end of a cell was lost by F5 and Paste (M2).
+- IME composition in a table cell wrote every step to the document and could be cancelled by a redraw (check in WebView2 with the Urdu and Chinese IMEs).
+- Loaded chunks of an edited big file rewrote its draft again and again.
+- The updater said Ready a moment before the download was stored.
+
+**Still open:**
+- Find, Replace all, Select all, Ctrl+End and line-ending/encoding change still load a big file in full (now cancellable). Streaming them needs new Rust commands.
+- A save of a big, fully loaded file still sends the whole text (H8).
+- `path_open_elsewhere` (WIN-3 across windows) compares path text only.
+- MD-1: task items (`- [ ] $$`) and lists in quotes (`> - $$`) still show as source.
+- Edit-menu Cut then Paste at a cell's edge loses the separating space (keyboard is fine).
+- Typing in a cell of a 3,000-row table is ~150 ms per key (Lezer re-reads the table).
+- EDIT-11 latent (multiple selections are off).
+- **New Rust (never run on Windows):** `oem.rs`, `update_plan.rs`, `path_identity`, `GetOEMCP`, the `%TEMP%` backup, the Save As tail copy (`SaveRequest.tailPath` / `tailStamp`). `cargo check`, `clippy -D warnings` and `fmt` pass for `x86_64-pc-windows-msvc`; Linux stand-in tests pass except the two that need real Windows.
+
+**New Tauri commands and fields:** `path_identity(path) -> string | null`; `SaveRequest.tailPath`, `SaveRequest.tailStamp`; encodings `utf-16le-nobom`, `utf-16be-nobom`, `oem`.
+
 ## 1.0 Multi-agent fix pass (19 November 2026)
 
-Five agents worked in parallel (live preview, editor core, state and lifecycle, Rust backend, UI). Every fix has a test that fails without it. Headings below marked **✔** are fixed. Summary of what is **still open** after this pass:
+Five agents worked in parallel (live preview, editor core, state and lifecycle, Rust backend, UI). Every fix has a test that fails without it. Headings below marked **✔** are fixed. Summary of what was **still open** after this pass (most of it is fixed by the second pass, section 1.0b above):
 
 - **M13** (streaming whole-file actions) — not started.
 - **M14** — F3, Shift+F3 and Replace all still search synchronously.
@@ -76,12 +103,12 @@ These were written on Linux and only type-checked, or only read. Do this before 
 
 ## 1.2 Open bugs (not fixed)
 
-### M13. Whole-file actions fill memory on very big files 📖
+### M13. Whole-file actions fill memory on very big files 📖 — ✔ mostly fixed (19 Nov, second pass): Save As streams the tail, whole loads can be cancelled, Go to line and Print bounded; Find/Replace all/Select all/Ctrl+End/EOL change still load the whole file (cancellable)
 - Find, Replace, Select all, Ctrl+End, Print, Save As, Go to line and changing the line ending or encoding all load the full file into RAM. There is no cancel.
 - Above roughly 500 MB, `getText()` fails on the JS string limit. Printing 100 MB freezes the UI in `marked.parse`.
 - **To do:** streaming Find/Print/Save As and a full load that can be cancelled, across `src/lib/loader.ts`, the engine and `src/lib/print.ts`.
 
-### M14. Find scans the whole file on each keystroke in big files 📖 — ✔ mostly fixed (19 Nov): count runs in time slices; F3/Shift+F3/Replace all still synchronous
+### M14. Find scans the whole file on each keystroke in big files 📖 — ✔ fixed (19 Nov): count, F3/Shift+F3 and Replace all all run in time slices; Replace all can be cancelled
 - `recount` and `firstFrom` run on the UI thread (120 ms debounce only). In a 100 MB file with few matches the UI can stall on each letter.
 - **Cause:** `src/editor/find.ts`.
 - **To do:** an incremental or background match count, with the result sent to the find bar when ready.
@@ -111,12 +138,12 @@ These were written on Linux and only type-checked, or only read. Do this before 
 - **Cause:** `src/state/actions.ts` `changeFileFormat` returns early when the picked line ending equals `tab.eol`; the frontend does not know the file is mixed.
 - **Fix:** let Rust report "mixed" in `FileChunk`, show it in the status bar, and let picking any style normalise.
 
-### FILES-2. A UTF-16 file without a BOM gets a BOM when saved 📖
+### FILES-2. A UTF-16 file without a BOM gets a BOM when saved 📖 — ✔ fixed (19 Nov): `utf-16le-nobom` / `utf-16be-nobom` encodings
 - **What happens:** since M15, such a file is read as UTF-16, but `save` always writes `Encoding::bom()`, so the first save adds `FF FE` / `FE FF`.
 - **Cause:** `src-tauri/src/files.rs` `save` / `write_in_place`. The encoding enum has no "UTF-16 without BOM".
 - **Fix:** probably fine as it is (Notepad also writes a BOM). Add BOM-less UTF-16 variants only if it matters.
 
-### FILES-3. The H15 in-place save is not atomic 📖
+### FILES-3. The H15 in-place save is not atomic 📖 — ✔ fixed (19 Nov): the original is copied to `%TEMP%\Notepadly\backup` first and put back on failure
 - **What happens:** when the folder allows no new files, the file is overwritten in place. If the write fails part way (disk full, network drop), the file is damaged and no temp copy exists.
 - **Cause:** `src-tauri/src/files.rs` `write_in_place`. Notepad has the same limit.
 
@@ -155,19 +182,19 @@ These were written on Linux and only type-checked, or only read. Do this before 
 | # | What is still missing | Where |
 | --- | --- | --- |
 | H2 | Maths and Mermaid blocks can be entered only by double-click or the edit button, not with the arrow keys (tables work) | `src/editor/livePreview/widgets.ts`, `block.ts` |
-| H6 | Live preview turns off for the whole document when one line is over 20,000 characters. It now comes back when the line is gone, but it should skip only that line | `src/editor/index.ts` (`checkDegrade`), live preview plugins |
-| H8 | Drafts are written less often for big files, but each draft and each Save still send the whole text over IPC | `src/lib/loader.ts` |
-| L5 | "characters" counts UTF-16 units, so an emoji counts as 2. A code-point count needs an incremental count per document and a Rust change in `scan()` | engine, `src-tauri/src/files.rs` |
+| H6 | Live preview turns off for the whole document when one line is over 20,000 characters. It now comes back when the line is gone, but it should skip only that line **✔ Fixed 19 Nov:** lines over 10,000 characters show as source; preview off only above 20 MB. | `src/editor/index.ts` (`checkDegrade`), live preview plugins |
+| H8 | Drafts are written less often for big files, but each draft and each Save still send the whole text over IPC **✔ Partly fixed 19 Nov:** loaded chunks no longer rewrite the draft; a save of a big file still sends the whole text. | `src/lib/loader.ts` |
+| L5 | "characters" counts UTF-16 units, so an emoji counts as 2. A code-point count needs an incremental count per document and a Rust change in `scan()` **✔ Fixed 19 Nov:** code points counted (`src/editor/charCount.ts`, Rust `scan()`). | engine, `src-tauri/src/files.rs` |
 | L11 | An unclosed `%%` restyles up to 5,000 lines, and unclosed front matter up to 1,000 lines (an unclosed `$$` is fixed) | `src/editor/markdown.ts` |
 | L16 | A draft that cannot be read is deleted. `materialise` treats a read error like a missing draft. Needs a "draft unreadable" state that keeps the draft and tells the user | `src/lib/loader.ts` |
-| M12 | Hibernation keeps the undo history now, but callout fold state is still reset on wake | `src/lib/loader.ts`, engine |
-| M15 | No warning when a binary file is opened as text (it is damaged on save). Code pages other than 874, 932, 936, 949, 950 and 1250-1258 (for example 866) are read as windows-1252 | `src-tauri/src/files.rs` |
+| M12 | Hibernation keeps the undo history now, but callout fold state is still reset on wake **✔ Fixed 19 Nov:** folds kept over hibernation, reload, restart and tab moves. | `src/lib/loader.ts`, engine |
+| M15 | No warning when a binary file is opened as text (it is damaged on save). Code pages other than 874, 932, 936, 949, 950 and 1250-1258 (for example 866) are read as windows-1252 **✔ Fixed 19 Nov:** binary warning; DOS code pages 437, 720, 737, 775, 850, 852, 855, 857, 858, 860-865, 869 and an "OEM (DOS)" encoding. | `src-tauri/src/files.rs` |
 | W8 | Long paths are fixed. FAT/exFAT USB drives and network shares still need a check | `src-tauri/src/files.rs` |
 
 ### F2. Dragging tabs between windows: what is left
-- **Undo history:** it does not move with the tab, because CodeMirror state is not serialised. The moved tab starts with an empty undo stack.
+- **Undo history:** ✔ fixed 19 Nov: history, saved point and folds move with the tab (skipped over 4 MB of history JSON or 8M characters).
 - **Single-tab window:** with one tab, the window does not follow the mouse live during the drag. On release a new window opens under the mouse and the old one closes (a short flash). Moving the window natively (`startDragging`) would lose the drop-on-another-window case.
-- **Overlapping windows:** `tab_drop_target` does not know the z-order, so the first match wins.
+- **Overlapping windows:** ✔ already handled by RUST-1 (`WindowFromPoint` + `GetAncestor`); this line was out of date.
 
 ## 1.4 To check in the real app on Windows ⚠️
 
