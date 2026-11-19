@@ -204,6 +204,12 @@ function onKeyDown(event: KeyboardEvent): void {
     return;
   }
 
+  // A menu has the keyboard, as in Windows: Ctrl+W must not close the tab its menu is for (BUGS.md UI-2).
+  const inMenu = event.target instanceof Element && !!event.target.closest("[role='menu']");
+  if (inMenu && chordToCommand(chord)) {
+    event.preventDefault();
+    return;
+  }
   if (!dialog && view === "editor") {
     const command = chordToCommand(chord);
     if (command && !(isNativeInput(event.target) && NATIVE_IN_INPUT.has(command))) {

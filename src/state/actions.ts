@@ -1185,10 +1185,13 @@ export const actions = {
   saveAll,
 
   closeTab,
-  closeOthers: (id: string) => closeMany(state().tabs.filter((t) => t.id !== id).map((t) => t.id)),
+  // A tab that is already gone (a stale context menu, BUGS.md UI-2) closes nothing.
+  closeOthers: (id: string) =>
+    getTab(id) ? closeMany(state().tabs.filter((t) => t.id !== id).map((t) => t.id)) : Promise.resolve(),
   closeToRight: (id: string) => {
     const ids = state().tabs.map((t) => t.id);
-    return closeMany(ids.slice(ids.indexOf(id) + 1));
+    const index = ids.indexOf(id);
+    return index < 0 ? Promise.resolve() : closeMany(ids.slice(index + 1));
   },
   closeWindow,
   exit,

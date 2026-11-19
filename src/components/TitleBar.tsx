@@ -143,6 +143,13 @@ const TabStrip = memo(function TabStrip() {
     list.current?.querySelector(`[data-tab-id="${activeId}"]`)?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }, [activeId, tabs.length, overflow]);
 
+  // The menu of a tab that has gone (closed with Ctrl+W, moved to another window)
+  // would act on the wrong tabs: "Close to the right" closed every tab (BUGS.md UI-2).
+  const menuGone = menu !== null && !tabs.some((t) => t.id === menu.id);
+  useEffect(() => {
+    if (menuGone) setMenu(null);
+  }, [menuGone]);
+
   const scrollBy = (dx: number) => scroller.current?.scrollBy({ left: dx, behavior: "smooth" });
 
   const onMenu = useCallback((id: string, x: number, y: number) => {
@@ -274,7 +281,7 @@ const TabStrip = memo(function TabStrip() {
       >
         <Glyph cp={G.plus} size={12} />
       </button>
-      {menu && (
+      {menu && !menuGone && (
         <Menu
           entries={tabMenu(menu.id)}
           anchor={menu.anchor}
