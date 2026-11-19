@@ -779,6 +779,12 @@ async function moveTabOut(id: string): Promise<void> {
     const next = neighbourAfterClose(tabs.map((t) => t.id), id);
     if (next) await activate(next);
   }
+  // A pending name from the first line goes with the tab (STATE-4, like T2).
+  const pendingTitle = titleTimers.get(id);
+  if (pendingTitle !== undefined) {
+    clearTimeout(pendingTitle);
+    updateTitle(id);
+  }
   const current = getTab(id);
   if (!current) return;
   const transfer: TabTransfer = { from: windowLabel, tab: current, handoff: loader.handOff(id) };

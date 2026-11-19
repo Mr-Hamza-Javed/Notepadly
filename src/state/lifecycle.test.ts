@@ -148,6 +148,20 @@ describe("STATE-3: typing into a tab while it moves to another window", () => {
     expect(app.state().tabs.map((t) => t.id)).not.toContain(moved);
   });
 
+  it("STATE-4: an untitled tab moved right after typing takes its name along", async () => {
+    backend.reset();
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    app.type("Shopping list");
+    const moved = app.tab().id;
+    backend.dropTarget = null;
+    const moving = app.actions.moveTabOut(moved);
+    await waitFor(() => backend.count("window_new") === 1);
+    const sent = JSON.parse(backend.calls.find((c) => c.cmd === "window_new")!.args.transfer as string);
+    expect(sent.tab.title).toBe("Shopping list");
+    fakeWindow.deliver("tab-received", { id: moved });
+    await moving;
+  });
+
   it("can be edited again when the move fails", async () => {
     backend.reset();
     app = await bootApp({ keepDisk: true, label: "window-1" });
