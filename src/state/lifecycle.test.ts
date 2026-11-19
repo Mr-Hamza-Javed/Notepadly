@@ -319,7 +319,8 @@ describe("a read-only file", () => {
 /** Window "main" (the shared fakeWindow) and "window-1", running side by side. */
 async function twoWindows(): Promise<{ a: App; b: App }> {
   backend.reset();
-  const a = await bootApp({ keepDisk: true });
+  // No background mode: the last window closes instead of hiding.
+  const a = await bootApp({ keepDisk: true, settings: { background: false } });
   const b = await bootApp({ window: newFakeWindow(), label: "window-1" });
   return { a, b };
 }
@@ -395,6 +396,60 @@ describe("STATE-7: a crash right after a move", () => {
     // No timer has run since: the source's stored session is already without the tab.
     const source = JSON.parse(backend.session!);
     expect(source.tabs.map((t: { id: string }) => t.id)).not.toContain(moved);
+  });
+});
+
+describe("STATE-8: closing two windows at once", () => {
+  async function twoDirtyWindows() {
+    const { a, b } = await twoWindows();
+    app = a;
+    a.type("unsaved in main");
+    b.type("unsaved in window-1");
+    return { a, b };
+  }
+
+  it("is an exit: neither window asks, and both keep their tabs as drafts", async () => {
+    const { a, b } = await twoDirtyWindows();
+    const closing = Promise.all([a.win.close(), b.win.close()]);
+    await settle(600);
+    expect(a.state().dialog).toBeNull();
+    expect(b.state().dialog).toBeNull();
+    await closing;
+    expect(a.win.closes).toEqual([true]);
+    expect(b.win.closes).toEqual([true]);
+    expect(JSON.parse(backend.session!).tabs).toHaveLength(1);
+    expect(JSON.parse(backend.windowSessions.get(b.loader.getSessionKey()!)!).tabs).toHaveLength(1);
+    expect([...backend.drafts.values()].sort()).toEqual(["unsaved in main", "unsaved in window-1"]);
+  });
+
+  it("one window closed alone while the other stays still asks (WIN-2)", async () => {
+    const { a, b } = await twoDirtyWindows();
+    const closing = b.win.close();
+    await b.answerClose("discard");
+    await closing;
+    expect(b.win.closes).toEqual([true]);
+    expect(backend.windowSessions.has(b.loader.getSessionKey()!)).toBe(false);
+    // The window left over is now the last one: it keeps its tab without asking.
+    const last = a.win.close();
+    await settle(50);
+    expect(a.state().dialog).toBeNull();
+    await last;
+    expect(a.win.closes).toEqual([true]);
+    expect(JSON.parse(backend.session!).tabs).toHaveLength(1);
+  });
+
+  it("a cancelled close counts the window as staying again", async () => {
+    const { a, b } = await twoDirtyWindows();
+    const closing = b.win.close();
+    await b.answerClose("cancel");
+    await closing;
+    expect(b.win.closes).toEqual([false]);
+    expect(backend.closingWindows.has("window-1")).toBe(false);
+    // main is not the last window: it asks.
+    const other = a.win.close();
+    await a.answerClose("cancel");
+    await other;
+    expect(a.win.closes).toEqual([false]);
   });
 });
 

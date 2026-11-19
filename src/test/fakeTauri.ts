@@ -516,6 +516,12 @@ export class FakeWindow {
     let prevented = false;
     await this.closeHandler?.({ preventDefault: () => (prevented = true) });
     this.closes.push(!prevented);
+    if (!prevented) {
+      // Closed for good: Rust forgets the window.
+      backend.windows.delete(this.label);
+      backend.closingWindows.delete(this.label);
+      backend.openPaths.delete(this.label);
+    }
   }
 }
 

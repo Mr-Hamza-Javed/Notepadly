@@ -719,6 +719,23 @@ async function closeMany(ids: string[]): Promise<void> {
 
 let closeInProgress = false;
 
+/** How long after this window's close another window's close still makes it an exit (STATE-8). */
+const CLOSE_TOGETHER_MS = 300;
+
+/**
+ * Whether this window is the last to stay, so it keeps its tabs as drafts. Rust
+ * decides atomically, not counting windows that have started closing too. A
+ * "Close all windows" closes every window within moments, so when another
+ * window is still open, this asks once more after a short pause: a close that
+ * came meanwhile makes it an exit, and no window asks (STATE-8).
+ */
+async function isLastToStay(): Promise<boolean> {
+  const ask = () => ipc.windowCloseBegin().catch(() => ipc.isLastWindow().catch(() => true));
+  if (await ask()) return true;
+  await new Promise((resolve) => setTimeout(resolve, CLOSE_TOGETHER_MS));
+  return ask();
+}
+
 /**
  * Decides whether this window may go. True means every tab has been answered for.
  * With "continue previous session", the last window (or every window on Exit)
@@ -728,26 +745,37 @@ let closeInProgress = false;
 async function prepareWindowClose(exiting = false): Promise<boolean> {
   if (closeInProgress) return false;
   closeInProgress = true;
+  let marked = false;
   try {
-    flushPersistedPrefs();
-    flushTitles();
-    if (keepsSession() && (exiting || (await ipc.isLastWindow().catch(() => true)))) {
-      try {
-        await loader.flushPersistence();
-        return true;
-      } catch (error) {
-        // Text that cannot be stored as a draft must not vanish: ask instead.
-        console.error("Notepadly: could not store drafts", error);
-      }
-    }
-    for (const { id } of state().tabs.filter((t) => t.dirty)) {
-      if (getTab(id)?.dirty && !(await resolveDirtyTab(id))) return false;
-    }
-    await loader.discardCurrentSession().catch(() => {});
-    return true;
+    const allowed = await decideWindowClose(exiting, () => (marked = true));
+    if (!allowed && marked) await ipc.windowCloseEnd().catch(() => {});
+    return allowed;
   } finally {
     closeInProgress = false;
   }
+}
+
+async function decideWindowClose(exiting: boolean, onMarked: () => void): Promise<boolean> {
+  flushPersistedPrefs();
+  flushTitles();
+  const last = () => {
+    onMarked();
+    return isLastToStay();
+  };
+  if (keepsSession() && (exiting || (await last()))) {
+    try {
+      await loader.flushPersistence();
+      return true;
+    } catch (error) {
+      // Text that cannot be stored as a draft must not vanish: ask instead.
+      console.error("Notepadly: could not store drafts", error);
+    }
+  }
+  for (const { id } of state().tabs.filter((t) => t.dirty)) {
+    if (getTab(id)?.dirty && !(await resolveDirtyTab(id))) return false;
+  }
+  await loader.discardCurrentSession().catch(() => {});
+  return true;
 }
 
 /**
@@ -1124,6 +1152,8 @@ async function wireWindowEvents(ready: Promise<void>): Promise<void> {
       // Like Notepad: the last window hides and waits instead of quitting.
       if (!state().settings.background || !(await ipc.isLastWindow().catch(() => false))) return;
       event.preventDefault();
+      // It stays, hidden: it is not closing any more.
+      await ipc.windowCloseEnd().catch(() => {});
       await resetForBackground();
       await ipc
         .enterBackground()

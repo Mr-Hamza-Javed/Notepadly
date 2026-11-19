@@ -108,6 +108,14 @@ export const ipc = {
 
   /** True when no other app window is on screen. */
   isLastWindow: () => invoke<boolean>("is_last_window"),
+  /**
+   * Marks this window as closing and answers, in one step, whether every other
+   * window on screen is closing too (STATE-8). Two windows closed together can
+   * then not both think another window stays.
+   */
+  windowCloseBegin: () => invoke<boolean>("window_close_begin"),
+  /** This window's close was cancelled or it went to the background: it counts as staying again. */
+  windowCloseEnd: () => invoke<void>("window_close_end"),
   /** Hides this window and suspends its webview; the next launch wakes it. */
   enterBackground: () => invoke<void>("enter_background"),
 
