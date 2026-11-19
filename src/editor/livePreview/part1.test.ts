@@ -9,7 +9,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { markdownSupport } from "../markdown";
 import { blockPreview } from "./block";
 import { inlinePreview } from "./inline";
-import { previewContext } from "./context";
+import { previewContext, resolveImageSrc } from "./context";
+import { classifyHref } from "../../state/logic";
 import { renderCellHtml } from "./widgets";
 
 const extensions = [markdownSupport, history(), blockPreview, inlinePreview];
@@ -35,6 +36,31 @@ function cellNode(html: string): HTMLElement {
 afterEach(() => {
   previewContext.baseDir = () => null;
   document.body.replaceChildren();
+});
+
+describe("image and link paths", () => {
+  it("PREV-8: a leading-slash image and link both start at the drive or share root", () => {
+    previewContext.baseDir = () => "C:\\docs\\sub";
+    expect(resolveImageSrc("/img/a.png")).toBe("C:\\img\\a.png");
+    expect(classifyHref("/img/a.md", "C:\\docs\\sub")).toEqual({ kind: "file", path: "C:\\img\\a.md" });
+    previewContext.baseDir = () => "\\\\nas\\docs\\sub";
+    expect(resolveImageSrc("/img/a.png")).toBe("\\\\nas\\docs\\img\\a.png");
+    expect(classifyHref("/img/a.md", "\\\\nas\\docs\\sub")).toEqual({ kind: "file", path: "\\\\nas\\docs\\img\\a.md" });
+  });
+
+  it("PREV-8: `..` in an image path is resolved like in a link", () => {
+    previewContext.baseDir = () => "C:\\docs\\sub";
+    expect(resolveImageSrc("../img/a.png")).toBe("C:\\docs\\img\\a.png");
+    expect(resolveImageSrc("./a%20b.png")).toBe("C:\\docs\\sub\\a b.png");
+  });
+
+  it("an untitled tab loads no relative image (it would be read from the app's folder)", () => {
+    previewContext.baseDir = () => null;
+    expect(resolveImageSrc("pic.png")).toBe("");
+    expect(resolveImageSrc("/pic.png")).toBe("");
+    expect(resolveImageSrc("D:\\pics\\a.png")).toBe("D:\\pics\\a.png");
+    expect(resolveImageSrc("https://x.y/a.png")).toBe("https://x.y/a.png");
+  });
 });
 
 describe("table cell rendering", () => {

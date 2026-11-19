@@ -74,6 +74,11 @@ describe("print sanitising: a document can never run code", () => {
     expect(html('<img src="javascript:x">')).toBe("<img>");
   });
 
+  it("PREV-8: a leading-slash image starts at the drive or share root, like a link", () => {
+    expect(html('<img src="/img/a.png">', "C:\\docs\\sub")).toContain(encodeURIComponent("C:\\img\\a.png"));
+    expect(html('<img src="/img/a.png">', "\\\\nas\\docs\\sub")).toContain(encodeURIComponent("\\\\nas\\docs\\img\\a.png"));
+  });
+
   it("drops relative images when the document has no folder", () => {
     expect(html('<img src="a.png">', null)).toBe("<img>");
   });

@@ -11,7 +11,7 @@ import {
   fontStack,
   fontWeightOf,
   headerFooterBoxes,
-  resolveRelative,
+  resolveDocPath,
 } from "../state/logic";
 import { getTab, useApp } from "../state/store";
 import type { TabMeta } from "../state/types";
@@ -53,8 +53,9 @@ function safeImageSrc(src: string, baseDir: string | null): string | null {
   } catch {
     // Use as written.
   }
-  if (/^[a-zA-Z]:[\\/]/.test(decoded) || /^[\\/]{2}/.test(decoded)) return localImageSrc(decoded, baseDir);
-  return baseDir ? localImageSrc(resolveRelative(baseDir, decoded), baseDir) : null;
+  // The same rule as the editor's images and links (BUGS.md PREV-8).
+  const path = resolveDocPath(baseDir, decoded);
+  return path ? localImageSrc(path, baseDir) : null;
 }
 
 /**

@@ -74,6 +74,9 @@ describe("paths", () => {
   it("resolves relative paths", () => {
     expect(resolveRelative("C:\\notes\\sub", "../img/x.png")).toBe("C:\\notes\\img\\x.png");
     expect(resolveRelative("C:\\notes", "D:\\abs.md")).toBe("D:\\abs.md");
+    // A folder with a trailing separator gives no doubled separator.
+    expect(resolveRelative("C:\\notes\\", "img/x.png")).toBe("C:\\notes\\img\\x.png");
+    expect(resolveRelative("C:\\", "x.png")).toBe("C:\\x.png");
   });
 });
 

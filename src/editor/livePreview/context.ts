@@ -1,6 +1,6 @@
 // Link and image path resolution, plus the host hooks the widgets call into.
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { fileUrlToPath } from "../../state/logic";
+import { fileUrlToPath, resolveDocPath } from "../../state/logic";
 
 export const previewContext: {
   baseDir: () => string | null;
@@ -10,22 +10,12 @@ export const previewContext: {
   openLink: () => undefined,
 };
 
-const WINDOWS_ABSOLUTE = /^([a-z]:[\\/]|[\\/]{2})/i;
-
 function decodePath(path: string): string {
   try {
     return decodeURIComponent(path);
   } catch {
     return path;
   }
-}
-
-function joinBase(path: string): string {
-  const clean = decodePath(path.replace(/^\.[\\/]/, ""));
-  if (WINDOWS_ABSOLUTE.test(clean)) return clean;
-  const base = previewContext.baseDir();
-  if (!base) return clean;
-  return `${base.replace(/[\\/]+$/, "")}\\${clean.replace(/\//g, "\\")}`;
 }
 
 /** Turns a Markdown link target into what `EditorHost.openLink` receives: relative hrefs pass through. */
@@ -61,7 +51,12 @@ export function mayLoadImageFrom(path: string, baseDir: string | null): boolean 
 export function resolveImageSrc(src: string): string {
   if (/^(https?:|data:|blob:|asset:)/i.test(src)) return src;
   // file:///C:/x.png is a local file like any other (BUGS.md L14).
-  const path = /^file:/i.test(src) ? (fileUrlToPath(src.split(/[?#]/)[0]) ?? src) : joinBase(src);
+  // A leading slash starts at the drive or share root, as for links (BUGS.md PREV-8). A relative
+  // path in an untitled tab has no folder to start from, so nothing is loaded.
+  const path = /^file:/i.test(src)
+    ? fileUrlToPath(src.split(/[?#]/)[0])
+    : resolveDocPath(previewContext.baseDir(), decodePath(src));
+  if (!path) return "";
   // Opening a document must not make Windows connect to a server it names: reading
   // `\\server\x.png` sends the user's NTLM credentials there (BUGS.md PREV-3). Images on the
   // document's own server still load.
