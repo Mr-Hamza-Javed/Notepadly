@@ -10,7 +10,7 @@ import { markdownSupport } from "../markdown";
 import { blockField, blockPreview } from "./block";
 import { inlinePreview } from "./inline";
 import { previewContext, resolveImageSrc } from "./context";
-import { MermaidWidget } from "./widgets";
+import { MermaidWidget, renderCellHtml } from "./widgets";
 
 const theme = vi.hoisted(() => ({ dark: false }));
 vi.mock("../theme", async (original) => ({
@@ -131,5 +131,12 @@ describe("image paths", () => {
     expect(resolveImageSrc("\\\\nas\\pics\\b.png")).toBe("\\\\nas\\pics\\b.png");
     expect(resolveImageSrc("\\\\other\\pics\\b.png")).toBe("");
     previewContext.baseDir = () => null;
+  });
+});
+
+describe("cell rendering", () => {
+  it("PREV-4: an escaped pipe inside inline code shows as a pipe, as in GFM", () => {
+    expect(renderCellHtml("`a \\| b`")).toBe("<code>a | b</code>");
+    expect(renderCellHtml("x \\| `y`")).toBe("x | <code>y</code>");
   });
 });

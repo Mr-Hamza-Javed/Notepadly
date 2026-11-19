@@ -22,12 +22,14 @@ function escapeHtml(text: string): string {
 /** Small renderer for table cells. Cells are static HTML, so this stays deliberately simple. */
 export function renderCellHtml(source: string): string {
   const codeSpans: string[] = [];
-  let html = escapeHtml(source).replace(/`([^`]+)`/g, (_m, code: string) => {
-    codeSpans.push(`<code>${code}</code>`);
-    return `\u0000${codeSpans.length - 1}\u0000`;
-  });
-  html = html
+  // GFM unescapes `\|` in a table cell before inline parsing, so inside code spans too.
+  let html = escapeHtml(source)
     .replace(/\\\|/g, "|")
+    .replace(/`([^`]+)`/g, (_m, code: string) => {
+      codeSpans.push(`<code>${code}</code>`);
+      return `\u0000${codeSpans.length - 1}\u0000`;
+    });
+  html = html
     .replace(/&lt;br\s*\/?&gt;/gi, "<br>")
     // Attribute-free inline tags only, so a cell can never inject markup with handlers.
     .replace(
