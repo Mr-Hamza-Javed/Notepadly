@@ -36,18 +36,31 @@ export interface SaveRequest {
   tailOffset: number | null;
   /** If set and the file on disk differs, Rust rejects with "STALE". */
   expectedStamp: FileStamp | null;
+  /**
+   * Lets characters the ANSI code page lacks become `?`. Otherwise such a save
+   * fails with "UNMAPPABLE: <first character>" and writes nothing.
+   */
+  allowLossy?: boolean;
+  /**
+   * Writes every line ending as `eol`. Otherwise, for a file with mixed line
+   * endings, the lines the save leaves unchanged keep their own.
+   */
+  normalizeEol?: boolean;
 }
 
 export interface FileScan {
   chars: number;
   lines: number;
+  /** Some bytes are not valid in the encoding scanned with (they show as U+FFFD). */
+  invalid: boolean;
 }
 
 export const ipc = {
   /**
    * Opens, reads up to maxBytes from offset, closes. Never holds a handle
    * between calls and always opens with full share access (no file lock).
-   * Pass encoding from the first chunk on later reads; offset 0 auto-detects.
+   * Pass encoding from the first chunk on later reads. At offset 0, null
+   * auto-detects and an encoding forces it (reopening with an encoding).
    */
   readChunk: (path: string, offset: number, maxBytes: number, encoding: Encoding | null) =>
     invoke<FileChunk>("file_read_chunk", { path, offset, maxBytes, encoding }),

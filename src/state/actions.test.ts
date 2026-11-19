@@ -940,3 +940,94 @@ describe("closing the window and restoring the session", () => {
     expect(app.tab().dirty).toBe(false);
   });
 });
+
+describe("encodings and line endings", () => {
+  const C = "C:\\notes\\c.txt";
+  const cafeAnsi = new Uint8Array([0x63, 0x61, 0x66, 0xe9]); // "café" in windows-1252
+
+  beforeEach(async () => {
+    app = await bootApp();
+  });
+
+  // BUGS.md C6: characters the code page lacks silently became "?".
+  it("C6: asks before saving characters ANSI cannot hold", async () => {
+    backend.write(C, cafeAnsi);
+    await app.actions.openPaths([C]);
+    expect(app.tab()).toMatchObject({ encoding: "ansi" });
+    expect(app.text()).toBe("café");
+    app.type(" ш");
+
+    // Cancel: nothing is written and the tab stays unsaved.
+    expect(await app.actions.save()).toBe(false);
+    expect(dialogs.messages[0].title).toBe("Some characters cannot be saved");
+    expect(backend.bytes(C)).toEqual(cafeAnsi);
+    expect(app.tab().dirty).toBe(true);
+
+    // Keeping ANSI is still possible, but only when chosen.
+    dialogs.messageAnswers.push("Save as ANSI");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.bytes(C)).toEqual(new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x20, 0x3f]));
+  });
+
+  it("C6: switches the file to UTF-8 when asked", async () => {
+    backend.write(C, cafeAnsi);
+    await app.actions.openPaths([C]);
+    app.type(" ш");
+    dialogs.messageAnswers.push("Save as UTF-8");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(C)).toBe("café ш");
+    expect(app.tab()).toMatchObject({ encoding: "utf-8", dirty: false });
+  });
+
+  // BUGS.md C7: only the first 256 KB decided the encoding.
+  it("C7: reads a clean file again as ANSI when later bytes are not UTF-8", async () => {
+    const head = "a\n".repeat(150_000); // 300 KB of ASCII: the first chunk looks like UTF-8
+    backend.write(C, new Uint8Array([...new TextEncoder().encode(head), ...cafeAnsi]));
+    await app.actions.openPaths([C]);
+    await waitFor(() => app.tab().encoding === "ansi");
+    await app.actions.ensureFullyLoaded(app.tab().id);
+    expect(app.text()).toBe(head + "café");
+    expect(app.tab().dirty).toBe(false);
+  });
+
+  // BUGS.md M15: a wrong encoding guess could not be corrected.
+  it("M15: reopens a file with another encoding", async () => {
+    backend.write(C, cafeAnsi);
+    await app.actions.openPaths([C]);
+    await app.actions.reopenWithEncoding("utf-8");
+    expect(app.tab()).toMatchObject({ encoding: "utf-8", dirty: false });
+    expect(app.text()).toBe("caf\uFFFD");
+    await app.actions.reopenWithEncoding("ansi");
+    expect(app.text()).toBe("café");
+  });
+
+  it("M15: asks before reopening throws away unsaved changes", async () => {
+    backend.write(C, cafeAnsi);
+    await app.actions.openPaths([C]);
+    app.type("!");
+    await app.actions.reopenWithEncoding("utf-8");
+    expect(dialogs.messages[0].title).toBe("Reopen with encoding");
+    expect(app.text()).toBe("café!");
+    dialogs.messageAnswers.push("Reopen");
+    await app.actions.reopenWithEncoding("utf-8");
+    expect(app.text()).toBe("caf\uFFFD");
+    expect(app.tab().dirty).toBe(false);
+  });
+
+  // BUGS.md H14: Rust keeps mixed line endings unless the user picked one.
+  it("H14: asks Rust to normalise line endings only after one was picked", async () => {
+    backend.write(C, "a\r\nb\nc");
+    await app.actions.openPaths([C]);
+    const saves = () =>
+      backend.calls
+        .filter((c) => c.cmd === "file_save")
+        .map((c) => (c.args.req as { normalizeEol: boolean }).normalizeEol);
+    app.type("!");
+    await app.actions.save();
+    await app.actions.setEol("LF");
+    await app.actions.save();
+    app.type("?");
+    await app.actions.save();
+    expect(saves()).toEqual([false, true, false]);
+  });
+});

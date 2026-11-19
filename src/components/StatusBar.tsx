@@ -85,21 +85,25 @@ function Picker<T extends string>({
   labels,
   cellClass,
   onPick,
+  extra = [],
 }: {
   value: T;
   label: string;
   labels: Record<T, string>;
   cellClass: string;
   onPick: (v: T) => void;
+  /** Entries after the choices, below a separator. */
+  extra?: MenuEntry[];
 }) {
   const [anchor, setAnchor] = useState<AnchorRect | null>(null);
   const btn = useRef<HTMLButtonElement | null>(null);
-  const entries: MenuEntry[] = (Object.keys(labels) as T[]).map((k) => ({
+  const choices: MenuEntry[] = (Object.keys(labels) as T[]).map((k) => ({
     id: k,
     label: labels[k],
     checked: k === value,
     onSelect: () => onPick(k),
   }));
+  const entries: MenuEntry[] = extra.length > 0 ? [...choices, { kind: "sep" }, ...extra] : choices;
 
   return (
     <div className={`sb-cell div ${cellClass}`}>
@@ -135,15 +139,34 @@ function Picker<T extends string>({
   );
 }
 
+/** Choosing above only changes how the file is saved; this reads it again (BUGS.md M15). */
+const REOPEN_ENTRY: MenuEntry = {
+  id: "reopen",
+  label: "Reopen with encoding",
+  submenu: (Object.keys(ENC_LABEL) as Encoding[]).map((k) => ({
+    id: `reopen-${k}`,
+    label: ENC_LABEL[k],
+    onSelect: () => void actions.reopenWithEncoding(k),
+  })),
+};
+
 const RightCells = memo(function RightCells() {
   const zoom = useApp((s) => s.settings.zoom);
   const eol = useApp((s) => activeTab(s)?.eol ?? "CRLF");
   const encoding = useApp((s) => activeTab(s)?.encoding ?? "utf-8");
+  const hasPath = useApp((s) => !!activeTab(s)?.path);
   return (
     <div className="sb-right">
       <div className="sb-cell div sb-zoom">{`${zoom}%`}</div>
       <Picker<Eol> value={eol} label="Line endings" labels={EOL_LABEL} cellClass="sb-eol" onPick={(v) => actions.setEol(v)} />
-      <Picker<Encoding> value={encoding} label="Encoding" labels={ENC_LABEL} cellClass="sb-enc" onPick={(v) => actions.setEncoding(v)} />
+      <Picker<Encoding>
+        value={encoding}
+        label="Encoding"
+        labels={ENC_LABEL}
+        cellClass="sb-enc"
+        onPick={(v) => actions.setEncoding(v)}
+        extra={hasPath ? [REOPEN_ENTRY] : []}
+      />
     </div>
   );
 });

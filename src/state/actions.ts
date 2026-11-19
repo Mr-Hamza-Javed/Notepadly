@@ -375,6 +375,7 @@ async function writeAndReport(id: string, path: string, options: loader.WriteOpt
     addRecent(path);
     return true;
   }
+  if (result.message.includes("UNMAPPABLE")) return saveUnmappable(id, path, options);
   if (result.stale) {
     patchTab(id, { externalChange: "modified" });
     showMessage(
@@ -385,6 +386,34 @@ async function writeAndReport(id: string, path: string, options: loader.WriteOpt
     showMessage("Could not save file", result.message);
   }
   return false;
+}
+
+/**
+ * The text has characters the ANSI code page cannot hold (BUGS.md C6). Saving
+ * would turn them into `?` for good, so the user chooses.
+ */
+async function saveUnmappable(id: string, path: string, options: loader.WriteOptions): Promise<boolean> {
+  const toUtf8 = "Save as UTF-8";
+  const lossy = "Save as ANSI";
+  const answer = await askUser(
+    "Some characters cannot be saved",
+    `${fileNameOf(path)} is saved in ANSI, which cannot hold some of the characters in it. In ANSI they would become "?" for good.\n\nSave it as UTF-8 instead?`,
+    { yes: toUtf8, no: lossy, cancel: "Cancel" },
+  );
+  if (answer === lossy) return writeAndReport(id, path, { ...options, allowLossy: true });
+  if (answer !== toUtf8) return false;
+  // The unloaded rest of the file is ANSI bytes: it must be read before the encoding changes.
+  if (!options.loadedOnly) {
+    try {
+      await ensureFullyLoaded(id);
+    } catch {
+      return false;
+    }
+  }
+  patchTab(id, { encoding: "utf-8" });
+  loader.forceDirty(id);
+  loader.scheduleSessionWrite();
+  return writeAndReport(id, path, options);
 }
 
 async function saveAs(tabId?: string): Promise<boolean> {
@@ -647,8 +676,26 @@ async function changeFileFormat(patch: { eol: Eol } | { encoding: Encoding }): P
     return;
   }
   patchTab(id, patch);
+  if ("eol" in patch) loader.markEolChosen(id);
   loader.forceDirty(id);
   loader.scheduleSessionWrite();
+}
+
+/** Reads the active file again in another encoding, for a wrong guess (BUGS.md M15). */
+async function reopenWithEncoding(encoding: Encoding): Promise<void> {
+  const id = state().activeId;
+  const tab = getTab(id);
+  if (!tab?.path) return;
+  if (tab.dirty) {
+    const reopen = "Reopen";
+    const answer = await askUser(
+      "Reopen with encoding",
+      `Reading ${tab.title} again throws away your unsaved changes. Reopen it anyway?`,
+      { ok: reopen, cancel: "Cancel" },
+    );
+    if (answer !== reopen) return;
+  }
+  await loader.reopenWithEncoding(id, encoding).catch(reportError("Could not reopen file"));
 }
 
 // ---- Startup -----------------------------------------------------------------
@@ -801,6 +848,7 @@ export const actions = {
 
   setEol: (eol: Eol) => changeFileFormat({ eol }),
   setEncoding: (encoding: Encoding) => changeFileFormat({ encoding }),
+  reopenWithEncoding,
 
   openFind: (replace: boolean) => {
     useApp.setState({ find: { open: true, replace }, view: "editor" });
