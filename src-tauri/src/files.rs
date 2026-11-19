@@ -24,6 +24,13 @@ const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 /// The literal error the frontend matches on.
 const STALE: &str = "STALE";
 
+/// Prefix of the error for text the ANSI code page cannot hold.
+const UNMAPPABLE: &str = "UNMAPPABLE";
+
+/// Mixed line endings are only kept for files up to this size: keeping them
+/// means reading and decoding the old text once more.
+const KEEP_EOL_MAX: u64 = 64 * 1024 * 1024;
+
 /// Smallest window that can always hold one whole character plus a CRLF,
 /// so a chunk cut always makes progress.
 const MIN_WINDOW: u64 = 8;
@@ -108,6 +115,14 @@ pub struct SaveRequest {
     pub encoding: Encoding,
     pub tail_offset: Option<u64>,
     pub expected_stamp: Option<FileStamp>,
+    /// Lets characters the ANSI code page lacks become `?`. Without it such a
+    /// save fails with UNMAPPABLE and writes nothing.
+    #[serde(default)]
+    pub allow_lossy: bool,
+    /// Writes every line ending as `eol`. Without it, the lines of a file with
+    /// mixed line endings that the save leaves unchanged keep their own.
+    #[serde(default)]
+    pub normalize_eol: bool,
 }
 
 #[derive(Serialize, PartialEq, Debug)]
@@ -115,6 +130,8 @@ pub struct SaveRequest {
 pub struct FileScan {
     pub chars: u64,
     pub lines: u64,
+    /// Some bytes are not valid in the encoding (they read as U+FFFD).
+    pub invalid: bool,
 }
 
 fn err(e: io::Error) -> String {
@@ -181,11 +198,43 @@ fn detect_encoding(head: &[u8], complete: bool) -> (Encoding, usize) {
     if head.starts_with(BOM_UTF16BE) {
         return (Encoding::Utf16Be, BOM_UTF16BE.len());
     }
+    if let Some(encoding) = guess_utf16(head, complete) {
+        return (encoding, 0);
+    }
     match std::str::from_utf8(head) {
         Ok(_) => (Encoding::Utf8, 0),
         // A sequence cut off by the end of the window is still valid UTF-8.
         Err(e) if e.error_len().is_none() && !complete => (Encoding::Utf8, 0),
         Err(_) => (Encoding::Ansi, 0),
+    }
+}
+
+/// The encoding the user chose, and the length of its BOM if the file has one.
+/// A UTF-8 BOM is skipped for plain UTF-8 too, and then kept on save.
+fn forced_encoding(head: &[u8], forced: Encoding) -> (Encoding, usize) {
+    let forced = match forced {
+        Encoding::Utf8 if head.starts_with(BOM_UTF8) => Encoding::Utf8Bom,
+        other => other,
+    };
+    let bom = forced.bom();
+    (forced, if head.starts_with(bom) { bom.len() } else { 0 })
+}
+
+/// UTF-16 without a BOM. Text that is mostly ASCII or Latin-1 has a zero in
+/// every other byte when stored as UTF-16, while UTF-8 and ANSI text has none.
+fn guess_utf16(head: &[u8], complete: bool) -> Option<Encoding> {
+    if head.len() < 2 || (complete && head.len() % 2 == 1) {
+        return None;
+    }
+    let pairs = head.len() / 2;
+    let zeros = |parity: usize| (0..pairs).filter(|i| head[i * 2 + parity] == 0).count();
+    let (even, odd) = (zeros(0), zeros(1));
+    if odd * 2 >= pairs && even * 8 < odd {
+        Some(Encoding::Utf16Le)
+    } else if even * 2 >= pairs && odd * 8 < even {
+        Some(Encoding::Utf16Be)
+    } else {
+        None
     }
 }
 
@@ -382,7 +431,11 @@ pub fn read_chunk(
     let eof = offset + window.len() as u64 >= size || window.len() < want;
 
     let (encoding, bom_len, known_eol) = if offset == 0 {
-        let (encoding, bom_len) = detect_encoding(&window, eof);
+        // A hint at offset 0 is the user reopening the file with an encoding.
+        let (encoding, bom_len) = match hint {
+            Some(forced) => forced_encoding(&window, forced),
+            None => detect_encoding(&window, eof),
+        };
         (encoding, bom_len, first_eol(&window, encoding, eof))
     } else {
         let (encoding, eol) = known_format(&mut file, size, hint).map_err(err)?;
@@ -424,16 +477,21 @@ pub fn scan(path: &Path, encoding: Encoding) -> Result<FileScan, String> {
     let mut decoder = encoding.codec().new_decoder_without_bom_handling();
     let mut input = vec![0u8; STREAM_BUFFER];
     let mut output = vec![0u16; STREAM_BUFFER];
-    let mut result = FileScan { chars: 0, lines: 1 };
+    let mut result = FileScan {
+        chars: 0,
+        lines: 1,
+        invalid: false,
+    };
     let mut after_cr = false;
     loop {
         let read = file.read(&mut input).map_err(err)?;
         let last = read == 0;
         let mut consumed = 0;
         loop {
-            let (status, used, written, _) =
+            let (status, used, written, replaced) =
                 decoder.decode_to_utf16(&input[consumed..read], &mut output, last);
             consumed += used;
+            result.invalid |= replaced;
             for &unit in &output[..written] {
                 let crlf_tail = after_cr && unit == 0x0A;
                 after_cr = unit == 0x0D;
@@ -455,29 +513,42 @@ pub fn scan(path: &Path, encoding: Encoding) -> Result<FileScan, String> {
     }
 }
 
-fn encode_text(text: &str, eol: Eol, encoding: Encoding) -> Vec<u8> {
-    let normalized = normalize_newlines(text);
-    let converted = match eol {
-        Eol::Lf => normalized,
-        Eol::Crlf => Cow::Owned(normalized.replace('\n', "\r\n")),
-        Eol::Cr => Cow::Owned(normalized.replace('\n', "\r")),
-    };
-    match encoding {
-        Encoding::Utf8 | Encoding::Utf8Bom => converted.into_owned().into_bytes(),
-        Encoding::Utf16Le => converted
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect(),
-        Encoding::Utf16Be => converted
-            .encode_utf16()
-            .flat_map(u16::to_be_bytes)
-            .collect(),
-        Encoding::Ansi => encode_ansi(&converted),
+fn eol_str(eol: Eol) -> &'static str {
+    match eol {
+        Eol::Crlf => "\r\n",
+        Eol::Lf => "\n",
+        Eol::Cr => "\r",
     }
 }
 
-/// Characters the code page cannot represent become `?`, as Notepad does.
-fn encode_ansi(text: &str) -> Vec<u8> {
+/// The text with every line ending written as `eol`.
+fn with_eol(text: &str, eol: Eol) -> Cow<'_, str> {
+    let normalized = normalize_newlines(text);
+    match eol {
+        Eol::Lf => normalized,
+        _ => Cow::Owned(normalized.replace('\n', eol_str(eol))),
+    }
+}
+
+/// Encodes text whose line endings are final. Fails with the first character
+/// the ANSI code page cannot hold, unless `lossy` turns those into `?`.
+fn encode_str(text: &str, encoding: Encoding, lossy: bool) -> Result<Vec<u8>, char> {
+    Ok(match encoding {
+        Encoding::Utf8 | Encoding::Utf8Bom => text.as_bytes().to_vec(),
+        Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+        Encoding::Ansi => encode_ansi(text, lossy)?,
+    })
+}
+
+#[cfg(test)]
+fn encode_text(text: &str, eol: Eol, encoding: Encoding) -> Vec<u8> {
+    encode_str(&with_eol(text, eol), encoding, true).expect("a lossy encode cannot fail")
+}
+
+/// With `lossy`, characters the code page cannot represent become `?`, as
+/// Notepad does; without it the first one is returned as the error.
+fn encode_ansi(text: &str, lossy: bool) -> Result<Vec<u8>, char> {
     let mut encoder = ansi_codec().new_encoder();
     let mut out = Vec::with_capacity(text.len());
     let mut rest = text;
@@ -486,11 +557,101 @@ fn encode_ansi(text: &str) -> Vec<u8> {
             encoder.encode_from_utf8_to_vec_without_replacement(rest, &mut out, true);
         rest = &rest[read..];
         match status {
-            encoding_rs::EncoderResult::InputEmpty => return out,
+            encoding_rs::EncoderResult::InputEmpty => return Ok(out),
             encoding_rs::EncoderResult::OutputFull => out.reserve(rest.len().max(16)),
+            encoding_rs::EncoderResult::Unmappable(c) if !lossy => return Err(c),
             encoding_rs::EncoderResult::Unmappable(_) => out.push(b'?'),
         }
     }
+}
+
+/// Splits text into lines, each with the line ending that follows it (none
+/// for the last line).
+fn split_lines(text: &str) -> Vec<(&str, Option<&'static str>)> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let (mut start, mut i) = (0, 0);
+    while i < bytes.len() {
+        let ending = match bytes[i] {
+            b'\n' => "\n",
+            b'\r' if bytes.get(i + 1) == Some(&b'\n') => "\r\n",
+            b'\r' => "\r",
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        lines.push((&text[start..i], Some(ending)));
+        i += ending.len();
+        start = i;
+    }
+    lines.push((&text[start..], None));
+    lines
+}
+
+/// The ending to write after each new line but the last. Lines kept from the
+/// old text keep their own ending; changed lines get `fallback`.
+fn matched_endings(
+    old: &[(&str, Option<&'static str>)],
+    new: &[&str],
+    fallback: &'static str,
+) -> Vec<&'static str> {
+    let mut endings = vec![fallback; new.len().saturating_sub(1)];
+    let mut keep = |new_index: usize, old_index: usize| {
+        if let (Some(slot), Some(ending)) = (endings.get_mut(new_index), old[old_index].1) {
+            *slot = ending;
+        }
+    };
+    if old.len() == new.len() {
+        // Lines were edited in place, none added or removed.
+        (0..new.len()).for_each(|i| keep(i, i));
+        return endings;
+    }
+    let shorter = old.len().min(new.len());
+    let prefix = (0..shorter).take_while(|&i| old[i].0 == new[i]).count();
+    let suffix = (0..shorter - prefix)
+        .take_while(|&k| old[old.len() - 1 - k].0 == new[new.len() - 1 - k])
+        .count();
+    (0..prefix).for_each(|i| keep(i, i));
+    // The ending after the k-th line from the end lies inside the suffix when
+    // the line after it is also part of the suffix.
+    (1..suffix).for_each(|k| keep(new.len() - 1 - k, old.len() - 1 - k));
+    endings
+}
+
+/// For a file with mixed line endings, the text to write with the endings of
+/// unchanged lines kept, so a save does not rewrite every line. None when the
+/// file is not mixed, cannot be read, or the request asks to normalise.
+fn kept_line_endings(target: &Path, req: &SaveRequest) -> Option<String> {
+    if req.normalize_eol {
+        return None;
+    }
+    let mut file = open_shared(target).ok()?;
+    let size = file.metadata().ok()?.len();
+    let end = req.tail_offset.unwrap_or(size).min(size);
+    if end > KEEP_EOL_MAX {
+        return None;
+    }
+    let raw = read_up_to(&mut file, end as usize).ok()?;
+    drop(file);
+    let body = raw.strip_prefix(req.encoding.bom()).unwrap_or(&raw[..]);
+    let old_text = decode(body, req.encoding);
+    let old = split_lines(&old_text);
+    let first = old.iter().find_map(|line| line.1)?;
+    if old.iter().all(|line| line.1.is_none_or(|e| e == first)) {
+        return None;
+    }
+    let new_text = normalize_newlines(&req.text);
+    let new: Vec<&str> = new_text.split('\n').collect();
+    let endings = matched_endings(&old, &new, eol_str(req.eol));
+    let mut out = String::with_capacity(new_text.len() + endings.len());
+    for (i, line) in new.iter().enumerate() {
+        out.push_str(line);
+        if let Some(ending) = endings.get(i) {
+            out.push_str(ending);
+        }
+    }
+    Some(out)
 }
 
 /// A temp file next to the target, removed on drop unless `keep` was called.
@@ -537,8 +698,50 @@ fn ensure_fresh(target: &Path, expected: Option<FileStamp>) -> Result<(), String
     }
 }
 
+/// A NUL-terminated wide path for a raw Win32 call. std adds the `\\?\`
+/// long-path prefix to its own calls, but ReplaceFileW gets the raw path, so a
+/// path longer than MAX_PATH gets the prefix here.
 fn wide(path: &Path) -> Vec<u16> {
-    OsStr::new(path).encode_wide().chain(Some(0)).collect()
+    let units: Vec<u16> = OsStr::new(path).encode_wide().collect();
+    let (prefix, skip) = long_path_prefix(&units);
+    let mut out: Vec<u16> = prefix.encode_utf16().collect();
+    // Verbatim paths are not normalised, so `/` must already be `\`.
+    let slash = if prefix.is_empty() {
+        0
+    } else {
+        u16::from(b'/')
+    };
+    out.extend(
+        units[skip..]
+            .iter()
+            .map(|&u| if u == slash { u16::from(b'\\') } else { u }),
+    );
+    out.push(0);
+    out
+}
+
+/// The prefix for a path, and how many leading units it replaces: `\\?\` for a
+/// long drive path, `\\?\UNC\` in place of the `\\` of a long network path,
+/// and nothing for a short, relative or already prefixed one.
+fn long_path_prefix(units: &[u16]) -> (&'static str, usize) {
+    const MAX_PATH: usize = 260;
+    let is_sep = |u: Option<&u16>| matches!(u, Some(&0x5C) | Some(&0x2F));
+    if units.len() < MAX_PATH {
+        return ("", 0);
+    }
+    let drive = units[0] < 0x80
+        && (units[0] as u8).is_ascii_alphabetic()
+        && units[1] == u16::from(b':')
+        && is_sep(units.get(2));
+    let unc = is_sep(units.first()) && is_sep(units.get(1));
+    let verbatim = unc && matches!(units.get(2), Some(&0x3F) | Some(&0x2E)) && is_sep(units.get(3));
+    if drive {
+        (r"\\?\", 0)
+    } else if unc && !verbatim {
+        (r"\\?\UNC\", 2)
+    } else {
+        ("", 0)
+    }
 }
 
 /// Replaces `target` with `temp`, keeping the target's attributes and ACLs.
@@ -616,7 +819,7 @@ fn commit(temp: &mut TempFile, target: &Path) -> Result<(), String> {
     }
 }
 
-fn append_tail(target: &Path, offset: u64, output: &mut File) -> Result<(), String> {
+fn append_tail(target: &Path, offset: u64, output: &mut impl Write) -> Result<(), String> {
     let mut source = open_shared(target).map_err(err)?;
     if offset > source.metadata().map_err(err)?.len() {
         return Err(STALE.to_owned());
@@ -624,6 +827,36 @@ fn append_tail(target: &Path, offset: u64, output: &mut File) -> Result<(), Stri
     source.seek(SeekFrom::Start(offset)).map_err(err)?;
     io::copy(&mut source, output).map_err(err)?;
     Ok(())
+}
+
+/// For a folder where the file can be written but no new file can be created
+/// (some ACLs, drive roots, some network shares), so no temp file is possible.
+/// Not atomic. The tail is read into memory first, because writing over the
+/// file destroys the bytes it would be copied from.
+fn write_in_place(target: &Path, req: &SaveRequest, bytes: &[u8]) -> Result<FileStamp, String> {
+    let mut tail = Vec::new();
+    if let Some(offset) = req.tail_offset {
+        append_tail(target, offset, &mut tail)?;
+    }
+    ensure_fresh(target, req.expected_stamp)?;
+    let mut dest = OpenOptions::new()
+        .write(true)
+        .truncate(false)
+        .share_mode(SHARE_ALL)
+        .open(target)
+        .map_err(err)?;
+    let bom = req.encoding.bom();
+    let len = (bom.len() + bytes.len() + tail.len()) as u64;
+    let mut write = || -> io::Result<()> {
+        dest.write_all(bom)?;
+        dest.write_all(bytes)?;
+        dest.write_all(&tail)?;
+        dest.set_len(len)?;
+        dest.sync_all()
+    };
+    write().map_err(err)?;
+    drop(dest);
+    stat(target)?.ok_or_else(|| "file disappeared after saving".to_owned())
 }
 
 /// A rename would turn a symlink into a regular file, so save through it instead.
@@ -640,8 +873,22 @@ pub fn save(req: &SaveRequest) -> Result<FileStamp, String> {
     let target = resolve_target(Path::new(&req.path));
     ensure_fresh(&target, req.expected_stamp)?;
 
-    let bytes = encode_text(&req.text, req.eol, req.encoding);
-    let (mut temp, mut output) = TempFile::create(&target).map_err(err)?;
+    let bytes = {
+        let kept = kept_line_endings(&target, req);
+        let text = match &kept {
+            Some(text) => Cow::Borrowed(text.as_str()),
+            None => with_eol(&req.text, req.eol),
+        };
+        encode_str(&text, req.encoding, req.allow_lossy)
+            .map_err(|c| format!("{UNMAPPABLE}: {c}"))?
+    };
+    let (mut temp, mut output) = match TempFile::create(&target) {
+        Ok(created) => created,
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied && target.is_file() => {
+            return write_in_place(&target, req, &bytes);
+        }
+        Err(e) => return Err(err(e)),
+    };
     output.write_all(req.encoding.bom()).map_err(err)?;
     output.write_all(&bytes).map_err(err)?;
     drop(bytes);
@@ -920,6 +1167,8 @@ mod tests {
             encoding,
             tail_offset: None,
             expected_stamp: None,
+            allow_lossy: false,
+            normalize_eol: false,
         }
     }
 
@@ -952,7 +1201,10 @@ mod tests {
         save(&request(&path, "a\nb", Eol::Cr, Encoding::Utf8)).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"a\rb");
 
-        save(&request(&path, "caf\u{e9}", Eol::Lf, Encoding::Ansi)).unwrap();
+        // Lossy, so the test does not depend on the machine's code page.
+        let mut cafe = request(&path, "caf\u{e9}", Eol::Lf, Encoding::Ansi);
+        cafe.allow_lossy = true;
+        save(&cafe).unwrap();
         if ansi_codec().is_single_byte() && ansi_codec() == encoding_rs::WINDOWS_1252 {
             assert_eq!(fs::read(&path).unwrap(), b"caf\xE9");
             let chunk = read_chunk(&path, 0, 1024, None).unwrap();
@@ -960,9 +1212,27 @@ mod tests {
                 (chunk.text.as_str(), chunk.encoding),
                 ("caf\u{e9}", Encoding::Ansi)
             );
-            save(&request(&path, "x\u{4E2D}y", Eol::Lf, Encoding::Ansi)).unwrap();
+            // BUGS.md C6: a character the code page lacks is refused, not silently
+            // turned into `?`, unless the caller allows that.
+            let mut lossy = request(&path, "x\u{4E2D}y", Eol::Lf, Encoding::Ansi);
+            assert_eq!(save(&lossy).unwrap_err(), "UNMAPPABLE: \u{4E2D}");
+            assert_eq!(fs::read(&path).unwrap(), b"caf\xE9");
+            lossy.allow_lossy = true;
+            save(&lossy).unwrap();
             assert_eq!(fs::read(&path).unwrap(), b"x?y");
         }
+        // Every character fits in UTF-8 and UTF-16, so those never refuse.
+        save(&request(&path, "x\u{4E2D}y", Eol::Lf, Encoding::Utf8)).unwrap();
+        assert_eq!(dir.entries(), 1, "temp file left behind");
+    }
+
+    #[test]
+    fn unmappable_ansi_text_is_reported_with_its_first_character() {
+        let all_ascii = encode_ansi("plain text", false).unwrap();
+        assert_eq!(all_ascii, b"plain text");
+        // No ANSI code page holds both Urdu and CJK, and none holds emoji.
+        assert_eq!(encode_ansi("ok 😀 \u{4E2D}", false).unwrap_err(), '😀');
+        assert_eq!(encode_ansi("ok 😀", true).unwrap(), b"ok ?");
     }
 
     #[test]
@@ -1181,6 +1451,7 @@ mod tests {
         let expected = FileScan {
             chars: normalized.encode_utf16().count() as u64,
             lines: normalized.matches('\n').count() as u64 + 1,
+            invalid: false,
         };
         assert_eq!(scan(&path, Encoding::Utf8).unwrap(), expected);
 
@@ -1202,7 +1473,11 @@ mod tests {
 
         assert_eq!(
             scan(&dir.file(b""), Encoding::Utf8).unwrap(),
-            FileScan { chars: 0, lines: 1 }
+            FileScan {
+                chars: 0,
+                lines: 1,
+                invalid: false
+            }
         );
     }
 
@@ -1393,9 +1668,8 @@ mod tests {
         assert_eq!(walk(&path, 1024), format!("NEW{}", "سطر\n".repeat(50)));
     }
 
-    // BUGS.md H14: mixed line endings are all rewritten in the first line's style.
+    // BUGS.md H14: mixed line endings were all rewritten in the first line's style.
     #[test]
-    #[ignore = "known bug BUGS.md H14"]
     fn mixed_line_endings_are_kept_on_save() {
         let dir = TestDir::new();
         let path = dir.file(b"a\r\nb\nc");
@@ -1404,12 +1678,181 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"a\r\nb\nc");
     }
 
-    // BUGS.md M15: a UTF-16 file without a BOM is read as UTF-8.
     #[test]
-    #[ignore = "known bug BUGS.md M15"]
+    fn mixed_line_endings_survive_added_and_edited_lines() {
+        let dir = TestDir::new();
+        let path = dir.file(b"a\r\nb\nc\r\nd");
+        // A line inserted after "a" gets the first line's style; the rest keep theirs.
+        save(&request(&path, "a\nX\nb\nc\nd", Eol::Crlf, Encoding::Utf8)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"a\r\nX\r\nb\nc\r\nd");
+        // Edited in place, no lines added: every line keeps its own ending.
+        save(&request(&path, "A\nX\nB\nc\nd", Eol::Crlf, Encoding::Utf8)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"A\r\nX\r\nB\nc\r\nd");
+        // A line ending chosen by the user is written everywhere.
+        let mut normalize = request(&path, "A\nX\nB\nc\nd", Eol::Lf, Encoding::Utf8);
+        normalize.normalize_eol = true;
+        save(&normalize).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"A\nX\nB\nc\nd");
+        // A file with one style is converted as before.
+        save(&request(&path, "A\nX", Eol::Crlf, Encoding::Utf8)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"A\r\nX");
+    }
+
+    #[test]
+    fn mixed_line_endings_are_kept_in_a_tail_save() {
+        let dir = TestDir::new();
+        let path = dir.file(b"a\r\nb\nccc\r\nddd");
+        let first = read_chunk(&path, 0, 6, None).unwrap();
+        assert_eq!(
+            (first.text.as_str(), first.next_offset, first.eof),
+            ("a\nb\n", 5, false)
+        );
+        let mut req = request(&path, "A\nb\n", first.eol, first.encoding);
+        req.tail_offset = Some(first.next_offset);
+        req.expected_stamp = Some(first.stamp);
+        save(&req).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"A\r\nb\nccc\r\nddd");
+    }
+
+    #[test]
+    fn split_lines_keeps_each_ending() {
+        assert_eq!(
+            split_lines("a\r\nb\nc\rd"),
+            vec![
+                ("a", Some("\r\n")),
+                ("b", Some("\n")),
+                ("c", Some("\r")),
+                ("d", None)
+            ]
+        );
+        assert_eq!(split_lines(""), vec![("", None)]);
+        assert_eq!(split_lines("x\n"), vec![("x", Some("\n")), ("", None)]);
+    }
+
+    // BUGS.md M15: a UTF-16 file without a BOM was read as UTF-8.
+    #[test]
     fn utf16_without_bom_is_detected() {
         let dir = TestDir::new();
         let path = dir.file(&encode_text("hello", Eol::Lf, LE));
         assert_eq!(read_chunk(&path, 0, 1024, None).unwrap().text, "hello");
+        let chunk = read_chunk(
+            &dir.file(&encode_text("hi\r\nthere", Eol::Crlf, BE)),
+            0,
+            1024,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            (chunk.text.as_str(), chunk.encoding, chunk.eol),
+            ("hi\nthere", BE, Eol::Crlf)
+        );
+        // Ordinary text has no zero bytes and stays UTF-8.
+        assert_eq!(
+            detect_encoding("héllo wörld".as_bytes(), true),
+            (Encoding::Utf8, 0)
+        );
+        // An odd number of bytes cannot be a whole UTF-16 file.
+        assert_eq!(detect_encoding(b"a\0b", true), (Encoding::Utf8, 0));
+    }
+
+    // BUGS.md M15: a wrongly detected encoding could not be corrected.
+    #[test]
+    fn a_hint_at_offset_zero_reopens_the_file_with_that_encoding() {
+        let dir = TestDir::new();
+        let path = dir.file("é\nb".as_bytes());
+        assert_eq!(
+            read_chunk(&path, 0, 1024, None).unwrap().encoding,
+            Encoding::Utf8
+        );
+        let ansi = read_chunk(&path, 0, 1024, Some(Encoding::Ansi)).unwrap();
+        assert_eq!(ansi.encoding, Encoding::Ansi);
+        assert_eq!(ansi.text, decode("é\nb".as_bytes(), Encoding::Ansi));
+
+        let mut bom = BOM_UTF8.to_vec();
+        bom.extend(b"hi");
+        let chunk = read_chunk(&dir.file(&bom), 0, 1024, Some(Encoding::Utf8)).unwrap();
+        assert_eq!(
+            (chunk.text.as_str(), chunk.encoding),
+            ("hi", Encoding::Utf8Bom)
+        );
+
+        let chunk = read_chunk(&dir.file(b"h\0i\0"), 0, 1024, Some(LE)).unwrap();
+        assert_eq!((chunk.text.as_str(), chunk.next_offset), ("hi", 4));
+    }
+
+    // BUGS.md C7: bytes past the first 256 KB that are not UTF-8 must be noticed.
+    #[test]
+    fn scan_reports_bytes_the_encoding_cannot_decode() {
+        let dir = TestDir::new();
+        let mut bytes = "a\n".repeat(200_000).into_bytes();
+        bytes.extend(b"caf\xE9\n");
+        let path = dir.file(&bytes);
+        assert_eq!(
+            read_chunk(&path, 0, FIRST_CHUNK, None).unwrap().encoding,
+            Encoding::Utf8
+        );
+        assert!(scan(&path, Encoding::Utf8).unwrap().invalid);
+        if ansi_codec() == encoding_rs::WINDOWS_1252 {
+            assert!(!scan(&path, Encoding::Ansi).unwrap().invalid);
+        }
+        assert!(!scan(&dir.file(b"plain"), Encoding::Utf8).unwrap().invalid);
+    }
+
+    // BUGS.md H15: the fallback for folders where no temp file can be created.
+    #[test]
+    fn writing_in_place_keeps_the_tail_and_trims_the_rest() {
+        let dir = TestDir::new();
+        let path = dir.file(b"HEAD-tail");
+        let mut req = request(&path, "", Eol::Lf, Encoding::Utf8);
+        req.tail_offset = Some(5);
+        req.expected_stamp = stat(&path).unwrap();
+        let stamp = write_in_place(&path, &req, b"much longer head-").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"much longer head-tail");
+        assert_eq!(stat(&path).unwrap(), Some(stamp));
+
+        let mut req = request(&path, "", Eol::Lf, Encoding::Utf8Bom);
+        req.tail_offset = Some(17);
+        let stamp = write_in_place(&path, &req, b"h-").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"\xEF\xBB\xBFh-tail");
+        assert_eq!(stamp.size, 9);
+
+        let mut stale = request(&path, "", Eol::Lf, Encoding::Utf8);
+        stale.expected_stamp = Some(FileStamp {
+            size: 1,
+            mtime_ms: 0.0,
+        });
+        assert_eq!(write_in_place(&path, &stale, b"x").unwrap_err(), STALE);
+        assert_eq!(fs::read(&path).unwrap(), b"\xEF\xBB\xBFh-tail");
+        assert_eq!(dir.entries(), 1);
+    }
+
+    // BUGS.md W8: ReplaceFileW gets no long-path handling from std.
+    #[test]
+    fn long_paths_get_the_verbatim_prefix_for_replace_file() {
+        let units = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        let long = "x".repeat(300);
+        assert_eq!(long_path_prefix(&units(r"C:\short\a.txt")), ("", 0));
+        assert_eq!(
+            long_path_prefix(&units(&format!(r"C:\{long}\a.txt"))),
+            (r"\\?\", 0)
+        );
+        assert_eq!(
+            long_path_prefix(&units(&format!(r"\\server\share\{long}"))),
+            (r"\\?\UNC\", 2)
+        );
+        assert_eq!(
+            long_path_prefix(&units(&format!(r"\\?\C:\{long}"))),
+            ("", 0)
+        );
+        assert_eq!(long_path_prefix(&units(&long)), ("", 0));
+
+        let wide_path = wide(Path::new(&format!(r"C:/{long}/a.txt")));
+        assert_eq!(wide_path, units(&format!("\\\\?\\C:\\{long}\\a.txt\0")));
+        let wide_unc = wide(Path::new(&format!(r"\\server\share\{long}")));
+        assert_eq!(
+            wide_unc,
+            units(&format!("\\\\?\\UNC\\server\\share\\{long}\0"))
+        );
+        assert_eq!(wide(Path::new(r"C:\a")), units("C:\\a\0"));
     }
 }
