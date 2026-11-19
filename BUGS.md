@@ -190,6 +190,48 @@ These were written on Linux and only type-checked, or only read. Do this before 
 - **Recommendation:** add a deny list for executable types (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`, `.vbs`, `.js`, `.msi`, `.lnk`, `.scr`…) in the capability, so a future frontend bug cannot launch a program. Check it on Windows.
 - **What the deny list does not change:** these files still open as text in Notepadly, as in Windows Notepad, through File > Open, Explorer, drag and drop, and links. The deny list only stops the app from asking Windows to *run* them with their default program.
 
+## Review: state and file lifecycle
+
+STATE-1 to STATE-4 are fixed (see 2.3). Tests: `src/state/lifecycle.test.ts`.
+
+### Bugs
+
+#### STATE-5. A tab move that times out leaves the tab in both windows, sharing one draft 📖
+- **Steps:** drag a dirty tab to a new window on a slow or busy PC, so the new window confirms after 10 s (or its `tab-received` emit fails, which is only logged).
+- **Actual:** the source shows "did not take the tab, so it stays here" and keeps it; the target has taken it too. Both tabs have the same id, so both own draft `<id>`. Closing the tab in one window with "Don't save", or saving it, deletes that draft (`disposeTab`, `src/lib/loader.ts:677`; flush delete). The other window's session still says `hasDraft`, so on the next start its unsaved text is gone (`materialise` finds no draft and loads the file).
+- **Expected:** a tab lives in one window only, or the copies are independent.
+- **Cause:** `src/state/actions.ts` `waitForReceipt` (timeout, `MOVE_TIMEOUT_MS`) has no way to take the tab back from the target; `receiveTab` answers but never learns the source gave up.
+- **Fix:** the target asks "may I keep it?" and the source answers yes only if it has not timed out (two-step handshake), or the target gives the received tab a new id and writes its own draft at once.
+
+#### STATE-6. A moved tab loses its runtime state 📖
+- `handOff`/`takeOver` (`src/lib/loader.ts:692`, `:709`) carry text, snapshot, draft and `forceDirty` only. Lost: `dismissed`, `eolChosen`, `cleanDelete`, `unreadable`, `sleep`.
+- **Effects:**
+  - Keep mine on a changed file, then move the tab: the "changed on disk" bar comes back in the new window.
+  - A line ending picked for a mixed-ending file (H14/FILES-1) is not applied on save after the move: `normalizeEol` is false again. Same after a restart, since the session does not store `eolChosen`.
+  - H7 after a move: a clean tab flagged deleted stays unsaved when the file comes back.
+- **Fix:** add these fields to `TabHandoff` (and `eolChosen` to `SessionTab`).
+
+#### STATE-7. Right after a move, a crash can lose the moved tab's unsaved text 📖
+- `receiveTab` (`src/state/actions.ts`) confirms the move before the target stores its session (`takeOver` only schedules it, 800 ms or more). The source then removes the tab and writes a session without it.
+- If the target window or the app dies within that pause, no stored session lists the tab, and the next start's `pruneDrafts` deletes its draft.
+- The other way round, a crash of the source before its flush leaves the tab in both stored sessions (duplicate on restart).
+- **Fix:** in `receiveTab`, write the target's session (`flushPersistence`) before `answer()`; flush the source's session right after `removeFromList(id, true)`.
+
+#### STATE-8. Closing two windows at once asks about every unsaved tab and drops both sessions 📖
+- **Steps:** "continue previous session" on, two windows with unsaved tabs, taskbar > "Close all windows".
+- **Actual:** each window calls `ipc.isLastWindow()` (`src/state/actions.ts:681`) while the other is still on screen, so both take the "not last" path: they ask "save changes?" for each tab and delete their sessions. **Expected (WIN-2):** the last window keeps its tabs as drafts without asking.
+- **Fix:** let Rust decide "last" atomically (count windows that have started closing), or treat a close that arrives within a short time of another window's close as an exit.
+
+#### STATE-9. Saving a partly loaded file that was deleted says "changed by another program" 📖
+- **Steps:** open a file over 2 MB (partly loaded), delete it in Explorer, poll flags "deleted", edit, press Ctrl+S.
+- **Actual:** `doWrite` sends the old stamp (`src/lib/loader.ts:575`, a partial tab keeps it), Rust answers STALE, and `writeAndReport` (`src/state/actions.ts`) sets `externalChange: "modified"` over "deleted" and shows "This file was changed by another program". **Expected:** a message that the file was deleted and only the loaded part can be saved (Save As, C3 path).
+
+### Improvements
+- **Save As re-reads the tab after the dialog:** `saveAs` (`src/state/actions.ts`) keeps the `tab` from before the native dialog. If the tab was closed or renamed meanwhile, `writeTab` makes a new runtime entry via `rtOf` (leak) and reports "The tab was closed". Check `getTab(id)` after the dialog and stop quietly.
+- **Closing waits for the draft queue:** since STATE-2, `discardCurrentSession` waits for a running flush. A draft write that never returns would block the close; add a timeout.
+- **Moved untouched tab with a stale draft:** a tab saved and moved before its draft was deleted keeps `hasDraft` in the target but is never queued for deletion there; only the next start's prune removes the file. `takeOver` could call `markDraftChanged` whenever `hasDraft` is set.
+- **Test gap:** two windows cannot run in one Vitest module graph (`bootApp` resets modules), so STATE-5/7/8 are traced, not tested. A harness with two loader instances over one `fakeTauri` backend would cover moves and simultaneous closes.
+
 ---
 
 # Part 2: Done
@@ -295,6 +337,10 @@ These were written on Linux and only type-checked, or only read. Do this before 
 | WIN-1 | After the hidden restart from an update, every later window hid itself | Only the first window starts hidden | `cb1f8a5` |
 | MERGE-1 | The startup draft clean-up deleted the drafts of other windows' stored sessions | `runInit` keeps the drafts of every stored session (a small risk remains, see Part 1) | `95c2f1b` |
 | — | Bitmap `.fon` fonts appeared as false families | Left out of the font list | `fec7557` |
+| STATE-1 | A restored or hibernated tab (no text loaded) whose file was deleted became "unsaved"; closing asked to save and Save failed | Such a tab gets the "deleted" bar but stays clean | `1033a19` |
+| STATE-2 | Closing a window (Don't save) during a draft write stored its session again, so it came back next start | The discard runs after any flush in progress and drops pending draft changes | `6796137` |
+| STATE-3 | Text typed into a tab while it moved to another window was lost | The tab is read-only (parked) until the move ends, editable again if it fails | `fdcb8db` |
+| STATE-4 | An untitled tab moved right after typing arrived as "Untitled" | The pending name is applied before the tab is sent | `9f1cdfa` |
 
 ## 2.4 Features added
 
