@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // File lifecycle edge cases found in the state review (BUGS.md STATE-*): tabs
 // that have no editor state yet, moves between windows, and session writes.
-import { bootApp, settle, waitFor, type App } from "../test/appHarness";
+import { bootApp, newFakeWindow, settle, waitFor, type App } from "../test/appHarness";
 import { backend, fakeWindow } from "../test/fakeTauri";
 import { describe, expect, it, vi } from "vitest";
 
@@ -179,5 +179,123 @@ describe("STATE-3: typing into a tab while it moves to another window", () => {
     expect(app.state().activeId).toBe(moved);
     app.type("!");
     expect(app.text(moved)).toBe("only tab!");
+  });
+});
+
+// ---- Two windows over one backend ---------------------------------------------
+
+/** Window "main" (the shared fakeWindow) and "window-1", running side by side. */
+async function twoWindows(): Promise<{ a: App; b: App }> {
+  backend.reset();
+  const a = await bootApp({ keepDisk: true });
+  const b = await bootApp({ window: newFakeWindow(), label: "window-1" });
+  return { a, b };
+}
+
+/** Runs `snapshot` when window `a` gets the move confirmation, before it reacts. */
+function onReceipt(a: App, snapshot: () => void): void {
+  const listener = a.win.listeners.get("tab-received")!;
+  a.win.listeners.set("tab-received", (event) => {
+    snapshot();
+    listener(event);
+  });
+}
+
+describe("STATE-5: a move the source gave up on", () => {
+  it("leaves two independent copies, so closing one keeps the other's draft", async () => {
+    const { a, b } = await twoWindows();
+    app = a;
+    await a.actions.newTab();
+    a.type("precious");
+    const moved = a.tab().id;
+    await a.loader.flushPersistence();
+    // The target is too slow: the source times out and keeps the tab.
+    backend.dropTarget = { label: "window-slow", x: 0, y: 0 };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const moving = a.actions.moveTabOut(moved);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await moving;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(a.state().tabs.map((t) => t.id)).toContain(moved);
+    const sent = a.win.emitted.find((e) => e.event === "tab-incoming")!.payload as { transfer: unknown };
+    // The other window takes it anyway, late.
+    b.win.deliver("tab-incoming", { transfer: sent.transfer, x: 0, y: 0 });
+    await waitFor(() => b.state().tabs.some((t) => t.title === "precious"));
+    const copy = b.state().tabs.find((t) => t.title === "precious")!;
+    await b.loader.flushPersistence();
+    expect(copy.id).not.toBe(moved);
+    // The source closes its copy without saving.
+    const closing = a.actions.closeTab(moved);
+    await a.answerClose("discard");
+    expect(await closing).toBe(true);
+    await settle(10);
+    expect(backend.drafts.get(copy.id)).toBe("precious");
+    const stored = JSON.parse(backend.windowSessions.get(b.loader.getSessionKey()!)!);
+    expect(stored.tabs.find((t: { id: string }) => t.id === copy.id)).toMatchObject({ hasDraft: true, dirty: true });
+  });
+});
+
+describe("STATE-7: a crash right after a move", () => {
+  it("finds the tab stored in the target before it confirms, and gone from the source at once", async () => {
+    const { a, b } = await twoWindows();
+    app = a;
+    await a.actions.newTab();
+    a.type("moving text");
+    const moved = a.tab().id;
+    await a.actions.newTab();
+    await a.loader.flushPersistence();
+    backend.dropTarget = { label: "window-1", x: 0, y: 0 };
+    let atReceipt: { session?: string; drafts: Map<string, string> } | null = null;
+    onReceipt(a, () => {
+      atReceipt = { session: backend.windowSessions.get(b.loader.getSessionKey()!), drafts: new Map(backend.drafts) };
+    });
+    await a.actions.moveTabOut(moved);
+    const copy = b.state().tabs.find((t) => t.title === "moving text")!;
+    expect(copy).toBeDefined();
+    const seen = atReceipt as unknown as { session?: string; drafts: Map<string, string> };
+    expect(seen.session).toBeDefined();
+    const target = JSON.parse(seen.session!);
+    expect(target.tabs.find((t: { id: string }) => t.id === copy.id)).toMatchObject({ hasDraft: true });
+    expect(seen.drafts.get(copy.id)).toBe("moving text");
+    // No timer has run since: the source's stored session is already without the tab.
+    const source = JSON.parse(backend.session!);
+    expect(source.tabs.map((t: { id: string }) => t.id)).not.toContain(moved);
+  });
+});
+
+describe("STATE-6: a moved tab keeps its runtime state", () => {
+  it("a clean tab flagged deleted is clean again in the new window when the file comes back (H7)", async () => {
+    const { a, b } = await twoWindows();
+    app = a;
+    backend.write(A, "a text");
+    await a.actions.openPaths([A]);
+    const moved = a.tab().id;
+    await a.actions.newTab();
+    backend.delete(A);
+    await a.loader.pollExternalChanges();
+    expect(a.tab(moved)).toMatchObject({ externalChange: "deleted", dirty: true });
+    backend.dropTarget = { label: "window-1", x: 0, y: 0 };
+    await a.actions.moveTabOut(moved);
+    const copy = b.state().tabs.find((t) => t.path === A)!;
+    expect(copy).toMatchObject({ externalChange: "deleted", dirty: true });
+    backend.write(A, "a text");
+    await b.loader.pollExternalChanges();
+    expect(b.tab(copy.id).dirty).toBe(false);
+  });
+
+  it("the session stores a picked line ending, so a restart still applies it on save", async () => {
+    app = await bootApp();
+    backend.write(A, "one\r\ntwo\nthree\r\n");
+    await app.actions.openPaths([A]);
+    await app.actions.setEol("LF");
+    await app.actions.closeWindow();
+    app = await bootApp({ keepDisk: true });
+    expect(app.tab().path).toBe(A);
+    await app.actions.activate(app.tab().id);
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(A)).toBe("one\ntwo\nthree\n");
   });
 });

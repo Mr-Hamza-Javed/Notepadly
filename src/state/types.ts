@@ -47,6 +47,13 @@ export interface TabMeta {
   externalChange: "modified" | "deleted" | null;
   /** Clean tab whose editor state was dropped to save memory. */
   hibernated: boolean;
+  /**
+   * The file has line endings other than `eol` (FILES-1): picking any line
+   * ending, even the one shown, writes it on every line.
+   */
+  mixedEol?: boolean;
+  /** The file has the read-only attribute, so saving it in place will fail. */
+  readOnly?: boolean;
 }
 
 export type Dialog =

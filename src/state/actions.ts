@@ -611,12 +611,14 @@ async function resolveDirtyTab(id: string): Promise<boolean> {
   return answer === "save" ? save(id) : true;
 }
 
-/** `moved`: the tab went to another window, which now owns its draft. */
-function removeFromList(id: string, moved = false): void {
+/**
+ * Also deletes the tab's draft. A tab that moved to another window has its own
+ * copy there, under its new id (STATE-5).
+ */
+function removeFromList(id: string): void {
   useApp.setState((s) => ({ tabs: s.tabs.filter((t) => t.id !== id) }));
   engine.dropDoc(id); // also forgets the undo history of a hibernated tab
-  if (moved) loader.releaseTab(id);
-  else loader.disposeTab(id);
+  loader.disposeTab(id);
   const pending = titleTimers.get(id);
   if (pending !== undefined) clearTimeout(pending);
   titleTimers.delete(id);
@@ -809,40 +811,66 @@ async function moveTabOut(id: string): Promise<void> {
     return;
   }
   if (!(await receipt.done)) {
-    stay("The other window did not take the tab, so it stays here.");
+    // The other window may still take it late; its copy then has an id and a
+    // draft of its own (STATE-5), so keeping this one loses nothing.
+    stay("The other window did not confirm that it took the tab, so it stays here.");
     return;
   }
   leaving.delete(id);
   if (state().tabs.length > 1) {
-    removeFromList(id, true);
+    removeFromList(id);
+    // Stored without the tab at once, so a crash cannot bring it back twice (STATE-7).
+    await loader.flushPersistence().catch(() => {});
     return;
   }
   // The last tab left: the window goes with it instead of staying empty.
   await newTab();
-  removeFromList(id, true);
+  removeFromList(id);
   await loader.discardCurrentSession().catch(() => {});
   await getCurrentWindow().destroy();
 }
 
+/** Ids of tabs received from other windows, by the id they had there; for a repeated delivery. */
+const received = new Map<string, string>();
+
 /** Takes a tab moved here from another window, at `index` (null: at the end). */
 async function receiveTab(transfer: TabTransfer, index: number | null): Promise<void> {
   const { from, handoff } = transfer;
-  const tab: TabMeta = { ...transfer.tab, hibernated: handoff.text === null && transfer.tab.path !== null };
+  const fromId = transfer.tab.id;
   const answer = () =>
     getCurrentWebviewWindow()
-      .emitTo(from, TAB_RECEIVED_EVENT, { id: tab.id })
+      .emitTo(from, TAB_RECEIVED_EVENT, { id: fromId })
       .catch((error: unknown) => console.error("Notepadly: could not confirm a moved tab", error));
-  if (getTab(tab.id)) {
+  if (received.has(fromId)) {
     await answer();
     return;
   }
+  // A new id: if the other window gives up waiting and keeps the tab, the two
+  // copies must not share one draft, or closing one deletes the other's (STATE-5).
+  const tab: TabMeta = {
+    ...transfer.tab,
+    id: newTabId(),
+    hibernated: handoff.text === null && transfer.tab.path !== null,
+  };
+  received.set(fromId, tab.id);
   const pristine = windowIsPristine() ? state().tabs[0] : null;
   useApp.setState((s) => {
     const list = s.tabs.slice();
     list.splice(Math.max(0, Math.min(index ?? list.length, list.length)), 0, tab);
     return { tabs: list };
   });
-  loader.takeOver(tab, handoff);
+  try {
+    await loader.takeOver(tab, handoff, fromId);
+  } catch (error) {
+    // No answer: the other window keeps the tab.
+    console.error("Notepadly: could not take a moved tab", error);
+    received.delete(fromId);
+    removeFromList(tab.id);
+    return;
+  }
+  // Its draft and this window's session are stored before the other window lets
+  // the tab go, so a crash right after the move cannot lose it (STATE-7).
+  await loader.flushPersistence().catch((error) => console.error("Notepadly: could not store a moved tab", error));
   await answer();
   await activate(tab.id);
   if (pristine && pristine.id !== tab.id) removeFromList(pristine.id);

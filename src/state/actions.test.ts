@@ -1333,22 +1333,24 @@ describe("moving tabs between windows (F2)", () => {
     await moving;
     expect(app.state().tabs.map((t) => t.title)).toEqual(["stays"]);
     await app.loader.flushPersistence();
-    expect(backend.drafts.has(moved)).toBe(true); // the draft now belongs to the other window
+    // The other window stored its own copy under a new id before it answered (STATE-5).
+    expect(backend.drafts.has(moved)).toBe(false);
     expect(JSON.parse(backend.session!).tabs.map((t: { id: string }) => t.id)).not.toContain(moved);
 
     // The other window takes it.
     app = await bootApp({ keepDisk: true, label: "window-1" });
     app.type("x");
     fakeWindow.deliver("tab-incoming", { transfer, x: 10, y: 400 });
-    await waitFor(() => app.state().activeId === moved);
-    expect(app.state().tabs).toHaveLength(2);
-    expect(app.state().tabs[1].id).toBe(moved);
-    expect(app.tab()).toMatchObject({ id: moved, dirty: true, path: A });
+    await waitFor(() => app.state().tabs.length === 2 && app.state().activeId === app.state().tabs[1].id);
+    const taken = app.state().tabs[1].id;
+    expect(taken).not.toBe(moved);
+    expect(app.tab()).toMatchObject({ dirty: true, path: A });
     expect(app.text()).toBe("on disk + unsaved");
     expect(fakeWindow.emitted).toContainEqual({ target: "main", event: "tab-received", payload: { id: moved } });
-    await app.loader.flushPersistence();
+    // Stored before the answer (STATE-7).
     const stored = JSON.parse([...backend.windowSessions.values()][0]);
-    expect(stored.tabs.find((t: { id: string }) => t.id === moved)).toMatchObject({ dirty: true, hasDraft: true });
+    expect(stored.tabs.find((t: { id: string }) => t.id === taken)).toMatchObject({ dirty: true, hasDraft: true });
+    expect(backend.drafts.get(taken)).toBe("on disk + unsaved");
     // Nothing was written to the file, and it saves normally from here.
     expect(backend.text(A)).toBe("on disk");
     await app.actions.save();
@@ -1366,7 +1368,7 @@ describe("moving tabs between windows (F2)", () => {
     backend.boot = { restore: null, transfer: JSON.stringify(transfer) };
     app = await bootApp({ keepDisk: true, label: "window-2" });
     // It replaced the empty tab a new window starts with.
-    expect(app.state().tabs.map((t) => t.id)).toEqual([moved]);
+    expect(app.state().tabs.map((t) => t.title)).toEqual(["a.md"]);
     expect(app.text()).toBe("on disk + unsaved");
     expect(app.tab().dirty).toBe(true);
   });
@@ -1410,11 +1412,11 @@ describe("moving tabs between windows (F2)", () => {
     app = await bootApp({ keepDisk: true, label: "window-1" });
     backend.calls = [];
     fakeWindow.deliver("tab-incoming", { transfer, x: 0, y: 0 });
-    await waitFor(() => app.state().activeId === partial.id);
+    await waitFor(() => app.tab().path === B);
     expect(app.text()).toBe(transfer.handoff.text);
     expect(app.tab()).toMatchObject({ loadedOffset: partial.loadedOffset, fullyLoaded: false, dirty: false });
     // The rest still loads from where the other window stopped.
-    await app.actions.ensureFullyLoaded(partial.id);
+    await app.actions.ensureFullyLoaded(app.tab().id);
     expect(app.text()).toBe(big);
     const reads = backend.calls.filter((c) => c.cmd === "file_read_chunk").map((c) => c.args.offset as number);
     expect(Math.min(...reads)).toBe(partial.loadedOffset);

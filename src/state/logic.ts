@@ -438,6 +438,10 @@ export interface SessionTab {
   fullyLoaded: boolean;
   hasDraft: boolean;
   snap: ScrollSnapshot | null;
+  /** A line ending was picked for this tab: its next save writes it on every line (STATE-6). */
+  eolChosen?: boolean;
+  /** The file has more than one kind of line ending (FILES-1). */
+  mixedEol?: boolean;
 }
 
 export interface SessionFile {
@@ -487,6 +491,9 @@ export function parseSession(raw: string | null): SessionFile | null {
       fullyLoaded: bool(item.fullyLoaded, false),
       hasDraft: bool(item.hasDraft, false),
       snap: parseSnap(item.snap),
+      // Only stored when set, like the app writes them.
+      ...(item.eolChosen === true ? { eolChosen: true } : {}),
+      ...(item.mixedEol === true ? { mixedEol: true } : {}),
     });
   }
   const activeId = typeof data.activeId === "string" && seen.has(data.activeId) ? data.activeId : tabs[0]?.id ?? "";
@@ -508,6 +515,7 @@ export function tabFromSession(s: SessionTab): TabMeta {
     tailChars: null,
     externalChange: null,
     hibernated: !(s.dirty && s.hasDraft) && s.path !== null,
+    ...(s.mixedEol ? { mixedEol: true } : {}),
   };
 }
 

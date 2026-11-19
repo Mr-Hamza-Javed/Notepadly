@@ -686,6 +686,20 @@ export interface TabHandoff {
   hasDraft: boolean;
   draftMeta: DraftMeta | null;
   forceDirty: boolean;
+  // The runtime state below must move too (STATE-6). Optional for a transfer
+  // from a window that runs an older build.
+  /** A change on disk the user chose to ignore ("Keep mine"). */
+  dismissed?: DismissedChange;
+  /** A line ending was picked, so the next save writes it on every line. */
+  eolChosen?: boolean;
+  /** A clean tab flagged deleted and not edited since: clean again if the file comes back (H7). */
+  cleanDelete?: boolean;
+  /** The file could not be read, so the text is not the file's: never save over it (M22). */
+  unreadable?: boolean;
+  /** The file state a hibernated tab's undo history belongs to. */
+  sleep?: { stamp: FileStamp | null; encoding: Encoding } | null;
+  /** Characters read from the file into the editor (L5). */
+  diskChars?: number | null;
 }
 
 /** Read together with the tab's TabMeta, in the same tick, so offsets match the text. */
@@ -698,45 +712,62 @@ export function handOff(id: string): TabHandoff {
     hasDraft: rt.hasDraft,
     draftMeta: rt.draftMeta,
     forceDirty: rt.forceDirty,
+    dismissed: rt.dismissed,
+    eolChosen: rt.eolChosen,
+    cleanDelete: rt.cleanDelete !== null && rt.cleanDelete === rt.editSeq,
+    unreadable: rt.unreadable,
+    sleep: rt.sleep,
+    diskChars: rt.diskChars,
   };
 }
 
 /**
- * Takes over a tab handed off by another window. `tab` is already in the store.
- * Nothing is read from disk or saved: the text arrives as it was, unsaved edits
- * stay unsaved, and the draft (keyed by the tab id) now belongs to this window.
+ * Takes over a tab handed off by another window. `tab` is already in the store,
+ * under a new id (STATE-5): `fromId` is the id it had there. Nothing is read
+ * from the file or saved: the text arrives as it was and unsaved edits stay
+ * unsaved. A tab with no editor state gets a copy of its draft under the new id,
+ * so the two windows never share one draft. Rejects when that copy fails; the
+ * tab must then not be kept here.
  */
-export function takeOver(tab: TabMeta, handoff: TabHandoff): void {
+export async function takeOver(tab: TabMeta, handoff: TabHandoff, fromId: string = tab.id): Promise<void> {
   const rt = rtOf(tab.id);
   rt.snap = handoff.snap;
-  rt.hasDraft = handoff.hasDraft;
-  rt.draftMeta = handoff.draftMeta;
+  rt.dismissed = handoff.dismissed ?? null;
+  rt.eolChosen = !!handoff.eolChosen;
+  rt.unreadable = !!handoff.unreadable;
+  rt.sleep = handoff.sleep ?? null;
+  rt.diskChars = handoff.diskChars ?? null;
   if (handoff.text !== null) {
     engine.createDoc(tab.id, handoff.text, tab.mode);
     restoreView(tab.id, handoff.snap);
     rt.snap = null;
     // The new editor state starts clean; the tab is not.
     rt.forceDirty = handoff.forceDirty || tab.dirty;
+    rt.cleanDelete = handoff.cleanDelete ? rt.editSeq : null;
     if (!tab.fullyLoaded) {
       startScan(tab.id);
       scheduleIdleLoad(tab.id);
     }
+    // The draft is written under the new id by the next flush.
+    if (tab.dirty) markDraftChanged(tab.id);
+  } else if (handoff.hasDraft && tab.dirty) {
+    if (fromId !== tab.id) {
+      const draft = await ipc.draftRead(fromId);
+      if (draft === null) throw new Error("The unsaved text of this tab could not be found.");
+      await ipc.draftWrite(tab.id, draft);
+    }
+    rt.hasDraft = true;
+    rt.draftMeta = handoff.draftMeta;
   }
-  if (tab.dirty) markDraftChanged(tab.id);
   scheduleSessionWrite();
 }
 
-/** Drops a tab that moved to another window, keeping its draft for that window. */
-export function releaseTab(id: string): void {
-  const rt = runtimes.get(id);
-  if (rt) rt.hasDraft = false;
-  disposeTab(id);
-}
 
 export function registerRestored(session: SessionTab): void {
   const rt = rtOf(session.id);
   rt.snap = session.snap;
   rt.hasDraft = session.hasDraft;
+  rt.eolChosen = !!session.eolChosen;
   if (session.hasDraft) {
     rt.draftMeta = { stamp: session.stamp, loadedOffset: session.loadedOffset, fullyLoaded: session.fullyLoaded };
   }
@@ -944,6 +975,8 @@ export function buildSession(): SessionFile {
         fullyLoaded: position.fullyLoaded,
         hasDraft: rt.hasDraft,
         snap: engine.hasDoc(tab.id) ? engine.snapshot(tab.id) : rt.snap,
+        ...(rt.eolChosen ? { eolChosen: true } : {}),
+        ...(tab.mixedEol ? { mixedEol: true } : {}),
       };
     }),
   };
