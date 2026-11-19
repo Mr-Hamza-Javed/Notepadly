@@ -373,6 +373,29 @@ describe("what Rust reports about a file", () => {
   });
 });
 
+describe("typing right at start, before the session is restored", () => {
+  it("keeps the text in a tab of its own next to the restored ones", async () => {
+    app = await bootApp();
+    backend.write(A, "a text");
+    await app.actions.openPaths([A]);
+    await app.actions.closeWindow();
+    const original = backend.invoke.bind(backend);
+    vi.spyOn(backend, "invoke").mockImplementation(async (cmd, args, caller) => {
+      if (cmd === "window_sessions_read") {
+        // The user types while the stored session is still being read.
+        const { engine } = await import("../editor");
+        engine.insertText("typed early");
+      }
+      return original(cmd, args, caller);
+    });
+    app = await bootApp({ keepDisk: true });
+    await waitFor(() => app.state().tabs.length === 2 && app.state().tabs[1].title !== "Untitled");
+    expect(app.state().tabs.map((t) => t.title)).toEqual(["a.md", "typed early"]);
+    expect(app.text()).toBe("typed early");
+    expect(app.tab()).toMatchObject({ dirty: true, path: null });
+  });
+});
+
 describe("MERGE-1: the start-up draft clean-up", () => {
   const untitled = (id: string) => ({
     id,

@@ -1207,7 +1207,13 @@ async function wireWindowEvents(ready: Promise<void>): Promise<void> {
 async function restoreSession(session: SessionFile | null): Promise<boolean> {
   if (!session || session.tabs.length === 0) return false;
   session.tabs.forEach(loader.registerRestored);
-  useApp.setState({ tabs: session.tabs.map(tabFromSession), activeId: session.activeId });
+  // Text typed before the session was read stays, in its own tab, shown.
+  const early = state().tabs.find((t) => t.path === null && engine.hasDoc(t.id) && engine.length(t.id) > 0);
+  for (const t of state().tabs) if (t !== early) engine.dropDoc(t.id);
+  useApp.setState({
+    tabs: [...session.tabs.map(tabFromSession), ...(early ? [early] : [])],
+    activeId: early ? early.id : session.activeId,
+  });
   await loader.materialiseOrFlag(session.activeId);
   return true;
 }
@@ -1296,6 +1302,14 @@ async function runInit(): Promise<void> {
     markReady = resolve;
   });
   await Promise.all([waitForEditorParent(), wireWindowEvents(ready)]);
+  // Keys typed while the session is still being read go into the first tab,
+  // instead of the read-only placeholder; restoreSession keeps that tab.
+  const first = state().activeId;
+  if (!engine.hasDoc(first)) {
+    engine.createDoc(first, "", getTab(first)?.mode ?? "plain");
+    engine.activate(first);
+    engine.focus();
+  }
 
   const [pending, boot] = await Promise.all([
     ipc.takePendingPaths().catch(() => [] as string[]),
@@ -1304,7 +1318,7 @@ async function runInit(): Promise<void> {
   const { restored, merged } = await adoptSession(boot);
 
   const { activeId } = state();
-  if (!restored) engine.createDoc(activeId, "", getTab(activeId)?.mode ?? "plain");
+  if (!restored && !engine.hasDoc(activeId)) engine.createDoc(activeId, "", getTab(activeId)?.mode ?? "plain");
   if (engine.hasDoc(activeId)) {
     engine.activate(activeId);
     engine.focus();
