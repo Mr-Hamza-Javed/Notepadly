@@ -501,20 +501,28 @@ function editTable(view: EditorView, op: Extract<FormatCommand, { type: "table-e
 
 // ---------- Key handlers ----------
 
-function renumberFollowing(state: EditorState, line: Line, indent: string, start: number): ChangeSpec[] {
+const QUOTE_MARKS = /^(?:[ \t]*>[ \t]?)*/;
+
+function renumberFollowing(state: EditorState, line: Line, start: number): ChangeSpec[] {
   const changes: ChangeSpec[] = [];
+  const quote = QUOTE_MARKS.exec(line.text)![0];
+  const indent = /^\s*/.exec(line.text.slice(quote.length))![0];
   let number = start;
   for (let n = line.number + 1, scanned = 0; n <= state.doc.lines && scanned < 500; n++, scanned++) {
     const next = state.doc.line(n);
-    const match = /^(\s*)(\d+)([.)])/.exec(next.text);
+    // Items in a quote carry its markers: compare and number what follows them.
+    const nextQuote = QUOTE_MARKS.exec(next.text)![0];
+    if (nextQuote.replace(/\s/g, "") !== quote.replace(/\s/g, "")) break;
+    const text = next.text.slice(nextQuote.length);
+    const match = /^(\s*)(\d+)([.)])/.exec(text);
     if (!match) {
-      if (next.text.trim() === "" || next.text.startsWith(`${indent} `)) continue;
+      if (text.trim() === "" || text.startsWith(`${indent} `)) continue;
       break;
     }
     if (match[1].length > indent.length) continue;
     if (match[1] !== indent) break;
     if (Number(match[2]) !== number) {
-      const numFrom = next.from + match[1].length;
+      const numFrom = next.from + nextQuote.length + match[1].length;
       changes.push({ from: numFrom, to: numFrom + match[2].length, insert: String(number) });
     }
     number++;
@@ -548,7 +556,7 @@ export const continueMarkup: Command = (view) => {
     const nextMarker = numeric ? `${nextNumber}${numeric[2]}` : marker;
     const insert = `\n${quote}${indent}${nextMarker}${gap}${task ? "[ ] " : ""}`;
     const changes: ChangeSpec[] = [{ from: range.from, to: range.to, insert }];
-    if (numeric) changes.push(...renumberFollowing(state, line, indent, nextNumber + 1));
+    if (numeric) changes.push(...renumberFollowing(state, line, nextNumber + 1));
     view.dispatch({
       changes,
       selection: { anchor: range.from + insert.length },

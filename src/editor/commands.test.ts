@@ -421,6 +421,23 @@ describe("EDIT-3: inline markers across list items, quotes, headings and spaces"
   });
 });
 
+describe("EDIT-5: Enter renumbers the items below in quotes and indented lists", () => {
+  const enter = (input: string) => run(input, continueMarkup)[1];
+
+  it("renumbers a numbered list inside a quote", () => {
+    expect(enter("> 1. a|\n> 2. b\n> 3. c")).toBe("> 1. a\n> 2. |\n> 3. b\n> 4. c");
+  });
+
+  it("renumbers an indented numbered list", () => {
+    expect(enter("- x\n  1. a|\n  2. b")).toBe("- x\n  1. a\n  2. |\n  3. b");
+  });
+
+  it("leaves nested items and the items after the quote alone", () => {
+    expect(enter("1. a|\n    1. sub\n2. b")).toBe("1. a\n2. |\n    1. sub\n3. b");
+    expect(enter("> 1. a|\n\n2. other")).toBe("> 1. a\n> 2. |\n\n2. other");
+  });
+});
+
 describe("EDIT-4: headings inside quotes and list items", () => {
   it("puts the heading marker after the quote or list marker", () => {
     expect(format("> qu|ote", { type: "block", kind: "h2" })).toBe("> ## qu|ote");
