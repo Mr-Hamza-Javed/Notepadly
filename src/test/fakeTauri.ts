@@ -205,6 +205,10 @@ export class FakeBackend {
     return this.calls.filter((c) => c.cmd === cmd).length;
   }
 
+  private isReadOnly(path: string): boolean {
+    return [...this.readOnly].some((p) => key(p) === key(path));
+  }
+
   private stampOf(path: string): FakeStamp | null {
     const file = this.files.get(key(path));
     return file ? { size: file.bytes.length, mtimeMs: file.mtimeMs } : null;
@@ -381,7 +385,7 @@ export class FakeBackend {
       stamp: { size, mtimeMs: file.mtimeMs },
       // This chunk holds a line ending other than the file's `eol` (FILES-1).
       mixedEol: endingsOf(raw).some((e) => e !== known),
-      readOnly: this.readOnly.has(key(path)),
+      readOnly: this.isReadOnly(path),
     };
   }
 
@@ -391,7 +395,7 @@ export class FakeBackend {
     if (req.expectedStamp && (stamp === null || stamp.size !== req.expectedStamp.size || stamp.mtimeMs !== req.expectedStamp.mtimeMs)) {
       throw "STALE";
     }
-    if (existing && this.readOnly.has(key(req.path))) throw "Access is denied. (os error 5)";
+    if (existing && this.isReadOnly(req.path)) throw "Access is denied. (os error 5)";
     const eol = req.eol === "CRLF" ? "\r\n" : req.eol === "CR" ? "\r" : "\n";
     const final = (existing && this.keptLineEndings(existing.bytes, req)) ?? normalize(req.text).replace(/\n/g, eol);
     const body = req.encoding === "ansi" ? encodeAnsi(final, !!req.allowLossy) : encoder.encode(final);

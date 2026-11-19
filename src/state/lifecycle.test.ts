@@ -228,6 +228,92 @@ describe("STATE-9: saving a partly loaded file that was deleted", () => {
   });
 });
 
+describe("FILES-1: a file with mixed line endings", () => {
+  const MIXED = "one\r\ntwo\nthree\r\n";
+
+  it("picking the line ending already shown writes it on every line", async () => {
+    app = await bootApp();
+    backend.write(A, MIXED);
+    await app.actions.openPaths([A]);
+    expect(app.tab()).toMatchObject({ eol: "CRLF", mixedEol: true });
+    await app.actions.setEol("CRLF");
+    expect(app.tab()).toMatchObject({ dirty: true, mixedEol: false });
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(A)).toBe("one\r\ntwo\r\nthree\r\n");
+  });
+
+  it("an edit without a pick keeps the other lines' endings (H14)", async () => {
+    app = await bootApp();
+    backend.write(A, MIXED);
+    await app.actions.openPaths([A]);
+    app.type("four");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(A)).toBe("one\r\ntwo\nthree\r\nfour");
+    expect(app.tab().mixedEol).toBe(true);
+  });
+
+  it("a reload forgets a line ending picked before, with the rest of the edits", async () => {
+    app = await bootApp();
+    backend.write(A, MIXED);
+    await app.actions.openPaths([A]);
+    await app.actions.setEol("LF");
+    await app.actions.reloadTab(app.tab().id);
+    expect(app.tab()).toMatchObject({ dirty: false, eol: "CRLF", mixedEol: true });
+    app.type("four");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(A)).toBe("one\r\ntwo\nthree\r\nfour");
+  });
+
+  it("the status bar says the line endings are mixed", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    app = await bootApp();
+    backend.write(A, MIXED);
+    await app.actions.openPaths([A]);
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { StatusBar } = await import("../components/StatusBar");
+    const el = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(el);
+    await act(async () => root.render(createElement(StatusBar)));
+    const eol = () => el.querySelector<HTMLButtonElement>(".sb-eol button")!;
+    expect(eol().textContent).toBe("Mixed");
+    await act(async () => {
+      await app.actions.setEol("CRLF");
+    });
+    expect(eol().textContent).toBe("Windows (CRLF)");
+    await act(async () => root.unmount());
+    el.remove();
+  });
+});
+
+describe("a read-only file", () => {
+  it("warns on the first edit, once, and Save says why it fails", async () => {
+    app = await bootApp();
+    backend.write(A, "locked");
+    backend.readOnly.add(A);
+    await app.actions.openPaths([A]);
+    expect(app.tab().readOnly).toBe(true);
+    expect(app.message()).toBeNull();
+    app.type("!");
+    expect(app.message()?.title).toBe("File is read-only");
+    app.actions.closeDialog();
+    app.type("!");
+    expect(app.message()).toBeNull();
+    expect(await app.actions.save()).toBe(false);
+    expect(app.message()?.body).toMatch(/read-only\. Use Save as/);
+    expect(backend.text(A)).toBe("locked");
+  });
+
+  it("a file that is not read-only says nothing", async () => {
+    app = await bootApp();
+    backend.write(A, "free");
+    await app.actions.openPaths([A]);
+    app.type("!");
+    expect(app.message()).toBeNull();
+    expect(app.tab().readOnly).toBe(false);
+  });
+});
+
 // ---- Two windows over one backend ---------------------------------------------
 
 /** Window "main" (the shared fakeWindow) and "window-1", running side by side. */

@@ -256,6 +256,7 @@ function loadStep(id: string, maxBytes: number): Promise<void> {
       stamp: chunk.stamp,
       tailChars:
         chunk.eof || current.tailChars === null ? null : Math.max(0, current.tailChars - chunk.text.length),
+      ...(chunk.mixedEol ? { mixedEol: true } : {}),
     });
     if (current.dirty) markDraftChanged(id);
     if (!chunk.eof) startScan(id);
@@ -314,6 +315,8 @@ interface DiskRead {
   eof: boolean;
   encoding: Encoding;
   eol: Eol;
+  mixedEol: boolean;
+  readOnly: boolean;
 }
 
 /** Reads from byte 0 to about `target`. Restarts if the file changes part way. */
@@ -326,7 +329,8 @@ async function readUpTo(
   for (let attempt = 0; attempt < 3; attempt++) {
     const parts: string[] = [];
     let offset = 0;
-    let first: { stamp: FileStamp; encoding: Encoding; eol: Eol } | null = null;
+    let first: { stamp: FileStamp; encoding: Encoding; eol: Eol; readOnly: boolean } | null = null;
+    let mixedEol = false;
     for (;;) {
       const wanted = Math.min(RELOAD_CHUNK, Math.max(MIN_READ, target - offset));
       const size = offset === 0 ? Math.max(FIRST_CHUNK, wanted) : wanted;
@@ -336,12 +340,13 @@ async function readUpTo(
         first = null;
         break;
       }
-      first ??= { stamp: chunk.stamp, encoding: chunk.encoding, eol: chunk.eol };
+      first ??= { stamp: chunk.stamp, encoding: chunk.encoding, eol: chunk.eol, readOnly: !!chunk.readOnly };
       if (chunk.nextOffset <= offset && !chunk.eof) throw new Error("The file could not be read.");
       parts.push(chunk.text);
+      mixedEol ||= !!chunk.mixedEol;
       offset = chunk.nextOffset;
       if (chunk.eof || target <= FIRST_CHUNK || offset >= target) {
-        return { ...first, text: parts.join(""), nextOffset: offset, eof: chunk.eof };
+        return { ...first, mixedEol, text: parts.join(""), nextOffset: offset, eof: chunk.eof };
       }
     }
   }
@@ -400,8 +405,12 @@ async function applyFromDisk(
     dirty: false,
     externalChange: null,
     hibernated: false,
+    mixedEol: read.mixedEol,
+    readOnly: read.readOnly,
   });
   rt.forceDirty = false;
+  // The editor matches the file again: a line ending picked before is gone with the edits.
+  rt.eolChosen = false;
   rt.cleanDelete = null;
   rt.unreadable = false;
   rt.dismissed = null;
@@ -592,6 +601,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
   }
   rt.cleanDelete = null;
   rt.dismissed = null;
+  const normalized = rt.eolChosen || !samePath;
   rt.eolChosen = false;
   const shared = {
     path: targetPath,
@@ -599,6 +609,9 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
     stamp,
     dirty: !unchanged,
     externalChange: null,
+    // Written just now, so writable; every line got one ending unless kept.
+    readOnly: false,
+    ...(normalized ? { mixedEol: false } : {}),
   };
   if (tailOffset === null) {
     patchTab(id, { ...shared, loadedOffset: stamp.size, fullyLoaded: true, tailChars: null });

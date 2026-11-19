@@ -20,6 +20,13 @@ export interface FileChunk {
   /** Detected from the first chunk; later chunks repeat the known value. */
   eol: Eol;
   stamp: FileStamp;
+  /**
+   * This chunk's text has a line ending other than `eol` (FILES-1). Optional:
+   * a backend that does not report it is taken as "not mixed".
+   */
+  mixedEol?: boolean;
+  /** The file has the read-only attribute, so saving it in place will fail. Optional. */
+  readOnly?: boolean;
 }
 
 export interface SaveRequest {

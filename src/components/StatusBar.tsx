@@ -109,8 +109,11 @@ function Picker<T extends string>({
   cellClass,
   onPick,
   extra = [],
+  text,
 }: {
   value: T;
+  /** What the button shows instead of the value's label. */
+  text?: string;
   label: string;
   labels: Record<T, string>;
   cellClass: string;
@@ -140,7 +143,7 @@ function Picker<T extends string>({
         data-open={!!anchor}
         onClick={(e) => setAnchor(anchor ? null : rectOf(e.currentTarget))}
       >
-        {labels[value]}
+        {text ?? labels[value]}
       </button>
       {anchor && (
         <Menu
@@ -178,10 +181,21 @@ const RightCells = memo(function RightCells() {
   const eol = useApp((s) => activeTab(s)?.eol ?? "CRLF");
   const encoding = useApp((s) => activeTab(s)?.encoding ?? "utf-8");
   const hasPath = useApp((s) => !!activeTab(s)?.path);
+  const mixed = useApp((s) => !!activeTab(s)?.mixedEol);
+  const readOnly = useApp((s) => !!activeTab(s)?.readOnly);
   return (
     <div className="sb-right">
+      {readOnly && <div className="sb-cell div sb-readonly">Read-only</div>}
       <div className="sb-cell div sb-zoom">{`${zoom}%`}</div>
-      <Picker<Eol> value={eol} label="Line endings" labels={EOL_LABEL} cellClass="sb-eol" onPick={(v) => actions.setEol(v)} />
+      {/* A file with more than one kind of line ending (FILES-1): any pick, even the one shown, writes it on every line. */}
+      <Picker<Eol>
+        value={eol}
+        text={mixed ? "Mixed" : undefined}
+        label={mixed ? "Line endings: mixed" : "Line endings"}
+        labels={EOL_LABEL}
+        cellClass="sb-eol"
+        onPick={(v) => actions.setEol(v)}
+      />
       <Picker<Encoding>
         value={encoding}
         label="Encoding"

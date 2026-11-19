@@ -158,6 +158,7 @@ export const editorHost: EditorHost = {
   onDocChange: (id) => {
     loader.noteEdit(id);
     scheduleTitle(id);
+    warnIfReadOnly(id);
   },
   onCursor: (id, info) => {
     const s = state();
@@ -182,6 +183,20 @@ export const editorHost: EditorHost = {
     return path ? dirOf(path) : null;
   },
 };
+
+/** Tabs already told that their file is read-only. */
+const readOnlyWarned = new Set<string>();
+
+/** On the first edit of a read-only file, say so before the work is done, not at Save. */
+function warnIfReadOnly(id: string): void {
+  const tab = getTab(id);
+  if (!tab?.readOnly || readOnlyWarned.has(id)) return;
+  readOnlyWarned.add(id);
+  showMessage(
+    "File is read-only",
+    `${tab.title} is read-only, so your changes cannot be saved to it. Use Save as to keep them in another file.`,
+  );
+}
 
 function reportError(title: string) {
   return (error: unknown) => showMessage(title, errorText(error));
@@ -520,6 +535,11 @@ async function writeAndReport(
     showMessage(
       "File changed on disk",
       "This file was changed by another program, so it was not saved. Reload it to see those changes, or use Save as to keep your text under another name.",
+    );
+  } else if (getTab(id)?.readOnly && pathsEqual(getTab(id)?.path ?? null, path)) {
+    showMessage(
+      "Could not save file",
+      `${fileNameOf(path)} is read-only. Use Save as to keep your changes in another file.\n${result.message}`,
     );
   } else {
     showMessage("Could not save file", result.message);
@@ -1004,13 +1024,19 @@ async function changeFileFormat(patch: { eol: Eol } | { encoding: Encoding }): P
   const id = state().activeId;
   const tab = getTab(id);
   if (!tab) return;
-  if (("eol" in patch && patch.eol === tab.eol) || ("encoding" in patch && patch.encoding === tab.encoding)) return;
+  if ("encoding" in patch && patch.encoding === tab.encoding) return;
+  // In a file with mixed line endings, picking the one shown still writes it on
+  // every line (FILES-1). The unloaded rest may hold the other kind: look first.
+  const sameEol = (t: TabMeta) => "eol" in patch && patch.eol === t.eol && !t.mixedEol;
+  if (sameEol(tab) && tab.fullyLoaded) return;
   try {
     await ensureFullyLoaded(id);
   } catch {
     return;
   }
-  patchTab(id, patch);
+  const loaded = getTab(id);
+  if (!loaded || sameEol(loaded)) return;
+  patchTab(id, "eol" in patch ? { ...patch, mixedEol: false } : patch);
   if ("eol" in patch) loader.markEolChosen(id);
   loader.forceDirty(id);
   loader.scheduleSessionWrite();
