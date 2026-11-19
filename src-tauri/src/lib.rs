@@ -501,6 +501,14 @@ fn paths_from_args(args: impl IntoIterator<Item = String>, cwd: &Path) -> Vec<St
         .collect()
 }
 
+/// Command-line arguments as text. `std::env::args` panics on a name that is
+/// not valid Unicode (NTFS allows lone surrogates), which aborted the launch.
+fn lossy_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<String> {
+    args.into_iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
 /// A second launch. Like Notepad (F1), it opens a new window when windows are on
 /// screen; files go to the window that last had the focus, which follows "Open
 /// files in" and brings itself forward. With no window on screen, the window
@@ -597,7 +605,7 @@ pub fn run() {
             let paths = if hidden {
                 Vec::new()
             } else {
-                paths_from_args(std::env::args().skip(1), &cwd)
+                paths_from_args(lossy_args(std::env::args_os().skip(1)), &cwd)
             };
             app.state::<WindowPaths>().store(MAIN_WINDOW, paths);
             autoupdate::start(app.handle().clone());
@@ -801,6 +809,15 @@ mod tests {
         // Without z-order information, any window under the mouse.
         let free = pick_drop_target(&windows, "main", (100.0, 10.0), None).unwrap();
         assert_eq!((free.label.as_str(), free.x, free.y), ("window-1", 50.0, 5.0));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_name_that_is_not_unicode_does_not_stop_the_launch() {
+        use std::os::windows::ffi::OsStringExt;
+        // "a" followed by a lone high surrogate, legal in an NTFS name.
+        let odd = std::ffi::OsString::from_wide(&[0x61, 0xD800]);
+        assert_eq!(lossy_args([odd, "b.txt".into()]), ["a\u{FFFD}", "b.txt"]);
     }
 
     #[test]
