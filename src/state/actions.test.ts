@@ -76,6 +76,23 @@ describe("opening files", () => {
     expect(app.tab().path).toBe(A);
   });
 
+  // BUGS.md "Smaller open points": an 8.3 short name or a mapped drive vs its UNC
+  // path reached the same file under a name pathsEqual cannot match.
+  it("switches to an open file reached by another name (8.3 name, UNC path)", async () => {
+    backend.aliases.set("C:\\NOTES~1\\a.md", A);
+    backend.aliases.set("\\\\server\\c$\\notes\\a.md", A);
+    await app.actions.openPaths([A]);
+    await app.actions.newTab();
+    await app.actions.openPaths(["C:\\NOTES~1\\a.md"]);
+    await app.actions.openPaths(["\\\\server\\c$\\notes\\a.md"]);
+    expect(app.state().tabs.filter((t) => t.path !== null)).toHaveLength(1);
+    expect(app.tab().path).toBe(A);
+    expect(dialogs.messages).toEqual([]);
+    // A different file is still opened.
+    await app.actions.openPaths([B]);
+    expect(app.state().tabs.filter((t) => t.path !== null)).toHaveLength(2);
+  });
+
   it("opens several files at once, activating the last", async () => {
     await app.actions.openPaths([A, B]);
     expect(app.state().tabs.map((t) => t.title)).toEqual(["a.md", "b.txt"]);

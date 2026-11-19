@@ -351,6 +351,30 @@ function isPristine(tab: TabMeta | undefined): tab is TabMeta {
 
 const findOpen = (path: string) => state().tabs.find((t) => pathsEqual(t.path, path));
 
+/**
+ * The open tab that already shows each path under another name: an 8.3 short
+ * name, a mapped drive vs its UNC path, a link. `pathsEqual` cannot see these, so
+ * Rust compares the files' identities. Only asked when some tab has a path.
+ */
+async function openUnderOtherName(paths: string[]): Promise<Map<string, TabMeta>> {
+  const found = new Map<string, TabMeta>();
+  const tabs = state().tabs.filter((t) => t.path !== null);
+  const fresh = paths.filter((p) => !findOpen(p));
+  if (tabs.length === 0 || fresh.length === 0) return found;
+  const identity = (path: string) => ipc.pathIdentity(path).catch(() => null);
+  const [tabIds, pathIds] = await Promise.all([
+    Promise.all(tabs.map((t) => identity(t.path as string))),
+    Promise.all(fresh.map(identity)),
+  ]);
+  fresh.forEach((path, index) => {
+    const id = pathIds[index];
+    const at = id === null ? -1 : tabIds.indexOf(id);
+    const tab = at >= 0 ? getTab(tabs[at].id) : undefined;
+    if (tab) found.set(path, tab);
+  });
+  return found;
+}
+
 function dedupePaths(paths: string[]): string[] {
   return paths.filter((path, index) => paths.findIndex((other) => pathsEqual(other, path)) === index);
 }
@@ -387,7 +411,10 @@ async function openHere(input: string[]): Promise<void> {
   const paths = await notOpenElsewhere(dedupePaths(input));
   if (paths.length === 0) return;
   const pristine = getActiveTab();
-  const stats = await Promise.all(paths.map((p) => ipc.stat(p).catch(() => null)));
+  const [stats, otherName] = await Promise.all([
+    Promise.all(paths.map((p) => ipc.stat(p).catch(() => null))),
+    openUnderOtherName(paths),
+  ]);
   /** Lines for the error message, and the paths to drop from Recent. */
   const failed: string[] = [];
   const failedPaths: string[] = [];
@@ -396,11 +423,11 @@ async function openHere(input: string[]): Promise<void> {
   const created: string[] = [];
 
   paths.forEach((path, index) => {
-    const existing = findOpen(path);
+    const existing = findOpen(path) ?? otherName.get(path);
     if (existing) {
       target = existing.id;
-      targetPath = path;
-      addRecent(path);
+      targetPath = existing.path ?? path;
+      addRecent(targetPath);
       return;
     }
     const stamp = stats[index];

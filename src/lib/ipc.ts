@@ -92,6 +92,12 @@ export const ipc = {
   save: (req: SaveRequest) => invoke<FileStamp>("file_save", { req }),
   /** Streams the file on a background thread with constant memory. */
   scan: (path: string, encoding: Encoding) => invoke<FileScan>("file_scan", { path, encoding }),
+  /**
+   * The file's identity (volume serial and file index on Windows), equal for every
+   * path that reaches the same file: 8.3 short names, mapped drive vs UNC, links.
+   * Null when the file cannot be opened. A save can change it: compare fresh values only.
+   */
+  pathIdentity: (path: string) => invoke<string | null>("path_identity", { path }),
 
   sessionRead: () => invoke<string | null>("session_read"),
   sessionWrite: (json: string) => invoke<void>("session_write", { json }),

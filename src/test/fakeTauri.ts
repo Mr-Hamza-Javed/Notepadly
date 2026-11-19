@@ -234,6 +234,8 @@ export class FakeBackend {
   closingWindows = new Set<string>();
   /** The paths each window has open (`open_paths_set`). */
   openPaths = new Map<string, string[]>();
+  /** Paths that are another name of a file (an 8.3 name, a mapped drive): alias → real path. */
+  aliases = new Map<string, string>();
   private clock = 1_000;
 
   reset(): void {
@@ -255,6 +257,7 @@ export class FakeBackend {
     this.windows.clear();
     this.closingWindows.clear();
     this.openPaths.clear();
+    this.aliases.clear();
     this.locale = "";
   }
 
@@ -324,6 +327,12 @@ export class FakeBackend {
         return this.stampOf(args.path as string);
       case "file_save":
         return this.save(args.req as SaveArgs);
+      case "path_identity": {
+        // files.rs `path_identity`: the same value for every name of one file.
+        const path = args.path as string;
+        const real = [...this.aliases].find(([alias]) => key(alias) === key(path))?.[1] ?? path;
+        return this.files.has(key(real)) ? `id:${key(real)}` : null;
+      }
       case "file_scan": {
         const encoding = args.encoding as string;
         const all = this.bytes(args.path as string);

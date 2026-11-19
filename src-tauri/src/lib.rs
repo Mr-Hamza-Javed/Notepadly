@@ -67,6 +67,14 @@ async fn file_save(req: SaveRequest) -> Result<FileStamp, String> {
     blocking(move || files::save(&req)).await
 }
 
+/// The file's identity on its volume, the same for every path that reaches it
+/// (8.3 short names, a mapped drive and its UNC path, links). None when the
+/// file cannot be opened.
+#[tauri::command]
+async fn path_identity(path: String) -> Result<Option<String>, String> {
+    blocking(move || Ok(files::path_identity(Path::new(&path)))).await
+}
+
 #[tauri::command]
 async fn file_scan(path: String, encoding: Encoding) -> Result<FileScan, String> {
     blocking(move || files::scan(Path::new(&path), encoding)).await
@@ -690,6 +698,7 @@ pub fn run() {
             file_stat,
             file_save,
             file_scan,
+            path_identity,
             session_read,
             session_write,
             draft_read,

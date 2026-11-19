@@ -1362,6 +1362,42 @@ fn must_write_in_place(target: &Path) -> bool {
     is_stream_path(target) || link_count(target).is_some_and(|n| n > 1)
 }
 
+/// One file's identity, the same for every path that reaches it: an 8.3 short
+/// name, a mapped drive and its UNC path, `..` segments, links. On Windows the
+/// volume serial number and the file index; elsewhere the canonical path. None
+/// when the file cannot be opened. A save through ReplaceFileW gives the file a
+/// new index, so compare identities taken at the same time, never stored ones.
+#[cfg(windows)]
+pub fn path_identity(path: &Path) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let file = open_shared(path).ok()?;
+    // SAFETY: the struct is plain data that the call fills in; the handle stays
+    // open (owned by `file`) for the duration of the call.
+    let info = unsafe {
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        let ok = GetFileInformationByHandle(file.as_raw_handle() as _, &mut info);
+        (ok != 0).then_some(info)?
+    };
+    Some(identity_key(
+        info.dwVolumeSerialNumber,
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
+}
+
+#[cfg(not(windows))]
+pub fn path_identity(path: &Path) -> Option<String> {
+    let real = fs::canonicalize(path).ok()?;
+    real.is_file().then(|| real.to_string_lossy().into_owned())
+}
+
+#[cfg(windows)]
+fn identity_key(volume: u32, index: u64) -> String {
+    format!("{volume:08x}:{index:016x}")
+}
+
 pub fn save(req: &SaveRequest) -> Result<FileStamp, String> {
     let target = resolve_target(Path::new(&req.path));
     ensure_fresh(&target, req.expected_stamp)?;
@@ -2353,6 +2389,23 @@ mod tests {
         assert_eq!(write_in_place(&path, &stale, b"x").unwrap_err(), STALE);
         assert_eq!(fs::read(&path).unwrap(), b"\xEF\xBB\xBFh-tail");
         assert_eq!(dir.entries(), 1);
+    }
+
+    // BUGS.md "Smaller open points": one file reached by two spellings of its
+    // path opened in two tabs.
+    #[test]
+    fn path_identity_is_the_same_for_every_path_to_a_file() {
+        let dir = TestDir::new();
+        let path = dir.file(b"x");
+        fs::create_dir_all(dir.0.join("sub")).unwrap();
+        let roundabout = dir.0.join("sub").join("..").join("doc.txt");
+        let id = path_identity(&path).unwrap();
+        assert_eq!(path_identity(&roundabout).as_deref(), Some(id.as_str()));
+        let other = dir.0.join("other.txt");
+        fs::write(&other, b"x").unwrap();
+        assert_ne!(path_identity(&other).unwrap(), id);
+        assert_eq!(path_identity(&dir.0.join("missing.txt")), None);
+        assert_eq!(path_identity(&dir.0), None);
     }
 
     // BUGS.md FILES-3: a failed in-place write left the file damaged.
