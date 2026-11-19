@@ -16,7 +16,7 @@ tauri-build = { version = "~2.7", features = [] }
 [dependencies]
 # Tauri and its plugins are pinned to one minor series each (~x.y), so a plugin
 # release that needs a newer tauri is never picked up alone: update them together.
-tauri ={ version = "~2.12", features = ["protocol-asset"] }
+tauri = { version = "~2.12", features = ["protocol-asset"] }
 tauri-plugin-dialog = "~2.8"
 tauri-plugin-opener = "~2.7"
 tauri-plugin-single-instance = "~2.5"

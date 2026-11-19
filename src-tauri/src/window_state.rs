@@ -187,9 +187,20 @@ impl WindowPaths {
         inner.open.remove(label);
     }
 
-    /// Replaces the list of files `label` has open.
-    pub fn set_open_paths(&self, label: &str, paths: &[String]) {
-        let keys: HashSet<String> = paths.iter().map(|p| path_key(p)).collect();
+    /// Replaces the list of files `label` has open. `identify` gives a file's
+    /// identity on disk (`files::path_identity`), so a file reached by another
+    /// path (an 8.3 short name, a mapped drive and its UNC path, a hard link) is
+    /// still found by `holder_of`.
+    pub fn set_open_paths(
+        &self,
+        label: &str,
+        paths: &[String],
+        identify: impl Fn(&str) -> Option<String>,
+    ) {
+        let keys: HashSet<String> = paths
+            .iter()
+            .flat_map(|p| open_keys(p, identify(p).as_deref()))
+            .collect();
         let mut inner = self.lock();
         if keys.is_empty() {
             inner.open.remove(label);
@@ -199,8 +210,15 @@ impl WindowPaths {
     }
 
     /// Another window that has `path` open and is on screen and staying.
-    pub fn holder_of(&self, label: &str, path: &str, windows: &[WindowView]) -> Option<String> {
-        let key = path_key(path);
+    /// `identity` is the file's identity on disk, when it could be read.
+    pub fn holder_of(
+        &self,
+        label: &str,
+        path: &str,
+        identity: Option<&str>,
+        windows: &[WindowView],
+    ) -> Option<String> {
+        let wanted = open_keys(path, identity);
         let now = Instant::now();
         let mut inner = self.lock();
         let mut candidates: Vec<&WindowView> = windows.iter().filter(|(l, _)| l != label).collect();
@@ -210,13 +228,23 @@ impl WindowPaths {
             let holds = inner
                 .open
                 .get(other)
-                .is_some_and(|keys| keys.contains(&key));
+                .is_some_and(|keys| wanted.iter().any(|k| keys.contains(k)));
             if holds && !inner.closing.contains(other) && inner.on_screen(other, *visible, now) {
                 return Some(other.clone());
             }
         }
         None
     }
+}
+
+/// The keys an open file is known by: its normalised path, and its identity on
+/// disk when known. The prefixes keep a path from ever equalling an identity.
+fn open_keys(path: &str, identity: Option<&str>) -> Vec<String> {
+    let mut keys = vec![format!("path:{}", path_key(path))];
+    if let Some(id) = identity {
+        keys.push(format!("id:{id}"));
+    }
+    keys
 }
 
 /// What a second launch of the app does (F1, `on_second_instance`).
@@ -568,33 +596,88 @@ mod tests {
     fn a_file_open_in_another_window_is_found() {
         let state = WindowPaths::default();
         let windows = views(&[("main", true), ("window-1", true), ("window-2", true)]);
-        state.set_open_paths("window-1", &[r"C:\Notes\a.md".into(), r"C:\b.txt".into()]);
+        state.set_open_paths(
+            "window-1",
+            &[r"C:\Notes\a.md".into(), r"C:\b.txt".into()],
+            |_| None,
+        );
         assert_eq!(
             state
-                .holder_of("main", "c:/notes/./x/../A.md", &windows)
+                .holder_of("main", "c:/notes/./x/../A.md", None, &windows)
                 .as_deref(),
             Some("window-1")
         );
         // Not the asking window itself.
-        assert_eq!(state.holder_of("window-1", r"C:\b.txt", &windows), None);
-        assert_eq!(state.holder_of("main", r"C:\other.txt", &windows), None);
+        assert_eq!(
+            state.holder_of("window-1", r"C:\b.txt", None, &windows),
+            None
+        );
+        assert_eq!(
+            state.holder_of("main", r"C:\other.txt", None, &windows),
+            None
+        );
         // The list is replaced, not added to.
-        state.set_open_paths("window-1", &[r"C:\b.txt".into()]);
-        assert_eq!(state.holder_of("main", r"C:\Notes\a.md", &windows), None);
+        state.set_open_paths("window-1", &[r"C:\b.txt".into()], |_| None);
+        assert_eq!(
+            state.holder_of("main", r"C:\Notes\a.md", None, &windows),
+            None
+        );
         // A window that is closing, hidden in the background, or gone holds nothing.
         state.start_closing("window-1", &windows);
-        assert_eq!(state.holder_of("main", r"C:\b.txt", &windows), None);
+        assert_eq!(state.holder_of("main", r"C:\b.txt", None, &windows), None);
         state.cancel_closing("window-1");
         let hidden = views(&[("main", true), ("window-1", false)]);
-        assert_eq!(state.holder_of("main", r"C:\b.txt", &hidden), None);
+        assert_eq!(state.holder_of("main", r"C:\b.txt", None, &hidden), None);
         state.entered_background("window-1");
-        assert_eq!(state.holder_of("main", r"C:\b.txt", &windows), None);
-        state.set_open_paths("window-2", &[r"C:\b.txt".into()]);
+        assert_eq!(state.holder_of("main", r"C:\b.txt", None, &windows), None);
+        state.set_open_paths("window-2", &[r"C:\b.txt".into()], |_| None);
         state.forget("window-2");
-        assert_eq!(state.holder_of("main", r"C:\b.txt", &windows), None);
-        state.set_open_paths("window-2", &[r"C:\b.txt".into()]);
-        state.set_open_paths("window-2", &[]);
-        assert_eq!(state.holder_of("main", r"C:\b.txt", &windows), None);
+        assert_eq!(state.holder_of("main", r"C:\b.txt", None, &windows), None);
+        state.set_open_paths("window-2", &[r"C:\b.txt".into()], |_| None);
+        state.set_open_paths("window-2", &[], |_| None);
+        assert_eq!(state.holder_of("main", r"C:\b.txt", None, &windows), None);
+    }
+
+    // BUGS.md WIN-3 (rest): the paths were compared as text only, so an 8.3 name
+    // or a mapped drive opened a second copy of a file another window had open.
+    #[test]
+    fn a_file_open_in_another_window_is_found_by_its_identity() {
+        let state = WindowPaths::default();
+        let windows = views(&[("main", true), ("window-1", true)]);
+        state.set_open_paths("window-1", &[r"\\server\share\notes.md".into()], |p| {
+            (p == r"\\server\share\notes.md").then(|| "0000abcd:0000000000000007".to_owned())
+        });
+        // Z: is mapped to \\server\share: another spelling, the same file.
+        assert_eq!(
+            state
+                .holder_of(
+                    "main",
+                    r"Z:\notes.md",
+                    Some("0000abcd:0000000000000007"),
+                    &windows
+                )
+                .as_deref(),
+            Some("window-1")
+        );
+        // Another file, or an identity that could not be read, is not a match.
+        assert_eq!(
+            state.holder_of(
+                "main",
+                r"Z:\other.md",
+                Some("0000abcd:0000000000000008"),
+                &windows
+            ),
+            None
+        );
+        assert_eq!(
+            state.holder_of("main", r"Z:\notes.md", None, &windows),
+            None
+        );
+        // A path can never equal an identity, whatever its text.
+        assert_eq!(
+            state.holder_of("main", "0000abcd:0000000000000007", None, &windows),
+            None
+        );
     }
 
     #[test]

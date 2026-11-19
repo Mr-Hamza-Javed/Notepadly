@@ -206,8 +206,30 @@ fn window_close_cancelled(window: WebviewWindow, state: State<'_, WindowPaths>) 
 /// Replaces the list of files the calling window has open (WIN-3). Call it
 /// whenever a tab opens, closes or is saved under a new name.
 #[tauri::command]
-fn open_paths_set(window: WebviewWindow, state: State<'_, WindowPaths>, paths: Vec<String>) {
-    state.set_open_paths(window.label(), &paths);
+async fn open_paths_set(
+    window: WebviewWindow,
+    state: State<'_, WindowPaths>,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    // Each file's identity is read from disk, so this runs off the main thread.
+    let identities = blocking(move || {
+        Ok(paths
+            .into_iter()
+            .map(|p| {
+                let id = files::path_identity(Path::new(&p));
+                (p, id)
+            })
+            .collect::<Vec<_>>())
+    })
+    .await?;
+    let paths: Vec<String> = identities.iter().map(|(p, _)| p.clone()).collect();
+    state.set_open_paths(window.label(), &paths, |p| {
+        identities
+            .iter()
+            .find(|(q, _)| q == p)
+            .and_then(|(_, id)| id.clone())
+    });
+    Ok(())
 }
 
 /// When another window that is on screen has `path` open (WIN-3): brings that
@@ -220,7 +242,14 @@ fn path_open_elsewhere(
     path: String,
 ) -> Option<String> {
     let app = window.app_handle();
-    let label = state.holder_of(window.label(), &path, &window_views(app))?;
+    // An 8.3 name or a mapped drive is the same file as its long or UNC path.
+    let identity = files::path_identity(Path::new(&path));
+    let label = state.holder_of(
+        window.label(),
+        &path,
+        identity.as_deref(),
+        &window_views(app),
+    )?;
     let holder = app.get_webview_window(&label)?;
     if state.is_ready(&label) {
         let _ = app.emit_to(
