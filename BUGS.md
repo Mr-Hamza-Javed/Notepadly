@@ -476,6 +476,7 @@ Reviewed `src-tauri/src` (files, store, lib, autoupdate, fonts, background), `ta
 | RUST-1 | A tab dragged out could land in a window hidden behind another one, or behind the source window | `tab_drop_target` asks Windows for the window in front of the mouse (`WindowFromPoint`) | `39a4ac8` |
 | RUST-2 | Opening a file whose name is not valid Unicode (lone surrogate) aborted the launch (`std::env::args` panics) | Arguments read with `args_os`, converted lossily | `b9cf3b2` |
 | RUST-3 | Drafts and sessions were renamed into place unflushed; a power cut could leave a draft empty or zeroed with the old copy gone | Temp file synced before the rename | `6d416b5` |
+| PREV-9 / SEC-2 (images) | Print loaded images from another computer's share, sending the NTLM hash there | Print uses the same `mayLoadImageFrom` check as the preview (PREV-3) | `8aba8d8` |
 
 ## 2.4 Features added
 
