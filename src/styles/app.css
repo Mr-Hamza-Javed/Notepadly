@@ -660,3 +660,39 @@ a { color: var(--link); }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
 .settings-fallback { position: fixed; inset: 0; z-index: 50; background: var(--page); }
+
+/*
+ * Windows contrast themes (BUGS.md UI-10). Forced colours drop backgrounds, so marks
+ * drawn only with a background (the unsaved dot, the active tab, the menu's hot
+ * item, Find highlights) would vanish. Use system colours and borders instead.
+ */
+@media (forced-colors: active) {
+  .tab-close .dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+  .tab[data-active="true"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+  .tab[data-active="true"]::before,
+  .tab[data-active="true"]::after { display: none; }
+  .menu-item.hot,
+  .menu-item.sel {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  .menu-item.disabled.hot { color: GrayText; }
+  .notepadly-cm .cm-find-match {
+    forced-color-adjust: none;
+    background: transparent;
+    color: CanvasText;
+    outline: 1px solid Highlight;
+  }
+  .notepadly-cm .cm-find-current {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+}

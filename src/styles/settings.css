@@ -201,3 +201,20 @@ button.card-head:hover .exp-chev { background: var(--hover); }
   .settings-grid { grid-template-columns: minmax(0, 1fr); padding-right: 16px; }
   .about { padding-top: 24px; }
 }
+
+/* Windows contrast themes (BUGS.md UI-10): the knob and the radio dot are backgrounds. */
+@media (forced-colors: active) {
+  .toggle-track,
+  .toggle-knob,
+  .radio-mark { forced-color-adjust: none; }
+  .toggle-track { border-color: CanvasText; background: Canvas; }
+  .toggle-knob { background: CanvasText; }
+  .toggle[aria-checked="true"] .toggle-track,
+  .toggle[aria-checked="true"]:hover .toggle-track { background: Highlight; border-color: Highlight; }
+  .toggle[aria-checked="true"] .toggle-knob { background: HighlightText; }
+  .radio-mark { border-color: CanvasText; background: Canvas; }
+  .radio[aria-checked="true"] .radio-mark,
+  .radio[aria-checked="true"]:hover .radio-mark { border-color: Highlight; background: HighlightText; }
+  .toggle:disabled .toggle-track,
+  .toggle[aria-disabled="true"] .toggle-track { border-color: GrayText; }
+}
