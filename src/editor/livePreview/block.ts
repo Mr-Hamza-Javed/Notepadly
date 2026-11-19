@@ -7,13 +7,14 @@
 import { syntaxTree } from "@codemirror/language";
 import {
   EditorSelection,
+  Prec,
   StateEffect,
   StateField,
   type EditorState,
   type Range,
   type Transaction,
 } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { Decoration, EditorView, keymap, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
 import { isDarkTheme } from "../theme";
 import {
@@ -491,4 +492,42 @@ const blockEntry = ViewPlugin.fromClass(
   },
 );
 
-export const blockPreview = [blockField, viewportReporter, atomicBlocks, tableFocus, blockEntry];
+/**
+ * Up or Down from the line next to a rendered table, maths block or diagram stops on the
+ * block's edge, so `tableFocus` and `blockEntry` enter it as they do for Left and Right.
+ * With real layout, CodeMirror's vertical motion jumps over a block widget to the line past
+ * it, so the edge was never reached and the block was skipped (BUGS.md H2, found by e2e).
+ */
+export function verticalIntoBlock(view: EditorView, forward: boolean): boolean {
+  const { state } = view;
+  const main = state.selection.main;
+  if (!main.empty || state.selection.ranges.length > 1) return false;
+  const line = state.doc.lineAt(main.head);
+  const edge = forward ? line.to + 1 : line.from - 1;
+  if (edge < 0 || edge > state.doc.length) return false;
+  let block: Span | null = null;
+  state.field(blockField).shown.between(edge, edge, (from, to, deco) => {
+    const widget = deco.spec.widget;
+    if (!(widget instanceof TableWidget || widget instanceof MathWidget || widget instanceof MermaidWidget)) return;
+    if (forward ? from === edge : to === edge) {
+      block = { from, to };
+      return false;
+    }
+  });
+  if (!block) return false;
+  // A wrapped line first moves to its next visual row.
+  const target = view.moveVertically(main, forward);
+  if (forward ? target.head <= line.to : target.head >= line.from) return false;
+  const { from, to } = block as Span;
+  view.dispatch({ selection: { anchor: forward ? from : to }, scrollIntoView: true, userEvent: "select" });
+  return true;
+}
+
+const verticalBlockKeys = Prec.high(
+  keymap.of([
+    { key: "ArrowDown", run: (view) => verticalIntoBlock(view, true) },
+    { key: "ArrowUp", run: (view) => verticalIntoBlock(view, false) },
+  ]),
+);
+
+export const blockPreview = [blockField, viewportReporter, atomicBlocks, tableFocus, blockEntry, verticalBlockKeys];

@@ -49,6 +49,22 @@ jobs:
       - name: Vitest
         run: npx vitest run --reporter=default --reporter=github-actions
 
+  e2e:
+    name: End-to-end tests (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - name: Playwright
+        run: npm run e2e
+
   rust-format:
     name: Rust format
     runs-on: ubuntu-latest

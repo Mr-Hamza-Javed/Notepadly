@@ -117,6 +117,37 @@ describe("a table cell mirrors its caret into the editor selection", () => {
     expect(engine.getText("t").split("\n")[2]).toBe("| apple piea\\|b c | 2 |");
   });
 
+  it("M2: F5 and Paste in a focused cell insert at the cell's own caret, as typing does", async () => {
+    // Through the editor selection, a space typed at the end of the cell was lost ("Due " then
+    // F5 gave "Due4:49 PM"): the cell's markdown is trimmed. jsdom has no execCommand, so the
+    // browser's insertion is played here: new text in the cell, then the input event.
+    mountEngine();
+    engine.createDoc("t", `${fruit}\n\nafter`, "formatted");
+    engine.activate("t");
+    await tick();
+    const cell = await focusCell(document, "apple");
+    typeInCell(cell, "apple ");
+    const calls: unknown[][] = [];
+    const doc = document as Document & { execCommand: (...args: unknown[]) => boolean };
+    const original = doc.execCommand;
+    doc.execCommand = (...args: unknown[]) => {
+      calls.push(args);
+      if (args[0] === "insertText") typeInCell(cell, (cell.textContent ?? "") + String(args[2]));
+      return true;
+    };
+    try {
+      engine.insertText("pie");
+      expect(calls).toEqual([["insertText", false, "pie"]]);
+      expect(engine.getText("t").split("\n")[2]).toBe("| apple pie | 2 |");
+      // Cut from the menu deletes in the cell the same way.
+      await selectInCell(cell, 6, 9);
+      engine.deleteSelection();
+      expect(calls[1]).toEqual(["delete"]);
+    } finally {
+      doc.execCommand = original;
+    }
+  });
+
   it("typing keeps the editor selection on the caret, with escaped pipes", async () => {
     const view = preview(`${fruit}\n\nafter`);
     const cell = await focusCell(view.dom, "apple");
@@ -155,8 +186,9 @@ describe("leaving a table from the keyboard", () => {
     expect(engine.getText("t")).toBe(`before\n\n${fruit}`);
     expect(document.activeElement).toBe(cell);
     key(cell, { key: "Escape" });
-    // A line to land on is added, but it is not an edit: no undo step, no unsaved dot.
-    expect(engine.getText("t")).toBe(`before\n\n${fruit}\n`);
+    // A blank line and a line to land on are added, but they are not an edit: no undo step,
+    // no unsaved dot. Without the blank line, what is typed next would be a table row.
+    expect(engine.getText("t")).toBe(`before\n\n${fruit}\n\n`);
     expect(log.dirty.filter(([, dirty]) => dirty)).toEqual([]);
     const view = EditorView.findFromDOM(document.querySelector(".cm-editor") as HTMLElement)!;
     expect(undoDepth(view.state)).toBe(0);

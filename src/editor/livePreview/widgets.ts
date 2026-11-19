@@ -570,6 +570,23 @@ class TableController {
     return true;
   }
 
+  /**
+   * Edits the focused cell at its caret the way typing does (the `input` event then writes the
+   * cell), for Paste, F5 and Cut from the menus. Going through the editor selection lost a space
+   * typed at the end of the cell, since the cell's markdown is trimmed: "Due " then F5 gave
+   * "Due4:49 PM" (found by e2e). False when there is no focused cell or the browser cannot.
+   */
+  editInCell(text: string | null): boolean {
+    const cell = this.active ? this.cellAt(this.active.row, this.active.col) : null;
+    const selected = cell && this.hasFocus() ? cellSelection(cell) : null;
+    if (!selected || (text === null && selected.anchor === selected.head)) return false;
+    try {
+      return text === null ? document.execCommand("delete") : document.execCommand("insertText", false, text);
+    } catch {
+      return false;
+    }
+  }
+
   /** Moves focus into the cell at a document position (the editor's cursor went into the table). */
   focusAt(anchor: number, head: number): void {
     const cell = this.cellFor(Math.min(anchor, head));
@@ -801,7 +818,7 @@ class TableController {
   /**
    * Puts the editor cursor on the line just before or after the table and focuses the editor.
    * With no line there, arrow keys stay in the cell, like on the first or last line of a
-   * document (BUGS.md H3, M5). Escape at the end of the document adds a line to land on, kept
+   * document (BUGS.md H3, M5). Escape at the end of the document adds a blank line and a line to land on, kept
    * out of the undo history so the tab does not turn unsaved. While the rest of the file is
    * still loading, that line would end up in the middle of the file, so Escape stays in the
    * cell (BUGS.md TAB-4).
@@ -811,9 +828,11 @@ class TableController {
     const doc = this.view.state.doc;
     if (after && end >= doc.length) {
       if (!escape || !previewContext.isFullyLoaded()) return;
+      // A blank line first: text typed on a line right under a table is a table row in GFM,
+      // so the line to land on alone would put what is typed next back in the table.
       this.view.dispatch({
-        changes: { from: doc.length, insert: "\n" },
-        selection: { anchor: doc.length + 1 },
+        changes: { from: doc.length, insert: "\n\n" },
+        selection: { anchor: doc.length + 2 },
         annotations: Transaction.addToHistory.of(false),
         scrollIntoView: true,
       });
@@ -1011,20 +1030,26 @@ export const tableFocus = ViewPlugin.fromClass(
       const queryChanged = findQueryOf(update.state) !== findQueryOf(update.startState);
       if (!update.selectionSet && !update.docChanged && !update.focusChanged && !queryChanged) return;
       const keyboard = update.transactions.some((tr) => tr.isUserEvent("select") && !tr.isUserEvent("select.pointer"));
-      this.schedule(keyboard, update.startState.selection.main.head);
+      const typed = update.docChanged && update.transactions.some((tr) => tr.isUserEvent("input") || tr.isUserEvent("delete"));
+      this.schedule(keyboard, typed, update.startState.selection.main.head);
     }
 
-    private schedule(keyboard: boolean, oldHead: number): void {
+    private typed = false;
+
+    private schedule(keyboard: boolean, typed: boolean, oldHead: number): void {
+      this.typed ||= typed;
       if (this.scheduled) return;
       this.scheduled = true;
       // Positions of widgets are only known once this update has drawn them.
       queueMicrotask(() => {
         this.scheduled = false;
-        this.reconcile(keyboard, oldHead);
+        const typedNow = this.typed;
+        this.typed = false;
+        this.reconcile(keyboard, typedNow, oldHead);
       });
     }
 
-    private reconcile(keyboard: boolean, oldHead: number): void {
+    private reconcile(keyboard: boolean, typed: boolean, oldHead: number): void {
       const view = this.view;
       if (!view.dom.isConnected) return;
       const main = view.state.selection.main;
@@ -1035,6 +1060,10 @@ export const tableFocus = ViewPlugin.fromClass(
       const { from, to } = table.range();
       if (main.empty && (main.head === from || main.head === to)) {
         if (keyboard) table.enter(oldHead < from, oldHead === to + 1);
+        // Typing on the line right under a table can make that line a table row (GFM lazy
+        // rows), leaving the cursor at the hidden end of the table: the next keys then went
+        // to the start of the document. Carry on in the new row's cell (found by e2e).
+        else if (typed && main.head === to) table.focusAt(main.head, main.head);
       } else if (main.from > from && main.to < to) {
         table.focusAt(main.anchor, main.head);
       }

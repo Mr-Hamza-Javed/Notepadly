@@ -7,7 +7,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, type WidgetType } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 import { markdownSupport } from "../markdown";
-import { blockField, blockPreview } from "./block";
+import { blockField, blockPreview, verticalIntoBlock } from "./block";
 import { cursorCharLeft, cursorCharRight } from "@codemirror/commands";
 import { inlinePreview } from "./inline";
 import { previewContext, resolveImageSrc } from "./context";
@@ -317,6 +317,55 @@ describe("entering maths and diagrams from the keyboard", () => {
     expect(view.state.selection.main.head).toBe(text.indexOf("x^2") + 3);
     engine.destroy();
   });
+
+  // With real layout CodeMirror's Up/Down jump over a block widget to the line past it, so the
+  // edge that enters the block was never reached (found by the e2e tests in e2e/navigation).
+  it("H2: Down from the line above a maths block opens it on the formula", async () => {
+    const text = "top\n$$\nx^2\n$$\nend";
+    const view = await focusedEngineView(text);
+    view.dispatch({ selection: { anchor: 1 } });
+    await tick();
+    expect(verticalIntoBlock(view, true)).toBe(true);
+    await tick();
+    expect(view.state.field(blockField).editing).toBe(4);
+    expect(view.state.selection.main.head).toBe(text.indexOf("x^2"));
+    engine.destroy();
+  });
+
+  it("H2: Up from the line below a table stops on its edge; other lines move as usual", async () => {
+    const table = "| a | b |\n| - | - |\n| x | y |";
+    const text = `top\n${table}\n\nend`;
+    const view = await focusedEngineView(text);
+    const below = text.indexOf("\n\nend") + 1;
+    view.dispatch({ selection: { anchor: below } });
+    expect(verticalIntoBlock(view, false)).toBe(true);
+    expect(view.state.selection.main.head).toBe(4 + table.length);
+    view.dispatch({ selection: { anchor: text.indexOf("end") } });
+    expect(verticalIntoBlock(view, false)).toBe(false);
+    engine.destroy();
+  });
+
+  it("typing on the empty last line right under a table carries on in the new row's cell", async () => {
+    // jsdom only focuses cells with a tabindex; give every cell one as it is made.
+    const observer = new MutationObserver(() => {
+      for (const cell of document.querySelectorAll<HTMLElement>(".cm-md-table th, .cm-md-table td")) cell.tabIndex = 0;
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    const text = "| a | b |\n| - | - |\n| x | y |\n";
+    const view = await focusedEngineView(text);
+    view.dispatch({ selection: { anchor: text.length } });
+    await tick();
+    // In GFM the typed line is now a table row: the cursor sits at the hidden end of the table.
+    view.dispatch({ changes: { from: text.length, insert: "n" }, selection: { anchor: text.length + 1 }, userEvent: "input.type" });
+    await tick();
+    await tick();
+    const active = document.activeElement as HTMLElement;
+    expect(active.closest(".cm-md-table")).not.toBeNull();
+    expect(active.dataset.row).toBe("3");
+    expect(active.textContent).toBe("n");
+    observer.disconnect();
+    engine.destroy();
+  });
 });
 
 describe("Find matches in table cells", () => {
@@ -384,7 +433,7 @@ describe("leaving a table at the end of a partly loaded file", () => {
     loaded = true;
     key(cell, { key: "Escape" });
     await tick();
-    expect(engine.getText("t1")).toBe(`${text}\n`);
+    expect(engine.getText("t1")).toBe(`${text}\n\n`);
     engine.destroy();
   });
 });
