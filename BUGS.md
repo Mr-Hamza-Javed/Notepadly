@@ -13,7 +13,7 @@
 - `npm run e2e`: 44 Playwright tests in real Chromium pass.
 - `cargo test --lib`: 125 Rust tests pass on Windows; `cargo clippy -D warnings` and `cargo fmt --check` are clean.
 - `npm run typecheck` is clean; `npm run app:build` builds the app and installer.
-- Released as v0.2.0. The four big items left (M13 rest, H8 rest, big-table typing speed, F2 single-tab drag) are for the next version; see section 1.0c.
+- Released as v0.2.0. The three big items left (M13 rest, H8 rest, big-table typing speed) are for the next version; see section 1.0c.
 
 | Mark | Meaning |
 | --- | --- |
@@ -45,7 +45,6 @@ First run of everything on real Windows (branch `fix/remaining-bugs`).
 - **M13 rest:** Find, Replace all, Select all, Ctrl+End and a line-ending/encoding change still load a big file in full (cancellable). Needs streaming Rust commands.
 - **H8 rest:** a save of a big, fully loaded file still sends the whole text over IPC.
 - **Table typing speed:** typing in a cell of a 3,000-row table measured ~290 ms per key on this machine (e2e `performance.spec.ts`; ~150 ms was measured on Linux).
-- **F2:** a single-tab window does not follow the mouse live while its tab is dragged.
 - **To check by hand on Windows:** the 1.4 list (needs mouse and keyboard in the real app), and W8 on FAT/exFAT and network drives.
 - **Tests still to write (1.5):** M21 test that fails without the fix, the updater's network path, MERGE-1 race, fake backend gaps.
 
@@ -206,20 +205,15 @@ All of these now run and pass on Windows, and `npm run app:build` builds (sectio
 
 | # | What is still missing | Where |
 | --- | --- | --- |
-| H2 | Maths and Mermaid blocks can be entered only by double-click or the edit button, not with the arrow keys (tables work) | `src/editor/livePreview/widgets.ts`, `block.ts` |
+| H2 | Maths and Mermaid blocks can be entered only by double-click or the edit button, not with the arrow keys (tables work) **✔ Fixed:** e2e `navigation.spec.ts` (Up, Down and Right into maths and Mermaid) passes. | `src/editor/livePreview/widgets.ts`, `block.ts` |
 | H6 | Live preview turns off for the whole document when one line is over 20,000 characters. It now comes back when the line is gone, but it should skip only that line **✔ Fixed 19 Nov:** lines over 10,000 characters show as source; preview off only above 20 MB. | `src/editor/index.ts` (`checkDegrade`), live preview plugins |
 | H8 | Drafts are written less often for big files, but each draft and each Save still send the whole text over IPC **✔ Partly fixed 19 Nov:** loaded chunks no longer rewrite the draft; a save of a big file still sends the whole text. | `src/lib/loader.ts` |
 | L5 | "characters" counts UTF-16 units, so an emoji counts as 2. A code-point count needs an incremental count per document and a Rust change in `scan()` **✔ Fixed 19 Nov:** code points counted (`src/editor/charCount.ts`, Rust `scan()`). | engine, `src-tauri/src/files.rs` |
 | L11 | An unclosed `%%` restyles up to 5,000 lines, and unclosed front matter up to 1,000 lines (an unclosed `$$` is fixed) **✔ Found fixed 20 Nov:** an unclosed `%%` ends at the first blank line; front matter needs its closing line. | `src/editor/markdown.ts` |
-| L16 | A draft that cannot be read is deleted. `materialise` treats a read error like a missing draft. Needs a "draft unreadable" state that keeps the draft and tells the user | `src/lib/loader.ts` |
+| L16 | A draft that cannot be read is deleted. `materialise` treats a read error like a missing draft. Needs a "draft unreadable" state that keeps the draft and tells the user **✔ Fixed:** an unreadable draft is kept and the user is told (`materialise`). | `src/lib/loader.ts` |
 | M12 | Hibernation keeps the undo history now, but callout fold state is still reset on wake **✔ Fixed 19 Nov:** folds kept over hibernation, reload, restart and tab moves. | `src/lib/loader.ts`, engine |
 | M15 | No warning when a binary file is opened as text (it is damaged on save). Code pages other than 874, 932, 936, 949, 950 and 1250-1258 (for example 866) are read as windows-1252 **✔ Fixed 19 Nov:** binary warning; DOS code pages 437, 720, 737, 775, 850, 852, 855, 857, 858, 860-865, 869 and an "OEM (DOS)" encoding. | `src-tauri/src/files.rs` |
 | W8 | Long paths are fixed. FAT/exFAT USB drives and network shares still need a check | `src-tauri/src/files.rs` |
-
-### F2. Dragging tabs between windows: what is left
-- **Undo history:** ✔ fixed 19 Nov: history, saved point and folds move with the tab (skipped over 4 MB of history JSON or 8M characters).
-- **Single-tab window:** with one tab, the window does not follow the mouse live during the drag. On release a new window opens under the mouse and the old one closes (a short flash). Moving the window natively (`startDragging`) would lose the drop-on-another-window case.
-- **Overlapping windows:** ✔ already handled by RUST-1 (`WindowFromPoint` + `GetAncestor`); this line was out of date.
 
 ## 1.4 To check in the real app on Windows ⚠️
 
@@ -537,6 +531,7 @@ Reviewed `src/editor/index.ts`, `markdown.ts`, `commands.ts`, `find.ts`, `tableM
 
 ## 2.1 Decisions confirmed by the owner
 - **WIN-2:** with "Continue previous session", closing one of several windows asks "save changes?" for its unsaved tabs and removes its session, as in Windows Notepad. The last window, and every window on File > Exit, keep their tabs as drafts without asking. Confirmed as the intended behaviour on 19 November 2026.
+- **F2 single-tab window:** dragging the only tab of a window does not move the window live; on release a new window opens under the mouse and the old one closes. Confirmed as not a bug on 20 November 2026.
 
 ## 2.2 Bugs from the first report that are fixed
 
@@ -674,7 +669,7 @@ Reviewed `src/editor/index.ts`, `markdown.ts`, `commands.ts`, `find.ts`, `tableM
 - With no window on screen, the background window comes back as before.
 - One process is kept, so drafts, the session and settings stay in one place. ⚠️ see 1.4.
 
-### F2. Tabs can be dragged out to a new window or between windows — mostly done (`cb1f8a5`, `3b621a9`)
+### F2. Tabs can be dragged out to a new window or between windows — done (`cb1f8a5`, `3b621a9`)
 - **Gesture** (`TitleBar.tsx`, `src/lib/tabDrag.ts`):
   - Pulling a tab 32 px above or below the strip, or out of the window, dims it and stops reordering. Releasing there moves it.
   - Pointer capture keeps the drag going outside the window.
@@ -687,7 +682,9 @@ Reviewed `src/editor/index.ts`, `markdown.ts`, `commands.ts`, `find.ts`, `tableM
   - The draft now belongs to the new window's session.
 - **Safety:** the source window removes the tab only after the target confirms. After 10 s with no answer the tab stays.
 - **Last tab:** dragging out the last tab closes the old window, so no empty window is left.
-- **Still open:** see Part 1.3.
+- **Undo history:** history, saved point and folds move with the tab (skipped over 4 MB of history JSON or 8M characters).
+- **Overlapping windows:** the drop goes to the window in front of the mouse (RUST-1).
+- **Single-tab window:** the window does not follow the mouse during the drag; on release a new window opens under the mouse and the old one closes. Not a bug (see 2.1).
 
 ## 2.5 Test work done
 - **Test count:** 30 tests at the first report; **594** now, none skipped. Every test that was skipped (`it.skip`) or `#[ignore]` for a known bug now runs and passes:
