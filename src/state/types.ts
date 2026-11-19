@@ -39,8 +39,11 @@ export interface TabMeta {
   /** Bytes consumed so far. Equals file size once fully loaded. */
   loadedOffset: number;
   fullyLoaded: boolean;
-  /** Total characters of the whole file, once the background scan finishes. */
-  totalChars: number | null;
+  /**
+   * Characters of the file after the loaded part, once the background scan
+   * finishes; the status bar adds the editor's length, so edits count (BUGS.md L5).
+   */
+  tailChars: number | null;
   externalChange: "modified" | "deleted" | null;
   /** Clean tab whose editor state was dropped to save memory. */
   hibernated: boolean;

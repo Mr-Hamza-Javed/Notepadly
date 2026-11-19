@@ -458,13 +458,33 @@ describe("files changed by other programs", () => {
 
   // BUGS.md H7: a file that is deleted and recreated (git checkout, OneDrive)
   // leaves a clean tab marked unsaved.
-  it.skip("H7: a deleted-then-restored file leaves an unedited tab clean", async () => {
+  it("H7: a deleted-then-restored file leaves an unedited tab clean", async () => {
     backend.delete(A);
     await app.loader.pollExternalChanges();
     backend.write(A, "original");
     await app.loader.pollExternalChanges();
     await settle(20);
     expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+  });
+
+  it("H7: a clean tab whose file comes back with new content reloads it", async () => {
+    backend.delete(A);
+    await app.loader.pollExternalChanges();
+    backend.write(A, "checked out");
+    await app.loader.pollExternalChanges();
+    await waitFor(() => app.text() === "checked out");
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+  });
+
+  it("H7: text typed while the file was gone stays unsaved when it comes back", async () => {
+    backend.delete(A);
+    await app.loader.pollExternalChanges();
+    app.type(" mine");
+    backend.write(A, "original");
+    await app.loader.pollExternalChanges();
+    await settle(20);
+    expect(app.tab().dirty).toBe(true);
+    expect(app.text()).toBe("original mine");
   });
 });
 
@@ -690,6 +710,21 @@ describe("tabs", () => {
     await app.actions.newTab();
   });
 
+  it("C8: typing while a tab loads never goes into the previous tab", async () => {
+    backend.write(A, "AAA file");
+    backend.write(B, "BBB file");
+    await app.actions.openPaths([A, B]);
+    const a = app.tabByName("a.md");
+    expect(app.engine.hasDoc(a.id)).toBe(false);
+    const switching = app.actions.activate(a.id);
+    app.engine.insertText("TYPED");
+    await switching;
+    expect(app.text(app.tabByName("b.txt").id)).toBe("BBB file");
+    expect(app.tabByName("b.txt").dirty).toBe(false);
+    expect(app.text(a.id)).toBe("AAA file");
+    expect(app.tabByName("a.md").dirty).toBe(false);
+  });
+
   it("cycles through tabs with wrap-around", async () => {
     const ids = app.state().tabs.map((t) => t.id);
     expect(app.state().activeId).toBe(ids[2]);
@@ -840,6 +875,16 @@ describe("closing the window and restoring the session", () => {
     expect(backend.text(A)).toBe("on disk");
   });
 
+  it("T2: an untitled tab closed right after typing comes back with its name", async () => {
+    app = await bootApp();
+    app.type("Shopping list");
+    await app.actions.closeWindow();
+
+    app = await bootApp({ keepDisk: true });
+    expect(app.tab().title).toBe("Shopping list");
+    expect(app.text()).toBe("Shopping list");
+  });
+
   it("restores clean file tabs lazily, reading the file only when activated", async () => {
     app = await bootApp();
     backend.write(A, "a");
@@ -915,6 +960,27 @@ describe("closing the window and restoring the session", () => {
     await waitFor(() => backend.drafts.size === 0 && JSON.parse(backend.session!).tabs.length === 0);
   });
 
+  it("L16: deletes drafts that no restored tab owns", async () => {
+    app = await bootApp();
+    app.type("kept draft");
+    await app.actions.closeWindow();
+    const kept = [...backend.drafts.keys()];
+    backend.drafts.set("orphan-from-a-crash", "lost text");
+
+    app = await bootApp({ keepDisk: true });
+    await waitFor(() => !backend.drafts.has("orphan-from-a-crash"));
+    expect([...backend.drafts.keys()]).toEqual(kept);
+    expect(app.text()).toBe("kept draft");
+  });
+
+  it("L16: a corrupt session leaves no drafts behind", async () => {
+    backend.reset();
+    backend.session = "not json";
+    backend.drafts.set("t-old", "orphaned");
+    app = await bootApp({ keepDisk: true });
+    await waitFor(() => backend.drafts.size === 0);
+  });
+
   it("starts fresh when the session file is corrupt", async () => {
     backend.reset();
     backend.session = '{"tabs": [ {"id": 5}, broken';
@@ -939,7 +1005,7 @@ describe("closing the window and restoring the session", () => {
 
   // BUGS.md H16: a file deleted while the app was closed comes back as an
   // empty, unsaved tab; saving it writes an empty file.
-  it.skip("H16: a restored tab whose file is gone is not an empty unsaved document", async () => {
+  it("H16: a restored tab whose file is gone is not an empty unsaved document", async () => {
     app = await bootApp();
     backend.write(A, "content");
     await app.actions.openPaths([A]);
@@ -947,6 +1013,15 @@ describe("closing the window and restoring the session", () => {
     backend.delete(A);
     app = await bootApp({ keepDisk: true });
     expect(app.tab().dirty).toBe(false);
+    expect(app.tab().externalChange).toBe("deleted");
+    // Saving the empty tab does not create an empty file.
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.exists(A)).toBe(false);
+    // When the file comes back, the tab shows it.
+    backend.write(A, "content again");
+    await app.loader.pollExternalChanges();
+    await waitFor(() => app.text() === "content again");
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
   });
 });
 

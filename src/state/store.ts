@@ -50,7 +50,7 @@ export function makeUntitledTab(formatting: boolean): TabMeta {
     stamp: null,
     loadedOffset: 0,
     fullyLoaded: true,
-    totalChars: null,
+    tailChars: null,
     externalChange: null,
     hibernated: false,
   };

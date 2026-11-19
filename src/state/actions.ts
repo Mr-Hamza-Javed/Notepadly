@@ -82,22 +82,29 @@ function readFirstLine(id: string): string | null {
   return firstLineOf(engine.getText(id));
 }
 
+function updateTitle(id: string): void {
+  titleTimers.delete(id);
+  const tab = getTab(id);
+  if (!tab || tab.path !== null || !engine.hasDoc(id)) return;
+  const line = readFirstLine(id);
+  if (line === null) return;
+  patchTab(id, { title: deriveTitle(line) });
+  loader.scheduleSessionWrite();
+}
+
 function scheduleTitle(id: string): void {
   if (getTab(id)?.path !== null) return;
   const pending = titleTimers.get(id);
   if (pending !== undefined) clearTimeout(pending);
-  titleTimers.set(
-    id,
-    setTimeout(() => {
-      titleTimers.delete(id);
-      const tab = getTab(id);
-      if (!tab || tab.path !== null || !engine.hasDoc(id)) return;
-      const line = readFirstLine(id);
-      if (line === null) return;
-      patchTab(id, { title: deriveTitle(line) });
-      loader.scheduleSessionWrite();
-    }, TITLE_DEBOUNCE_MS),
-  );
+  titleTimers.set(id, setTimeout(() => updateTitle(id), TITLE_DEBOUNCE_MS));
+}
+
+/** Runs pending title updates now, so a session stored right away has the right names (BUGS.md T2). */
+function flushTitles(): void {
+  for (const [id, timer] of [...titleTimers]) {
+    clearTimeout(timer);
+    updateTitle(id);
+  }
 }
 
 const sameCursor = (a: CursorInfo, b: CursorInfo) =>
@@ -231,14 +238,34 @@ function closeDialog(): void {
 // ---- Activation --------------------------------------------------------------
 
 let activationToken = 0;
+let activation: Promise<void> = Promise.resolve();
 
-async function activate(id: string): Promise<void> {
+/** Switches tabs. `whenActivated` resolves once the editor shows the tab. */
+function activate(id: string): Promise<void> {
+  let done: () => void = () => {};
+  activation = new Promise<void>((resolve) => {
+    done = resolve;
+  });
+  const run = doActivate(id);
+  run.then(done, done);
+  return run;
+}
+
+/** Settles when the latest tab switch has put its document in the editor (or given up). */
+const whenActivated = (): Promise<void> => activation;
+
+async function doActivate(id: string): Promise<void> {
   const s = state();
   if (!getTab(id)) return;
   if (s.activeId !== id) loader.touchTab(s.activeId);
   useApp.setState({ activeId: id, view: "editor" });
   const token = ++activationToken;
-  if (!engine.hasDoc(id)) await loader.materialiseOrFlag(id);
+  if (!engine.hasDoc(id)) {
+    // The tab strip already shows this tab: typing must not reach the previous one
+    // while it loads (BUGS.md C8).
+    engine.park();
+    await loader.materialiseOrFlag(id);
+  }
   if (token !== activationToken || !engine.hasDoc(id)) return;
   engine.activate(id);
   engine.focus();
@@ -311,7 +338,7 @@ async function openHere(input: string[]): Promise<void> {
       stamp,
       loadedOffset: 0,
       fullyLoaded: false,
-      totalChars: null,
+      tailChars: null,
       externalChange: null,
       hibernated: true,
     };
@@ -513,7 +540,7 @@ async function resolveDirtyTab(id: string): Promise<boolean> {
 
 function removeFromList(id: string): void {
   useApp.setState((s) => ({ tabs: s.tabs.filter((t) => t.id !== id) }));
-  if (engine.hasDoc(id)) engine.dropDoc(id);
+  engine.dropDoc(id); // also forgets the undo history of a hibernated tab
   loader.disposeTab(id);
   const pending = titleTimers.get(id);
   if (pending !== undefined) clearTimeout(pending);
@@ -570,6 +597,7 @@ async function prepareWindowClose(): Promise<boolean> {
   closeInProgress = true;
   try {
     flushPersistedPrefs();
+    flushTitles();
     if (isMainWindow && state().settings.startup === "continue") {
       try {
         await loader.flushPersistence();
@@ -785,6 +813,8 @@ async function runInit(): Promise<void> {
     engine.activate(activeId);
     engine.focus();
   }
+  // Only the main window owns drafts; clear out those no restored tab owns.
+  if (isMainWindow) loader.pruneDrafts().catch(() => {});
   loader.setPersistence(continueSession);
   initFinished = true;
 
@@ -868,6 +898,7 @@ export const actions = {
     engine.focus();
   },
   ensureFullyLoaded,
+  whenActivated,
 
   insertDateTime: () => engine.insertText(formatDateTime(new Date())),
   /** Edit > Cut / Copy / Paste. A clipboard failure is reported, and Cut then keeps the text. */

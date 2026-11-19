@@ -20,6 +20,8 @@ const FindCard = memo(function FindCard() {
   const [caseSensitive, setCase] = useState(memory.caseSensitive);
   const [wrap, setWrap] = useState(memory.wrap);
   const [result, setResult] = useState<FindResult>(NONE);
+  /** Replacing needs the whole file: partial text would change only the loaded part (BUGS.md C2). */
+  const [loading, setLoading] = useState(false);
   const input = useRef<HTMLInputElement | null>(null);
   const timer = useRef(0);
   const query = useRef({ search, replace, caseSensitive, wrap });
@@ -48,12 +50,25 @@ const FindCard = memo(function FindCard() {
   }, [find]);
 
   // Find needs the whole file, loaded in the background so typing is never blocked.
+  // A tab that is not loaded yet is only in the editor once its activation ends, and
+  // activating resets the find session, so search again then (BUGS.md M21).
   useEffect(() => {
     let dead = false;
     runNow();
-    void actions.ensureFullyLoaded(activeId).then(() => {
-      if (!dead) runNow();
-    });
+    setLoading(true);
+    void actions
+      .whenActivated()
+      .then(() => {
+        if (!dead) runNow();
+        return actions.ensureFullyLoaded(activeId);
+      })
+      .then(() => {
+        if (!dead) runNow();
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!dead) setLoading(false);
+      });
     return () => {
       dead = true;
     };
@@ -81,6 +96,28 @@ const FindCard = memo(function FindCard() {
     return () => setFindStepHandler(null);
   }, []);
 
+  /** Waits for the whole file; false if it cannot be loaded (the loader has said why). */
+  const loadAll = async (): Promise<boolean> => {
+    const id = activeId;
+    try {
+      await actions.whenActivated();
+      await actions.ensureFullyLoaded(id);
+    } catch {
+      return false;
+    }
+    return useApp.getState().activeId === id;
+  };
+  const replaceOne = async () => {
+    if (!(await loadAll())) return;
+    flush();
+    setResult(engine.replaceCurrent());
+  };
+  const replaceAll = async () => {
+    if (!(await loadAll())) return;
+    runNow();
+    engine.replaceAll();
+    runNow();
+  };
   const close = () => {
     window.clearTimeout(timer.current);
     actions.closeFind();
@@ -158,8 +195,7 @@ const FindCard = memo(function FindCard() {
               onChange={(e) => setReplace(e.target.value)}
               onKeyDown={(e) =>
                 onKey(e, () => {
-                  flush();
-                  setResult(engine.replaceCurrent());
+                  if (!loading) void replaceOne();
                 })
               }
             />
@@ -167,23 +203,16 @@ const FindCard = memo(function FindCard() {
           <button
             type="button"
             className="btn"
-            disabled={noQuery}
-            onClick={() => {
-              flush();
-              setResult(engine.replaceCurrent());
-            }}
+            disabled={noQuery || loading}
+            onClick={() => void replaceOne()}
           >
             Replace
           </button>
           <button
             type="button"
             className="btn"
-            disabled={noQuery}
-            onClick={() => {
-              flush();
-              engine.replaceAll();
-              runNow();
-            }}
+            disabled={noQuery || loading}
+            onClick={() => void replaceAll()}
           >
             Replace all
           </button>

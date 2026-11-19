@@ -23,6 +23,12 @@ const RELOAD_CHUNK = 4 * 1024 * 1024;
 const MIN_READ = 64 * 1024;
 const POLL_MS = 3000;
 const DRAFT_DEBOUNCE_MS = 800;
+/** Above this a draft write is costly enough to wait longer for a pause (BUGS.md H8). */
+const BIG_DRAFT_CHARS = 1024 * 1024;
+const DRAFT_MS_PER_BIG = 2000;
+const DRAFT_MAX_DEBOUNCE_MS = 30_000;
+/** However long the typing goes on, a draft is never older than this. */
+const DRAFT_MAX_WAIT_MS = 60_000;
 const HIBERNATE_AFTER_MS = 60_000;
 const HIBERNATE_SWEEP_MS = 15_000;
 const HIBERNATE_MIN_BYTES = 1024 * 1024;
@@ -61,6 +67,17 @@ interface TabRuntime {
   draftMeta: DraftMeta | null;
   /** The user picked a line ending, so the next save writes it on every line. */
   eolChosen: boolean;
+  /**
+   * Set when a clean tab was flagged deleted: the editSeq at that moment. If the
+   * file comes back before the user edits, the tab is clean again (BUGS.md H7).
+   */
+  cleanDelete: number | null;
+  /** The file could not be read, so the editor does not hold its text: never save over it. */
+  unreadable: boolean;
+  /** Characters read from the file into the editor; null when unknown (restored draft). */
+  diskChars: number | null;
+  /** The file state a hibernated tab's kept undo history belongs to. */
+  sleep: { stamp: FileStamp | null; encoding: Encoding } | null;
 }
 
 const runtimes = new Map<string, TabRuntime>();
@@ -86,6 +103,10 @@ function rtOf(id: string): TabRuntime {
       hasDraft: false,
       draftMeta: null,
       eolChosen: false,
+      cleanDelete: null,
+      unreadable: false,
+      sleep: null,
+      diskChars: null,
     };
     runtimes.set(id, rt);
   }
@@ -134,8 +155,13 @@ function startScan(id: string): void {
     .then((result) => {
       if (rt.gen !== gen || rt.ioSeq !== ioSeq) return;
       const current = getTab(id);
-      if (current && !current.fullyLoaded) patchTab(id, { totalChars: result.chars });
-      if (current && result.invalid && current.encoding === tab.encoding) onInvalidUtf8(id);
+      if (!current) return;
+      if (!current.fullyLoaded) {
+        // A restored draft's loaded part is not a known slice of the file: estimate.
+        const loaded = rt.diskChars ?? engine.length(id);
+        patchTab(id, { tailChars: Math.max(0, result.chars - loaded) });
+      }
+      if (result.invalid && current.encoding === tab.encoding) onInvalidUtf8(id);
     })
     .catch(noop);
 }
@@ -223,11 +249,13 @@ function loadStep(id: string, maxBytes: number): Promise<void> {
     }
     if (chunk.nextOffset <= offset && !chunk.eof) throw new Error("The file could not be read any further.");
     if (chunk.text) engine.appendText(id, chunk.text);
+    if (rt.diskChars !== null) rt.diskChars += chunk.text.length;
     patchTab(id, {
       loadedOffset: chunk.nextOffset,
       fullyLoaded: chunk.eof,
       stamp: chunk.stamp,
-      totalChars: chunk.eof ? null : current.totalChars,
+      tailChars:
+        chunk.eof || current.tailChars === null ? null : Math.max(0, current.tailChars - chunk.text.length),
     });
     if (current.dirty) markDraftChanged(id);
     if (!chunk.eof) startScan(id);
@@ -354,8 +382,13 @@ async function applyFromDisk(
     patchTab(id, { externalChange: "modified" });
     return;
   }
+  const sleep = rt.sleep;
+  rt.sleep = null;
   if (engine.hasDoc(id)) engine.resetDoc(id, read.text);
-  else engine.createDoc(id, read.text, tab.mode);
+  else if (sleep && stampsEqual(sleep.stamp, read.stamp) && sleep.encoding === read.encoding) {
+    // Unchanged on disk, so the text read again starts with the text it had: keep its undo.
+    engine.wakeDoc(id, read.text, tab.mode);
+  } else engine.createDoc(id, read.text, tab.mode);
   restoreView(id, snap);
   patchTab(id, {
     stamp: read.stamp,
@@ -363,14 +396,17 @@ async function applyFromDisk(
     encoding: read.encoding,
     loadedOffset: read.nextOffset,
     fullyLoaded: read.eof,
-    totalChars: null,
+    tailChars: null,
     dirty: false,
     externalChange: null,
     hibernated: false,
   });
   rt.forceDirty = false;
+  rt.cleanDelete = null;
+  rt.unreadable = false;
   rt.dismissed = null;
   rt.scanStarted = false;
+  rt.diskChars = read.text.length;
   rt.ioSeq++;
   rt.snap = null;
   markDraftChanged(id);
@@ -415,6 +451,7 @@ export function materialise(id: string): Promise<void> {
       if (!getTab(id) || engine.hasDoc(id)) return;
       if (draft !== null) {
         engine.createDoc(id, draft, tab.mode);
+        rt.diskChars = null;
         restoreView(id, rt.snap);
         rt.snap = null;
         rt.forceDirty = true;
@@ -448,12 +485,27 @@ export async function materialiseOrFlag(id: string): Promise<void> {
     const tab = getTab(id);
     if (!tab || engine.hasDoc(id)) return;
     const disk = tab.path ? await ipc.stat(tab.path).catch(() => undefined) : undefined;
+    if (!getTab(id) || engine.hasDoc(id)) return;
     engine.createDoc(id, "", tab.mode);
+    const rt = rtOf(id);
     if (disk === null) {
-      rtOf(id).forceDirty = true;
-      patchTab(id, { hibernated: false, dirty: true, externalChange: "deleted", fullyLoaded: true, stamp: null });
+      // Nothing was loaded, so there is no text to lose: the tab stays clean and
+      // the bar says the file is gone. Saving an empty tab must not create an
+      // empty file (BUGS.md H16); typing something and saving recreates it.
+      rt.forceDirty = false;
+      patchTab(id, { hibernated: false, dirty: false, externalChange: "deleted", fullyLoaded: true, stamp: null });
+      markDraftChanged(id);
     } else {
-      patchTab(id, { hibernated: false, externalChange: "modified", loadedOffset: 0, fullyLoaded: false });
+      // The empty editor does not show the file, so it must not be saved over it
+      // (BUGS.md M22). With no stamp, polling retries the read for a clean tab.
+      rt.unreadable = true;
+      patchTab(id, {
+        hibernated: false,
+        externalChange: "modified",
+        loadedOffset: 0,
+        fullyLoaded: false,
+        stamp: null,
+      });
       showMessage("Could not open file", `${tab.title} could not be read.\n${String(error)}`);
     }
   }
@@ -492,6 +544,13 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
   }
   const tab = getTab(id);
   if (!tab) return { ok: false, stale: false, message: "The tab was closed." };
+  if (rt.unreadable) {
+    return {
+      ok: false,
+      stale: false,
+      message: "This file could not be read, so this tab does not show its text. Reload it before saving.",
+    };
+  }
   const samePath = pathsEqual(tab.path, targetPath);
   const loadedOnly = !!options.loadedOnly && !samePath;
   const partial = !tab.fullyLoaded && !loadedOnly;
@@ -531,6 +590,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
     engine.markSaved(id);
     rt.forceDirty = false;
   }
+  rt.cleanDelete = null;
   rt.dismissed = null;
   rt.eolChosen = false;
   const shared = {
@@ -541,7 +601,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
     externalChange: null,
   };
   if (tailOffset === null) {
-    patchTab(id, { ...shared, loadedOffset: stamp.size, fullyLoaded: true, totalChars: null });
+    patchTab(id, { ...shared, loadedOffset: stamp.size, fullyLoaded: true, tailChars: null });
   } else {
     const next = loadedOffsetAfterPartialSave(stamp.size, oldSize, tailOffset);
     if (next === null) {
@@ -549,7 +609,8 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
       patchTab(id, shared);
       await applyFromDisk(id, tailOffset, engine.snapshot(id), false);
     } else {
-      patchTab(id, { ...shared, loadedOffset: next, totalChars: null });
+      patchTab(id, { ...shared, loadedOffset: next, tailChars: null });
+      rt.diskChars = text.length;
       rt.scanStarted = false;
       startScan(id);
     }
@@ -594,6 +655,7 @@ export async function keepMine(id: string): Promise<void> {
   patchTab(id, { externalChange: null });
   if (kind === "deleted") {
     rt.dismissed = "deleted";
+    rt.cleanDelete = null;
     if (tab.fullyLoaded) patchTab(id, { stamp: null });
     return;
   }
@@ -645,12 +707,25 @@ async function checkTab(tab: TabMeta): Promise<void> {
   const current = getTab(tab.id);
   if (!current || current.path !== tab.path) return;
   const hasDoc = engine.hasDoc(tab.id);
+  if (disk && current.externalChange === "deleted" && rt.cleanDelete === rt.editSeq) {
+    // The file came back (git checkout, OneDrive, save by delete + rename) and the
+    // user typed nothing meanwhile: the deletion was the only reason for the dirty mark.
+    rt.cleanDelete = null;
+    rt.forceDirty = false;
+    patchTab(tab.id, { dirty: false });
+    markDraftChanged(tab.id);
+    if (stampsEqual(disk, current.stamp)) patchTab(tab.id, { externalChange: null });
+    else if (hasDoc) silentReload(tab.id).catch(noop);
+    else patchTab(tab.id, { stamp: disk, externalChange: null });
+    return;
+  }
   switch (decideExternal(current, disk, rt.dismissed, hasDoc)) {
     case "flag-modified":
       rt.dismissed = null;
       patchTab(tab.id, { externalChange: "modified" });
       break;
     case "flag-deleted":
+      rt.cleanDelete = current.dirty ? null : rt.editSeq;
       rt.forceDirty = true;
       patchTab(tab.id, { externalChange: "deleted", dirty: true });
       markDraftChanged(tab.id);
@@ -704,7 +779,8 @@ export function hibernateSweep(now = Date.now()): void {
     if (now - rt.lastActive < HIBERNATE_AFTER_MS) continue;
     rt.snap = engine.snapshot(tab.id);
     rt.gen++;
-    engine.dropDoc(tab.id);
+    rt.sleep = { stamp: tab.stamp, encoding: tab.encoding };
+    engine.hibernate(tab.id);
     patchTab(tab.id, { hibernated: true });
   }
 }
@@ -717,6 +793,8 @@ export function startHibernation(): void {
 
 let persistence = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+/** When the oldest change not yet written was made. */
+let pendingSince: number | null = null;
 let flushChain: Promise<void> = Promise.resolve();
 const changedDrafts = new Set<string>();
 
@@ -730,12 +808,32 @@ export function setPersistence(enabled: boolean): void {
   }
 }
 
+/**
+ * The typing pause to wait for before writing drafts of this many characters. A
+ * draft is the whole text, so a big document waits for a longer pause.
+ */
+export function draftDelay(chars: number): number {
+  if (chars <= BIG_DRAFT_CHARS) return DRAFT_DEBOUNCE_MS;
+  return Math.min(DRAFT_MAX_DEBOUNCE_MS, Math.round(DRAFT_DEBOUNCE_MS + (chars / BIG_DRAFT_CHARS) * DRAFT_MS_PER_BIG));
+}
+
+function pendingDraftChars(): number {
+  let largest = 0;
+  for (const id of changedDrafts) {
+    if (getTab(id)?.dirty && engine.hasDoc(id)) largest = Math.max(largest, engine.length(id));
+  }
+  return largest;
+}
+
 function scheduleFlush(): void {
   if (flushTimer !== null) clearTimeout(flushTimer);
+  const now = Date.now();
+  pendingSince ??= now;
+  const delay = Math.max(0, Math.min(draftDelay(pendingDraftChars()), pendingSince + DRAFT_MAX_WAIT_MS - now));
   flushTimer = setTimeout(() => {
     flushTimer = null;
     flushPersistence().catch((error) => console.error("Notepadly: session write failed", error));
-  }, DRAFT_DEBOUNCE_MS);
+  }, delay);
 }
 
 export function markDraftChanged(id: string): void {
@@ -780,6 +878,7 @@ export function buildSession(): SessionFile {
 async function doFlush(): Promise<void> {
   const ids = [...changedDrafts];
   changedDrafts.clear();
+  pendingSince = null;
   let failure: unknown = null;
   for (const id of ids) {
     const tab = getTab(id);
@@ -813,6 +912,19 @@ export function flushPersistence(): Promise<void> {
   flushTimer = null;
   flushChain = flushChain.catch(noop).then(doFlush);
   return flushChain;
+}
+
+/**
+ * Deletes drafts no tab owns (left by a crash or a corrupt session, BUGS.md L16).
+ * Runs on the flush chain, so a draft written by this run is never pruned.
+ */
+export function pruneDrafts(): Promise<void> {
+  const run = flushChain.catch(noop).then(() => {
+    const keep = useApp.getState().tabs.filter((t) => rtOf(t.id).hasDraft).map((t) => t.id);
+    return ipc.draftsPrune(keep);
+  });
+  flushChain = run.catch(noop);
+  return run;
 }
 
 /** `startup: "new"` promises to discard the previous session's unsaved text. */

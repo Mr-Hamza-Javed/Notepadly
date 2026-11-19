@@ -32,6 +32,33 @@ pub fn draft_delete(base: &Path, id: &str) -> Result<(), String> {
     }
 }
 
+/// Deletes every draft whose id is not in `keep`, and temp files left by an
+/// interrupted write. Drafts orphaned by a crash or a corrupt session would
+/// otherwise stay forever. Files that cannot be removed are left for next time.
+pub fn drafts_prune(base: &Path, keep: &[String]) -> Result<(), String> {
+    let entries = match fs::read_dir(base.join(DRAFTS_DIR)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let orphan = match path.extension().and_then(|e| e.to_str()) {
+            Some("txt") => !keep.iter().any(|id| id == stem),
+            Some("tmp") => true,
+            _ => false,
+        };
+        if orphan {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
 /// Ids are a single path component of `[A-Za-z0-9_-]`, so a hostile or corrupt
 /// id cannot leave the drafts folder or name a Windows device.
 fn draft_path(base: &Path, id: &str) -> Result<PathBuf, String> {
@@ -157,6 +184,24 @@ mod tests {
             draft_write(&base.0, "d", text).unwrap();
             assert_eq!(draft_read(&base.0, "d").unwrap().as_deref(), Some(text));
         }
+    }
+
+    #[test]
+    fn pruning_keeps_listed_drafts_and_removes_the_rest() {
+        let base = TempBase::new("prune");
+        assert_eq!(drafts_prune(&base.0, &[]), Ok(()));
+        draft_write(&base.0, "keep", "kept").unwrap();
+        draft_write(&base.0, "orphan", "old").unwrap();
+        fs::write(base.0.join("drafts").join("keep.tmp"), "half").unwrap();
+        fs::write(base.0.join("drafts").join("notes.md"), "not ours").unwrap();
+        drafts_prune(&base.0, &["keep".to_string()]).unwrap();
+        let mut names: Vec<_> = fs::read_dir(base.0.join("drafts"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["keep.txt", "notes.md"]);
+        assert_eq!(draft_read(&base.0, "keep").unwrap().as_deref(), Some("kept"));
     }
 
     #[test]

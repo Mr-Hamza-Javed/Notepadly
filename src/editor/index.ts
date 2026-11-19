@@ -2,6 +2,7 @@
 import {
   defaultKeymap,
   history,
+  historyField,
   historyKeymap,
   isolateHistory,
   redo,
@@ -57,7 +58,7 @@ const MAX_DOC_FOR_PREVIEW = 20 * 1024 * 1024;
 const NEAR_END_THROTTLE_MS = 120;
 /** Wait after an edit that shortened a degraded document before checking it again. */
 const RECHECK_DELAY_MS = 400;
-/** History trims old events beyond this, which would misalign the depth-indexed versions. */
+/** History keeps at least this many undo steps; trackHistory follows its trimming. */
 const HISTORY_DEPTH = 400;
 
 const loadingText = Annotation.define<boolean>();
@@ -120,6 +121,16 @@ interface DocRecord {
   configSerial: number;
 }
 
+/** What a hibernated tab keeps so its undo history survives (BUGS.md M12). */
+interface SleepRecord {
+  /** The history field's value: undo events as changes against a doc of `length`, no text. */
+  history: unknown;
+  length: number;
+  versions: number[];
+  depth: number;
+  savedVersion: number;
+}
+
 let versionCounter = 0;
 
 /** Whether a document still needs the plain fallback; walks lines without joining the text. */
@@ -173,6 +184,7 @@ class Engine implements EditorEngine {
   };
   private configSerial = 0;
   private readonly docs = new Map<string, DocRecord>();
+  private readonly sleeping = new Map<string, SleepRecord>();
   private activeId: string | null = null;
   private readonly finder = new FindController(() => this.view);
 
@@ -193,7 +205,7 @@ class Engine implements EditorEngine {
     previewContext.baseDir = () => (this.activeId ? host.baseDir(this.activeId) : null);
     previewContext.openLink = (href) => host.openLink(href);
 
-    const view = new EditorView({ parent, state: this.createState("", "plain") });
+    const view = new EditorView({ parent, state: this.placeholderState() });
     this.view = view;
     this.applyCssVariables();
 
@@ -223,6 +235,7 @@ class Engine implements EditorEngine {
     this.host = null;
     this.activeId = null;
     this.docs.clear();
+    this.sleeping.clear();
   }
 
   // ---------- State construction ----------
@@ -263,10 +276,20 @@ class Engine implements EditorEngine {
     ];
   }
 
-  private createState(text: string, mode: FormatMode): EditorState {
+  /** What the view shows when no tab's document is active: empty, and closed to typing. */
+  private placeholderState(): EditorState {
     return EditorState.create({
-      doc: text,
-      extensions: [
+      doc: "",
+      extensions: [this.stateExtensions("plain"), EditorState.readOnly.of(true), EditorView.editable.of(false)],
+    });
+  }
+
+  private createState(text: string, mode: FormatMode): EditorState {
+    return EditorState.create({ doc: text, extensions: this.stateExtensions(mode) });
+  }
+
+  private stateExtensions(mode: FormatMode): Extension {
+    return [
         editorRootClass,
         history({ minDepth: HISTORY_DEPTH, newGroupDelay: 500 }),
         lineDirections,
@@ -277,8 +300,7 @@ class Engine implements EditorEngine {
         findExtension,
         this.keymapExtension(),
         EditorView.updateListener.of((update) => this.onUpdate(update)),
-      ],
-    });
+    ];
   }
 
   private effectiveMode(doc: DocRecord): FormatMode {
@@ -350,14 +372,15 @@ class Engine implements EditorEngine {
       if (doc.versions[depth] === undefined) doc.versions[depth] = ++versionCounter;
       return;
     }
-    if (depth >= HISTORY_DEPTH) {
-      // Old events may have been trimmed, so depths no longer identify versions.
-      // The saved point becomes unreachable, which errs on the side of staying dirty.
-      doc.versions = [];
-      doc.savedVersion = -1;
-    } else {
-      doc.versions.length = Math.min(doc.versions.length, depth + 1);
+    const before = undoDepth(tr.startState);
+    if (depth < before) {
+      // The history dropped its oldest events to stay near HISTORY_DEPTH (it never
+      // does that when joining an event). A new event sits at before + 1, so the
+      // difference is the number of trimmed steps: shift the versions down with them.
+      // A saved point among the trimmed steps can no longer be reached by undo.
+      doc.versions = doc.versions.slice(before + 1 - depth);
     }
+    doc.versions.length = Math.min(doc.versions.length, depth);
     doc.versions[depth] = ++versionCounter;
     doc.depth = depth;
   }
@@ -495,7 +518,51 @@ class Engine implements EditorEngine {
   // ---------- Documents ----------
 
   createDoc(tabId: string, text: string, mode: FormatMode): void {
+    this.sleeping.delete(tabId);
     this.docs.set(tabId, this.newRecord(tabId, text, mode));
+  }
+
+  hibernate(tabId: string): void {
+    const doc = this.docs.get(tabId);
+    if (!doc) return;
+    const state = this.stateOf(doc);
+    this.dropDoc(tabId);
+    this.sleeping.set(tabId, {
+      history: state.field(historyField, false) ?? null,
+      length: state.doc.length,
+      versions: doc.versions,
+      depth: doc.depth,
+      savedVersion: doc.savedVersion,
+    });
+  }
+
+  wakeDoc(tabId: string, text: string, mode: FormatMode): boolean {
+    const sleep = this.sleeping.get(tabId);
+    this.createDoc(tabId, text, mode);
+    if (!sleep || sleep.history === null || text.length < sleep.length) return false;
+    const doc = this.docs.get(tabId) as DocRecord;
+    try {
+      // The same mechanism EditorState.fromJSON uses to seed a field.
+      let state = EditorState.create({
+        doc: text.slice(0, sleep.length),
+        extensions: [historyField.init(() => sleep.history), this.stateExtensions(this.effectiveMode(doc))],
+      });
+      if (text.length > sleep.length) {
+        // Text loaded past the old end maps the history like a lazily appended chunk.
+        state = state.update({
+          changes: { from: sleep.length, insert: text.slice(sleep.length) },
+          annotations: [Transaction.addToHistory.of(false), loadingText.of(true)],
+        }).state;
+      }
+      doc.state = state;
+    } catch {
+      return false;
+    }
+    doc.versions = sleep.versions;
+    doc.depth = sleep.depth;
+    doc.savedVersion = sleep.savedVersion;
+    doc.dirty = doc.versions[doc.depth] !== doc.savedVersion;
+    return true;
   }
 
   appendText(tabId: string, text: string): void {
@@ -535,26 +602,41 @@ class Engine implements EditorEngine {
   dropDoc(tabId: string): void {
     if (tabId === this.activeId) {
       this.activeId = null;
-      this.view?.setState(this.createState("", "plain"));
+      this.view?.setState(this.placeholderState());
     }
     this.docs.delete(tabId);
+    this.sleeping.delete(tabId);
   }
 
   hasDoc(tabId: string): boolean {
     return this.docs.has(tabId);
   }
 
+  /** Puts the active document away and shows the placeholder, e.g. while the next tab loads. */
+  park(): void {
+    const view = this.view;
+    if (!view || !this.stashActive()) return;
+    this.activeId = null;
+    view.setState(this.placeholderState());
+  }
+
+  /** Stores the view's state back into the active record. False when nothing is active. */
+  private stashActive(): boolean {
+    const view = this.view;
+    const previous = this.activeDoc();
+    if (!view || !previous) return false;
+    this.finder.clear();
+    previous.state = view.state;
+    previous.scrollEffect = view.scrollSnapshot();
+    previous.scrollTop = view.scrollDOM.scrollTop;
+    return true;
+  }
+
   activate(tabId: string): void {
     const doc = this.docs.get(tabId);
     const view = this.view;
     if (!doc || !view || tabId === this.activeId) return;
-    const previous = this.activeDoc();
-    if (previous) {
-      previous.state = view.state;
-      previous.scrollEffect = view.scrollSnapshot();
-      previous.scrollTop = view.scrollDOM.scrollTop;
-    }
-    this.finder.clear();
+    if (!this.stashActive()) this.finder.clear();
     clearTimeout(this.recheckTimer);
     this.recheckTimer = 0;
     this.activeId = tabId;

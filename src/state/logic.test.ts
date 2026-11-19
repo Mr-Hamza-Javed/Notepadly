@@ -625,7 +625,7 @@ describe("session file", () => {
     expect(tabFromSession(tab()).hibernated).toBe(true);
     expect(tabFromSession(tab({ dirty: true, hasDraft: true })).hibernated).toBe(false);
     expect(tabFromSession(tab({ path: null })).hibernated).toBe(false);
-    expect(tabFromSession(tab())).toMatchObject({ externalChange: null, totalChars: null, encoding: "utf-8-bom" });
+    expect(tabFromSession(tab())).toMatchObject({ externalChange: null, tailChars: null, encoding: "utf-8-bom" });
   });
 });
 

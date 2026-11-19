@@ -144,6 +144,41 @@ describe("editor engine: dirty state follows the undo history", () => {
     expect(engine.getText("a")).toBe("from disk");
   });
 
+  it("L7: undoing back to the saved point clears the dirty mark after more than 400 steps", () => {
+    for (let i = 0; i < 450; i++) engine.insertText("x");
+    engine.markSaved("a");
+    expect(lastDirty(log, "a")).toBe(false);
+    engine.insertText("y");
+    expect(lastDirty(log, "a")).toBe(true);
+    engine.undo();
+    expect(lastDirty(log, "a")).toBe(false);
+  });
+
+  it("L7: the saved point survives the history trimming its oldest steps", () => {
+    for (let i = 0; i < 410; i++) engine.insertText("x");
+    engine.markSaved("a");
+    const saved = engine.getText("a");
+    // Crosses the point where the history drops its oldest events.
+    for (let i = 0; i < 30; i++) engine.insertText("y");
+    for (let i = 0; i < 30; i++) engine.undo();
+    expect(engine.getText("a")).toBe(saved);
+    expect(lastDirty(log, "a")).toBe(false);
+    engine.undo();
+    expect(lastDirty(log, "a")).toBe(true);
+    engine.redo();
+    expect(lastDirty(log, "a")).toBe(false);
+  });
+
+  it("L7: a saved point that was trimmed away cannot be reached again", () => {
+    engine.insertText("x");
+    engine.markSaved("a");
+    for (let i = 0; i < 450; i++) engine.insertText("y");
+    for (let i = 0; i < 460; i++) engine.undo();
+    // Undo stops at the oldest kept step, which is past the save.
+    expect(engine.getText("a")).toContain("y");
+    expect(lastDirty(log, "a")).toBe(true);
+  });
+
   it("re-announces a dirty tab when it is activated again", () => {
     engine.insertText("x");
     engine.createDoc("b", "", "plain");

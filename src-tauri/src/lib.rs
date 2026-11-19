@@ -95,6 +95,12 @@ async fn draft_delete(app: AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn drafts_prune(app: AppHandle, keep: Vec<String>) -> Result<(), String> {
+    let base = data_dir(&app)?;
+    blocking(move || store::drafts_prune(&base, &keep)).await
+}
+
+#[tauri::command]
 async fn system_fonts() -> Result<Vec<String>, String> {
     blocking(|| Ok(fonts::system_fonts())).await
 }
@@ -324,6 +330,7 @@ pub fn run() {
             draft_read,
             draft_write,
             draft_delete,
+            drafts_prune,
             take_pending_paths,
             window_new,
             system_fonts,
