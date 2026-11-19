@@ -141,6 +141,8 @@ export class FakeBackend {
   draftTimes = new Map<string, number>();
   /** When the app process started (bootApp of a first window); drafts written since are this run's. */
   runStartedAt = 0;
+  /** Answer of `user_locale`; "" is unknown. */
+  locale = "";
   /** False makes `is_last_window` and `window_closing` say another window is on screen. */
   isLastWindow = true;
   /** Labels of the app's windows that are on screen (bootApp adds them). */
@@ -170,6 +172,7 @@ export class FakeBackend {
     this.windows.clear();
     this.closingWindows.clear();
     this.openPaths.clear();
+    this.locale = "";
   }
 
   /** Writes a file "from another program". Strings are stored as UTF-8. */
@@ -334,6 +337,8 @@ export class FakeBackend {
       case "update_configure":
       case "update_status":
         return { phase: "idle", version: null, message: null, current: "0.1.0", canInstall: false };
+      case "user_locale":
+        return this.locale;
       case "launched_hidden":
         return false;
       case "window_new":
@@ -394,7 +399,8 @@ export class FakeBackend {
       stamp: { size, mtimeMs: file.mtimeMs },
       // This chunk holds a line ending other than the file's `eol` (FILES-1).
       mixedEol: endingsOf(raw).some((e) => e !== known),
-      readOnly: this.isReadOnly(path),
+      readOnly: start === 0 && this.isReadOnly(path),
+      binary: raw.includes("\0"),
     };
   }
 
@@ -426,8 +432,9 @@ export class FakeBackend {
     if (req.normalizeEol) return null;
     const end = Math.min(req.tailOffset ?? bytes.length, bytes.length);
     let raw = bytes.subarray(0, end);
-    if (req.encoding === "utf-8-bom") raw = this.stripBom(raw);
-    const old = splitLines((req.encoding === "ansi" ? ansiDecoder : decoder).decode(raw));
+    if ((req.originalEncoding ?? req.encoding) === "utf-8-bom") raw = this.stripBom(raw);
+    const original = req.originalEncoding ?? req.encoding;
+    const old = splitLines((original === "ansi" ? ansiDecoder : decoder).decode(raw));
     const first = old.find((l) => l[1] !== null)?.[1];
     if (first === undefined || old.every((l) => l[1] === null || l[1] === first)) return null;
     const next = normalize(req.text).split("\n");
@@ -485,6 +492,7 @@ interface SaveArgs {
   expectedStamp: FakeStamp | null;
   allowLossy?: boolean;
   normalizeEol?: boolean;
+  originalEncoding?: string;
 }
 
 /** The current window, as far as actions.ts uses it. */

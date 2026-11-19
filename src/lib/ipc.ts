@@ -25,8 +25,10 @@ export interface FileChunk {
    * a backend that does not report it is taken as "not mixed".
    */
   mixedEol?: boolean;
-  /** The file has the read-only attribute, so saving it in place will fail. Optional. */
+  /** The file has the read-only attribute, so saving it in place will fail. Only on the chunk at offset 0. */
   readOnly?: boolean;
+  /** This chunk holds NUL characters: probably not a text file, and saving can damage it. */
+  binary?: boolean;
 }
 
 export interface SaveRequest {
@@ -53,6 +55,8 @@ export interface SaveRequest {
    * endings, the lines the save leaves unchanged keep their own.
    */
   normalizeEol?: boolean;
+  /** The encoding the file was read with, so Rust can read its old lines after an encoding change. */
+  originalEncoding?: Encoding;
 }
 
 export interface FileScan {
@@ -117,6 +121,8 @@ export const ipc = {
    * tab: the file must not be opened here too (WIN-3).
    */
   pathOpenElsewhere: (path: string) => invoke<string | null>("path_open_elsewhere", { path }),
+  /** The user's regional format, for example "en-GB"; "" when unknown (MD-2). */
+  userLocale: () => invoke<string>("user_locale"),
   /** True when no other app window is on screen. */
   isLastWindow: () => invoke<boolean>("is_last_window"),
   /**

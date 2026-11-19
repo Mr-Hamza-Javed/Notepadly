@@ -343,6 +343,36 @@ describe("L16: a draft that cannot be read", () => {
   });
 });
 
+describe("what Rust reports about a file", () => {
+  it("a file with NUL characters gets a warning that saving can damage it", async () => {
+    app = await bootApp();
+    backend.write(A, "MZ\u0000\u0001data");
+    await app.actions.openPaths([A]);
+    expect(app.message()?.title).toBe("File looks binary");
+  });
+
+  it("a save after an encoding change still keeps mixed line endings (originalEncoding)", async () => {
+    app = await bootApp();
+    backend.write(A, new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0d, 0x0a, 0x62, 0x0a, 0x63])); // "café\r\nb\nc" in ANSI
+    await app.actions.openPaths([A]);
+    expect(app.tab()).toMatchObject({ encoding: "ansi", mixedEol: true });
+    await app.actions.setEncoding("utf-8");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(A)).toBe("café\r\nb\nc");
+    const req = backend.calls.filter((c) => c.cmd === "file_save").pop()!.args.req as { originalEncoding?: string };
+    expect(req.originalEncoding).toBe("ansi");
+  });
+
+  it("MD-2: F5 uses the regional format Rust reports", async () => {
+    app = await bootApp();
+    backend.locale = "de-DE";
+    app = await bootApp({ keepDisk: true });
+    await settle(10);
+    app.actions.insertDateTime();
+    expect(app.text()).toMatch(/^\d{1,2}:\d{2} \d{1,2}\.\d{1,2}\.\d{4}$/);
+  });
+});
+
 describe("MERGE-1: the start-up draft clean-up", () => {
   const untitled = (id: string) => ({
     id,

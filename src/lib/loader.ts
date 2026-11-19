@@ -78,6 +78,10 @@ interface TabRuntime {
   diskChars: number | null;
   /** The file state a hibernated tab's kept undo history belongs to. */
   sleep: { stamp: FileStamp | null; encoding: Encoding } | null;
+  /** The encoding the file was last read with (SaveRequest.originalEncoding). */
+  diskEncoding: Encoding | null;
+  /** The user was told the file looks binary. */
+  binaryWarned: boolean;
 }
 
 const runtimes = new Map<string, TabRuntime>();
@@ -107,6 +111,8 @@ function rtOf(id: string): TabRuntime {
       unreadable: false,
       sleep: null,
       diskChars: null,
+      diskEncoding: null,
+      binaryWarned: false,
     };
     runtimes.set(id, rt);
   }
@@ -256,6 +262,7 @@ function loadStep(id: string, maxBytes: number): Promise<void> {
     }
     if (chunk.nextOffset <= offset && !chunk.eof) throw new Error("The file could not be read any further.");
     if (chunk.text) engine.appendText(id, chunk.text);
+    if (chunk.binary) warnBinary(id);
     if (rt.diskChars !== null) rt.diskChars += chunk.text.length;
     patchTab(id, {
       loadedOffset: chunk.nextOffset,
@@ -324,6 +331,7 @@ interface DiskRead {
   eol: Eol;
   mixedEol: boolean;
   readOnly: boolean;
+  binary: boolean;
 }
 
 /** Reads from byte 0 to about `target`. Restarts if the file changes part way. */
@@ -338,6 +346,7 @@ async function readUpTo(
     let offset = 0;
     let first: { stamp: FileStamp; encoding: Encoding; eol: Eol; readOnly: boolean } | null = null;
     let mixedEol = false;
+    let binary = false;
     for (;;) {
       const wanted = Math.min(RELOAD_CHUNK, Math.max(MIN_READ, target - offset));
       const size = offset === 0 ? Math.max(FIRST_CHUNK, wanted) : wanted;
@@ -351,9 +360,10 @@ async function readUpTo(
       if (chunk.nextOffset <= offset && !chunk.eof) throw new Error("The file could not be read.");
       parts.push(chunk.text);
       mixedEol ||= !!chunk.mixedEol;
+      binary ||= !!chunk.binary;
       offset = chunk.nextOffset;
       if (chunk.eof || target <= FIRST_CHUNK || offset >= target) {
-        return { ...first, mixedEol, text: parts.join(""), nextOffset: offset, eof: chunk.eof };
+        return { ...first, mixedEol, binary, text: parts.join(""), nextOffset: offset, eof: chunk.eof };
       }
     }
   }
@@ -423,6 +433,8 @@ async function applyFromDisk(
   rt.dismissed = null;
   rt.scanStarted = false;
   rt.diskChars = read.text.length;
+  rt.diskEncoding = read.encoding;
+  if (read.binary) warnBinary(id);
   rt.ioSeq++;
   rt.snap = null;
   markDraftChanged(id);
@@ -430,6 +442,18 @@ async function applyFromDisk(
     startScan(id);
     scheduleIdleLoad(id);
   }
+}
+
+/** Once per tab: a file with NUL characters is probably not text, and a save can damage it (M15). */
+function warnBinary(id: string): void {
+  const rt = rtOf(id);
+  const tab = getTab(id);
+  if (rt.binaryWarned || !tab) return;
+  rt.binaryWarned = true;
+  showMessage(
+    "File looks binary",
+    `${tab.title} contains NUL characters, so it is probably not a text file. Saving it from Notepadly can damage it.`,
+  );
 }
 
 function reloadTarget(tab: TabMeta): number {
@@ -605,6 +629,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
       allowLossy: !!options.allowLossy,
       // Mixed line endings are only kept when rewriting the same file.
       normalizeEol: rt.eolChosen || !samePath,
+      ...(samePath && rt.diskEncoding ? { originalEncoding: rt.diskEncoding } : {}),
     });
   } catch (error) {
     rt.ioSeq++;
@@ -623,6 +648,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
   rt.dismissed = null;
   const normalized = rt.eolChosen || !samePath;
   rt.eolChosen = false;
+  rt.diskEncoding = tab.encoding;
   const shared = {
     path: targetPath,
     title: fileNameOf(targetPath),

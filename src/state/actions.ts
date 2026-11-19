@@ -1284,6 +1284,9 @@ async function adoptSession(boot: WindowBoot): Promise<{ restored: boolean; merg
   return { restored: await restoreSession(mine.session), merged: [] };
 }
 
+/** The regional format Rust reports (MD-2); "" uses the WebView's locale. */
+let userLocale = "";
+
 async function runInit(): Promise<void> {
   windowLabel = getCurrentWindow().label;
   installShortcuts();
@@ -1308,6 +1311,12 @@ async function runInit(): Promise<void> {
   }
   loader.setPersistence(keepsSession());
   publishOpenPaths();
+  ipc
+    .userLocale()
+    .then((locale) => {
+      userLocale = typeof locale === "string" ? locale : "";
+    })
+    .catch(() => {});
   initFinished = true;
 
   if (merged.length > 0) {
@@ -1410,7 +1419,17 @@ export const actions = {
   ensureFullyLoaded,
   whenActivated,
 
-  insertDateTime: () => engine.insertText(formatDateTime(new Date())),
+  // In the user's regional format, which may differ from the display language (MD-2).
+  insertDateTime: () => {
+    const now = new Date();
+    let text: string;
+    try {
+      text = formatDateTime(now, userLocale || undefined);
+    } catch {
+      text = formatDateTime(now); // a locale name the WebView does not know
+    }
+    engine.insertText(text);
+  },
   /** Edit > Cut / Copy / Paste. A clipboard failure is reported, and Cut then keeps the text. */
   clipboard: (op: "cut" | "copy" | "paste"): Promise<void> =>
     engine[op]().catch(reportError(op === "paste" ? "Could not paste" : "Could not copy to the clipboard")),
