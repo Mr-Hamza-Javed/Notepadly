@@ -64,3 +64,42 @@ describe("theme changes", () => {
     theme.dark = false;
   });
 });
+
+// jsdom cannot focus a contenteditable cell; a tabIndex makes it focusable as in a browser.
+new MutationObserver(() => {
+  for (const cell of document.querySelectorAll<HTMLElement>(".cm-md-table th, .cm-md-table td")) {
+    if (cell.tabIndex < 0) cell.tabIndex = 0;
+  }
+}).observe(document.body, { childList: true, subtree: true });
+
+async function focusCell(root: ParentNode, text: string): Promise<HTMLElement> {
+  const cell = Array.from(root.querySelectorAll<HTMLElement>(".cm-md-table th, .cm-md-table td")).find(
+    (c) => c.textContent === text,
+  );
+  if (!cell) throw new Error(`no cell ${text}`);
+  cell.tabIndex = 0;
+  cell.focus();
+  await tick();
+  return cell;
+}
+
+function key(target: Element | null, init: KeyboardEventInit): void {
+  target!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+}
+
+describe("table cells", () => {
+  it("PREV-2: undoing the row added to a header-only table keeps focus in the table", async () => {
+    const view = preview("| a | b |\n| - | - |\n\nafter", 0);
+    const cell = await focusCell(view.dom, "a");
+    key(cell, { key: "Enter" });
+    await tick();
+    expect(view.state.doc.line(3).text).toBe("|   |   |");
+    expect((document.activeElement as HTMLElement).dataset.row).toBe("2");
+    key(document.activeElement, { key: "z", ctrlKey: true });
+    await tick();
+    expect(view.state.doc.toString()).toBe("| a | b |\n| - | - |\n\nafter");
+    const focused = document.activeElement as HTMLElement;
+    expect(focused.dataset.row).toBe("0");
+    expect(view.dom.contains(focused)).toBe(true);
+  });
+});

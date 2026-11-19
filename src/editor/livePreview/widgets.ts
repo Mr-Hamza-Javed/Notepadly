@@ -269,7 +269,9 @@ class TableController {
     if (restore) {
       // rebuild runs inside CodeMirror's update (updateDOM); focusing dispatches, so wait.
       queueMicrotask(() => {
-        const cell = this.cellAt(Math.min(restore.row, rows.length - 1), Math.min(restore.col, columns - 1));
+        // A removed last row falls back to the row above; the delimiter row has no cells.
+        const row = Math.min(restore.row, rows.length - 1);
+        const cell = this.cellAt(row === 1 ? 0 : row, Math.min(restore.col, columns - 1));
         if (cell && cell.isConnected) this.focusCell(cell, restore.atEnd ? "end" : "start");
       });
     }
