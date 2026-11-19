@@ -7,6 +7,7 @@ mod files;
 mod fonts;
 mod oem;
 mod store;
+mod update_plan;
 mod window_state;
 
 use files::{Encoding, FileChunk, FileScan, FileStamp, SaveRequest};
