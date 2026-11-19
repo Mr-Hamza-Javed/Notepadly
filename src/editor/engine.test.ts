@@ -595,7 +595,8 @@ describe("editor engine: a long line only shows itself as source", () => {
     await nextFrame();
     expect(editorClass()).toContain("cm-mode-formatted");
     expect(log.cursor.at(-1)?.[1].previewLimited).toBe(false);
-  }, 30_000);
+    // ~10 s alone, but over 30 s while the whole suite's workers share the CPU (seen on Windows).
+  }, 90_000);
 });
 
 describe("editor engine: state kept over hibernation and tab moves", () => {

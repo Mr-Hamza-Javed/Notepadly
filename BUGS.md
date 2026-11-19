@@ -1,6 +1,6 @@
 # Notepadly: bug list and status
 
-**Updated:** 19 November 2026 (agent pass) · **Branch:** `fix/bugs-and-multi-window`
+**Updated:** 20 November 2026 (Windows run, v0.2.0) · **Branch:** `main`
 
 **Status:**
 - The first report (10 November 2026, commit `c578712`) listed 70 issues.
@@ -8,11 +8,12 @@
 - Everything that is done is in **Part 2**.
 - The full first report, with the original steps for every bug, is in git history (`git show 28f46c2:BUGS.md`).
 
-**Tests:**
-- `npm test`: 793 tests pass, none skipped (after the second agent pass; 743 after the first, 594 before).
-- `npm run e2e`: 42 Playwright tests in real Chromium pass (new; see section 1.0b).
-- `npm run typecheck` is clean.
-- The Rust code (`src-tauri`) does not build on Linux, so the Rust changes on this branch were made by careful reading and have **not been compiled or run on Windows yet**. See section 1.4.
+**Tests (20 November 2026, on Windows):**
+- `npm test`: 795 tests pass, none skipped.
+- `npm run e2e`: 44 Playwright tests in real Chromium pass.
+- `cargo test --lib`: 125 Rust tests pass on Windows; `cargo clippy -D warnings` and `cargo fmt --check` are clean.
+- `npm run typecheck` is clean; `npm run app:build` builds the app and installer.
+- Released as v0.2.0. The four big items left (M13 rest, H8 rest, big-table typing speed, F2 single-tab drag) are for the next version; see section 1.0c.
 
 | Mark | Meaning |
 | --- | --- |
@@ -23,6 +24,30 @@
 ---
 
 # Part 1: Still to do
+
+## 1.0c Windows run and fix pass (20 November 2026)
+
+First run of everything on real Windows (branch `fix/remaining-bugs`).
+
+**Run on Windows, all pass:**
+- `cargo test --lib`: every Rust test, including the ones in section 1.1 that had never run (`exclusive_lock_reports_an_error_and_keeps_the_original` included). `cargo clippy -D warnings` and `cargo fmt --check` are clean.
+- `npm run app:build`: the release app and the NSIS installer build. The app was started and looked at (Formatted view, callout, table, maths, Mermaid, Urdu text, an ANSI file read as ANSI, a second launch with an open file going to its tab).
+- `npm test`, `npm run e2e`, `npm run typecheck`, `npm audit --omit=dev`.
+
+**Fixed in this pass (each with a test that fails without it):**
+- **MD-1 rest:** maths on a task item's line (`- [ ] $$`, shown with ☐ or ☑) and on a list item's line in a quote (`> - $$`) are rendered. `markdown.ts` `parseTaskMath`, `block.ts` `markerOf`.
+- **WIN-3 rest:** `path_open_elsewhere` and `open_paths_set` also compare the file's identity on disk (`path_identity`), so an 8.3 name, a mapped drive or a hard link of a file open in another window is found. `window_state.rs` `open_keys`.
+- **Edit-menu Cut then Paste at a cell's edge lost the space:** opening a menu takes focus from the cell, which redrew it from its trimmed markdown. The cell now keeps its text and caret when it loses focus and gets them back when an Edit command or the editor returns to it with nothing changed (`TableController.resumeParked`). e2e: `tables.spec.ts`.
+
+**Found already fixed (this file was out of date):** Enter on an empty nested list item outdents; Tab renumbers a numbered list; Ctrl+wheel zooms one step per notch (`wheelZoom.ts`); a read-only file shows "Read-only"; table cells are `dir="auto"` for Urdu; text typed before the session is restored is kept in its own tab; a partly loaded deleted file says "deleted" at once (STATE-9); L11 (unclosed `%%` and front matter); EDIT-11.
+
+**Still open after this pass:**
+- **M13 rest:** Find, Replace all, Select all, Ctrl+End and a line-ending/encoding change still load a big file in full (cancellable). Needs streaming Rust commands.
+- **H8 rest:** a save of a big, fully loaded file still sends the whole text over IPC.
+- **Table typing speed:** typing in a cell of a 3,000-row table measured ~290 ms per key on this machine (e2e `performance.spec.ts`; ~150 ms was measured on Linux).
+- **F2:** a single-tab window does not follow the mouse live while its tab is dragged.
+- **To check by hand on Windows:** the 1.4 list (needs mouse and keyboard in the real app), and W8 on FAT/exFAT and network drives.
+- **Tests still to write (1.5):** M21 test that fails without the fix, the updater's network path, MERGE-1 race, fake backend gaps.
 
 ## 1.0b Second agent pass (19 November 2026)
 
@@ -81,9 +106,9 @@ Five agents worked in parallel (live preview, editor core, state and lifecycle, 
 **Smaller open points fixed:** list Enter/Tab numbering, Ctrl+wheel zoom per notch (editor and page), deleted partial file message, read-only warning and status cell, early typing kept, RTL table cells, L11 (`%%` and front matter bounded), L16 (unreadable draft kept). **Improvements done:** KaTeX `maxSize`, widget offsets, cached Mermaid errors, faster large-table typing, inline maths scan, Find whole word and regex, cheaper find highlights, no hidden Ctrl+U, menu access keys, Move to new window, tab strip and Settings radio accessibility, tooltips on focus, W3 page menu, Save As re-reads tab, close waits at most 5 s, two-window test harness, M21 and MERGE-1 tests, all Rust review items, CI actions pinned to SHAs and `npm audit` job.
 
 
-## 1.1 First thing: run and check the Rust changes on Windows
+## 1.1 First thing: run and check the Rust changes on Windows — ✔ done 20 November 2026
 
-These were written on Linux and only type-checked, or only read. Do this before anything else, because several fixes depend on it.
+All of these now run and pass on Windows, and `npm run app:build` builds (section 1.0c). Kept for the record:
 
 1. **Run `cargo test` in `src-tauri` on Windows.** New or changed Rust tests that have never run:
    - `files.rs`:
@@ -166,16 +191,16 @@ These were written on Linux and only type-checked, or only read. Do this before 
 - A window opened at start that writes a draft for a brand-new tab before that clean-up runs could still lose it. The time window is very short.
 - **Fix:** run the clean-up before opening the other windows, or have Rust skip drafts newer than the start of the run.
 
-### Smaller open points 📖
+### Smaller open points 📖 — ✔ all found fixed on 20 November 2026 (section 1.0c)
 - **Lists:**
-  - Enter on an empty nested list item removes the item instead of outdenting.
-  - Indenting with Tab does not fix the numbering.
-- **Same file, different path:** `pathsEqual` does not understand `..`, 8.3 names, or UNC vs mapped drive, so one file can open in two tabs.
-- **Zoom:** Ctrl+wheel or pinch zooms 10% per event.
-- **Deleted partial file:** a partly loaded file that was deleted first shows "changed" instead of "deleted" (it corrects itself within 3 seconds).
-- **Read-only file:** typing works and Save says "Access is denied", with no sign beforehand.
-- **Urdu / right-to-left:** table cells get no RTL alignment.
-- **Early typing:** text typed in the first ~200 ms after start, before the session is restored, can be lost.
+  - Enter on an empty nested list item removes the item instead of outdenting. ✔ outdents (checked in the browser).
+  - Indenting with Tab does not fix the numbering. ✔ renumbers (checked in the browser).
+- **Same file, different path:** `pathsEqual` does not understand `..`, 8.3 names, or UNC vs mapped drive, so one file can open in two tabs. ✔ `path_identity`; across windows too since 1.0c.
+- **Zoom:** Ctrl+wheel or pinch zooms 10% per event. ✔ one step per notch (`wheelZoom.ts`).
+- **Deleted partial file:** a partly loaded file that was deleted first shows "changed" instead of "deleted" (it corrects itself within 3 seconds). ✔ STATE-9.
+- **Read-only file:** typing works and Save says "Access is denied", with no sign beforehand. ✔ "Read-only" in the status bar and a warning.
+- **Urdu / right-to-left:** table cells get no RTL alignment. ✔ cells are `dir="auto"`.
+- **Early typing:** text typed in the first ~200 ms after start, before the session is restored, can be lost. ✔ kept in its own tab (`restoreSession`).
 
 ## 1.3 Remaining parts of partly fixed bugs
 
@@ -185,7 +210,7 @@ These were written on Linux and only type-checked, or only read. Do this before 
 | H6 | Live preview turns off for the whole document when one line is over 20,000 characters. It now comes back when the line is gone, but it should skip only that line **✔ Fixed 19 Nov:** lines over 10,000 characters show as source; preview off only above 20 MB. | `src/editor/index.ts` (`checkDegrade`), live preview plugins |
 | H8 | Drafts are written less often for big files, but each draft and each Save still send the whole text over IPC **✔ Partly fixed 19 Nov:** loaded chunks no longer rewrite the draft; a save of a big file still sends the whole text. | `src/lib/loader.ts` |
 | L5 | "characters" counts UTF-16 units, so an emoji counts as 2. A code-point count needs an incremental count per document and a Rust change in `scan()` **✔ Fixed 19 Nov:** code points counted (`src/editor/charCount.ts`, Rust `scan()`). | engine, `src-tauri/src/files.rs` |
-| L11 | An unclosed `%%` restyles up to 5,000 lines, and unclosed front matter up to 1,000 lines (an unclosed `$$` is fixed) | `src/editor/markdown.ts` |
+| L11 | An unclosed `%%` restyles up to 5,000 lines, and unclosed front matter up to 1,000 lines (an unclosed `$$` is fixed) **✔ Found fixed 20 Nov:** an unclosed `%%` ends at the first blank line; front matter needs its closing line. | `src/editor/markdown.ts` |
 | L16 | A draft that cannot be read is deleted. `materialise` treats a read error like a missing draft. Needs a "draft unreadable" state that keeps the draft and tells the user | `src/lib/loader.ts` |
 | M12 | Hibernation keeps the undo history now, but callout fold state is still reset on wake **✔ Fixed 19 Nov:** folds kept over hibernation, reload, restart and tab moves. | `src/lib/loader.ts`, engine |
 | M15 | No warning when a binary file is opened as text (it is damaged on save). Code pages other than 874, 932, 936, 949, 950 and 1250-1258 (for example 866) are read as windows-1252 **✔ Fixed 19 Nov:** binary warning; DOS code pages 437, 720, 737, 775, 850, 852, 855, 857, 858, 860-865, 869 and an "OEM (DOS)" encoding. | `src-tauri/src/files.rs` |
@@ -226,7 +251,7 @@ These were written on Linux and only type-checked, or only read. Do this before 
 ## 1.5 Tests still to write
 
 **Rust and end-to-end:**
-- **Run the Rust tests on Windows** (section 1.1). They have only been type-checked.
+- ~~**Run the Rust tests on Windows** (section 1.1).~~ ✔ Done 20 November 2026; all pass.
 - **End-to-end tests in a real browser or WebView** (Playwright against the Vite frontend, or WebDriver against the built app), for what jsdom cannot do:
   - Cursor movement across tables, maths and Mermaid (H2, H3, M5) with real layout.
   - Table cell selection mirroring (H1, M1, M2).
