@@ -69,6 +69,13 @@ export interface SaveRequest {
   normalizeEol?: boolean;
   /** The encoding the file was read with, so Rust can read its old lines after an encoding change. */
   originalEncoding?: Encoding;
+  /**
+   * With `tailOffset`: the file the bytes after it are copied from, when not `path`.
+   * Save As of a partly loaded file streams the rest of the old file (M13).
+   */
+  tailPath?: string;
+  /** The stamp `tailPath` must still have, or the save fails with "STALE". */
+  tailStamp?: FileStamp;
 }
 
 export interface FileScan {

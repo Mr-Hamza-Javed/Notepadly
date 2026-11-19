@@ -24,8 +24,8 @@ export interface CursorInfo {
   canUndo: boolean;
   canRedo: boolean;
   /**
-   * A Formatted tab shown as Markdown syntax because a line is over 20,000 characters
-   * or the document is over 20 MB. Clears when that is no longer so.
+   * A Formatted tab shown as Markdown syntax because the document is over 20 MB (a line
+   * over 10,000 characters only shows that line as source). Clears when that is no longer so.
    */
   previewLimited?: boolean;
 }
@@ -184,7 +184,10 @@ export interface EditorEngine {
   findNext(): FindResult;
   findPrev(): FindResult;
   replaceCurrent(): FindResult;
-  replaceAll(): number;
+  /** Collects the matches in time slices, then replaces them in one undo step; 0 when cancelled (M14). */
+  replaceAll(): Promise<number>;
+  /** Stops a running Replace all; the text stays as it was. */
+  cancelReplaceAll(): void;
   clearFind(): void;
   /** Receives the result of a find whose count finished after `find` returned (BUGS.md M14). */
   onFindResult?(listener: ((result: FindResult) => void) | null): void;

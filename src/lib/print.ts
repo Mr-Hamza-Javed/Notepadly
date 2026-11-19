@@ -426,8 +426,34 @@ export async function printTab(id: string): Promise<void> {
   }
 }
 
+/**
+ * Above this the print page would freeze the app (100 MB in `marked.parse` did, M13):
+ * the text is turned into one DOM page before the print dialog opens.
+ */
+export const PRINT_LIMIT_FORMATTED = 10 * 1024 * 1024;
+export const PRINT_LIMIT_PLAIN = 50 * 1024 * 1024;
+
+/** The size of a tab's whole text, in bytes on disk or characters loaded, whichever is known. */
+function printSize(tab: TabMeta, id: string): number {
+  const loaded = engine.length(id);
+  if (tab.fullyLoaded) return loaded;
+  return Math.max(loaded + (tab.tailChars ?? 0), tab.stamp?.size ?? 0);
+}
+
 /** Returns true once the print dialog is open (and `afterprint` will end it). */
 async function preparePage(id: string): Promise<boolean> {
+  const before = getTab(id);
+  if (!before) return false;
+  // Checked before loading: a file too big to print is never read in full for it.
+  const limit = before.mode === "formatted" ? PRINT_LIMIT_FORMATTED : PRINT_LIMIT_PLAIN;
+  if (printSize(before, id) > limit) {
+    const mb = Math.round(limit / (1024 * 1024));
+    throw new Error(
+      before.mode === "formatted"
+        ? `This file is too big to print formatted (over ${mb} MB). Switch it to Plain text to print up to ${Math.round(PRINT_LIMIT_PLAIN / (1024 * 1024))} MB.`
+        : `This file is too big to print (over ${mb} MB).`,
+    );
+  }
   await ensureFullyLoaded(id);
   const tab = getTab(id);
   if (!tab) return false;

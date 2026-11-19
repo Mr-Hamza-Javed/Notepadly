@@ -24,6 +24,8 @@ const FindCard = memo(function FindCard() {
   const [result, setResult] = useState<FindResult>(NONE);
   /** Replacing needs the whole file: partial text would change only the loaded part (BUGS.md C2). */
   const [loading, setLoading] = useState(false);
+  /** Replace all collects its matches in slices in a big file and can be cancelled (BUGS.md M14). */
+  const [replacing, setReplacing] = useState(false);
   const input = useRef<HTMLInputElement | null>(null);
   const timer = useRef(0);
   const query = useRef({ search, replace, caseSensitive, wrap, wholeWord, regexp });
@@ -125,12 +127,23 @@ const FindCard = memo(function FindCard() {
   const replaceAll = async () => {
     if (!(await loadAll())) return;
     runNow();
-    engine.replaceAll();
+    setReplacing(true);
+    try {
+      await engine.replaceAll();
+    } finally {
+      setReplacing(false);
+    }
     runNow();
   };
   const close = () => {
     window.clearTimeout(timer.current);
+    engine.cancelReplaceAll();
     actions.closeFind();
+  };
+  /** Escape first stops a running Replace all; the next one closes the bar. */
+  const escape = () => {
+    if (replacing) engine.cancelReplaceAll();
+    else close();
   };
 
   const onKey = (e: KeyboardEvent, enter: () => void) => {
@@ -141,7 +154,7 @@ const FindCard = memo(function FindCard() {
     } else if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      close();
+      escape();
     }
   };
 
@@ -149,7 +162,7 @@ const FindCard = memo(function FindCard() {
   const noQuery = !search;
 
   return (
-    <div className="findbar" role="search" onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); close(); } }}>
+    <div className="findbar" role="search" onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); escape(); } }}>
       <div className="find-row">
         <button
           type="button"
@@ -213,7 +226,7 @@ const FindCard = memo(function FindCard() {
               onChange={(e) => setReplace(e.target.value)}
               onKeyDown={(e) =>
                 onKey(e, () => {
-                  if (!loading) void replaceOne();
+                  if (!loading && !replacing) void replaceOne();
                 })
               }
             />
@@ -221,19 +234,30 @@ const FindCard = memo(function FindCard() {
           <button
             type="button"
             className="btn"
-            disabled={noQuery || loading}
+            disabled={noQuery || loading || replacing}
             onClick={() => void replaceOne()}
           >
             Replace
           </button>
-          <button
-            type="button"
-            className="btn"
-            disabled={noQuery || loading}
-            onClick={() => void replaceAll()}
-          >
-            Replace all
-          </button>
+          {replacing ? (
+            <button
+              type="button"
+              className="btn"
+              aria-label="Replacing, cancel"
+              onClick={() => engine.cancelReplaceAll()}
+            >
+              Replacing… Cancel
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn"
+              disabled={noQuery || loading}
+              onClick={() => void replaceAll()}
+            >
+              Replace all
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -90,6 +90,25 @@ describe("find bar", () => {
     expect(app.text()).toBe("baz bar\n".repeat(400_000));
   });
 
+  it("M14: Replace all in a big file shows Replacing… and can be cancelled", async () => {
+    const text = "foo bar\n".repeat(400_000);
+    backend.write(BIG, text);
+    await app.actions.openPaths([BIG]);
+    await app.actions.ensureFullyLoaded(app.tab().id);
+    app.actions.openFind(true);
+    const el = await renderFindBar();
+    await typeInto(field(el, "Find"), "foo");
+    await typeInto(field(el, "Replace"), "baz");
+    for (let i = 0; i < 100 && button(el, "Replace all").disabled; i++) await flushUi(100);
+    await act(async () => button(el, "Replace all").click());
+    const cancel = button(el, "Replacing… Cancel");
+    expect(cancel).toBeDefined();
+    await act(async () => cancel.click());
+    await flushUi();
+    expect(button(el, "Replace all")).toBeDefined();
+    expect(app.text()).toBe(text);
+  });
+
   it("M21: after switching to a tab that was not loaded yet, the search finds its matches", async () => {
     backend.write(A, "needle in a");
     backend.write(B, "nothing here");

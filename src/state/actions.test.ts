@@ -592,10 +592,83 @@ describe("large files", () => {
     expect(await app.actions.save()).toBe(true);
   });
 
-  it("loads the whole file before writing it somewhere else", async () => {
+  // BUGS.md M13: Save As loaded the whole file into memory first.
+  it("M13: Save As copies the unloaded rest without loading it, and loading goes on from the new file", async () => {
+    backend.mkdir("C:\\notes");
+    const loaded = app.tab().loadedOffset;
+    app.engine.restore(app.tab().id, { anchor: 0, head: 0, scrollTop: 0 });
+    app.engine.insertText("EDIT\n");
+    const reads = backend.count("file_read_chunk");
     dialogs.saveAnswers.push("C:\\notes\\copy.md");
     expect(await app.actions.saveAs()).toBe(true);
-    expect(backend.text("C:\\notes\\copy.md")).toBe(big);
+    expect(backend.count("file_read_chunk")).toBe(reads);
+    expect(backend.text("C:\\notes\\copy.md")).toBe("EDIT\n" + big);
+    expect(backend.text(A)).toBe(big);
+    expect(app.tab()).toMatchObject({ path: "C:\\notes\\copy.md", dirty: false, fullyLoaded: false, loadedOffset: loaded + 5 });
+    await app.actions.ensureFullyLoaded(app.tab().id);
+    expect(app.text()).toBe("EDIT\n" + big);
+  });
+
+  it("M13: Save As refuses to stream from an old file changed since it was read", async () => {
+    backend.mkdir("C:\\notes");
+    const original = app.tab().stamp;
+    backend.write(A, "replaced");
+    // Not yet noticed by polling: the stamp still names the old file, so Rust says STALE.
+    expect(app.tab().stamp).toEqual(original);
+    dialogs.saveAnswers.push("C:\\notes\\copy.md");
+    expect(await app.actions.saveAs()).toBe(false);
+    expect(backend.exists("C:\\notes\\copy.md")).toBe(false);
+  });
+
+  // BUGS.md M13: a whole-file load could not be stopped.
+  it("M13: a whole-file load can be cancelled, without an error message", async () => {
+    const id = app.tab().id;
+    const invoke = backend.invoke.bind(backend);
+    vi.spyOn(backend, "invoke").mockImplementation(async (cmd, args) => {
+      if (cmd === "file_read_chunk") await new Promise((resolve) => setTimeout(resolve, 30));
+      return invoke(cmd, args);
+    });
+    const loading = app.actions.ensureFullyLoaded(id);
+    await waitFor(() => app.loader.cancelShownLoad());
+    await expect(loading).rejects.toBeInstanceOf(app.loader.LoadCancelledError);
+    expect(app.tab().fullyLoaded).toBe(false);
+    expect(app.message()).toBeNull();
+    expect(app.loader.cancelShownLoad()).toBe(false);
+    vi.restoreAllMocks();
+    // A later load is not cancelled by the old request.
+    await app.actions.ensureFullyLoaded(id);
+    expect(app.text()).toBe(big);
+  });
+
+  it("M13: Go to line loads only up to that line", async () => {
+    const id = app.tab().id;
+    await app.actions.ensureLoadedUntil(id, () => app.engine.lineCount() >= 5_000);
+    expect(app.engine.lineCount()).toBeGreaterThanOrEqual(5_000);
+    expect(app.tab().fullyLoaded).toBe(false);
+  });
+
+  it("M13: refuses to load a file too big for one string, and says why", async () => {
+    app.loader.setMaxLoadedChars(500_000);
+    try {
+      await expect(app.actions.ensureFullyLoaded(app.tab().id)).rejects.toBeInstanceOf(app.loader.FileTooBigError);
+      expect(app.message()?.body).toContain("too big to load completely");
+      expect(app.tab().fullyLoaded).toBe(false);
+    } finally {
+      app.loader.setMaxLoadedChars(400_000_000);
+    }
+  });
+
+  it("M13: Print refuses a file too big to print instead of loading it", async () => {
+    const huge = "word ".repeat(2_200_000); // 11 MB, over the formatted print limit
+    backend.write("C:\\notes\\huge.md", huge);
+    await app.actions.openPaths(["C:\\notes\\huge.md"]);
+    expect(app.tab().mode).toBe("formatted");
+    await app.actions.print();
+    expect(app.message()?.title).toBe("Could not print");
+    expect(app.message()?.body).toContain("too big to print formatted");
+    // Background chunk loading may go on, but Print itself does not load the file in full.
+    expect(app.tab().fullyLoaded).toBeFalsy();
+    expect(app.text().length).toBeLessThan(huge.length);
   });
 
   it("loads a small file completely in the background", async () => {

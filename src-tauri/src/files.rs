@@ -217,6 +217,23 @@ pub struct SaveRequest {
     /// encoding is detected from the file.
     #[serde(default)]
     pub original_encoding: Option<Encoding>,
+    /// Where the bytes after `tail_offset` come from, when not `path`: Save As of a
+    /// partly loaded file streams the rest of the old file into the new one (M13).
+    #[serde(default)]
+    pub tail_path: Option<String>,
+    /// The stamp `tail_path` must still have; otherwise the save fails with STALE.
+    #[serde(default)]
+    pub tail_stamp: Option<FileStamp>,
+}
+
+impl SaveRequest {
+    /// The file the tail is copied from: `tail_path`, or the target itself.
+    fn tail_source(&self, target: &Path) -> PathBuf {
+        match &self.tail_path {
+            Some(source) => resolve_target(Path::new(source)),
+            None => target.to_path_buf(),
+        }
+    }
 }
 
 #[derive(Serialize, PartialEq, Debug)]
@@ -1246,6 +1263,12 @@ fn overwrite_in_place(
     // destroys the bytes it would be copied from.
     let mut tail: Box<dyn Read> = match (req.tail_offset, &backup) {
         (None, _) => Box::new(io::empty()),
+        // Save As of a partly loaded file: the tail comes from the old file (M13).
+        (Some(offset), _) if req.tail_path.is_some() => {
+            let mut bytes = Vec::new();
+            append_tail(&req.tail_source(target), offset, &mut bytes)?;
+            Box::new(io::Cursor::new(bytes))
+        }
         (Some(offset), Some(backup)) => {
             let mut source = open_shared(&backup.path).map_err(err)?;
             if offset > source.metadata().map_err(err)?.len() {
@@ -1403,6 +1426,9 @@ fn identity_key(volume: u32, index: u64) -> String {
 pub fn save(req: &SaveRequest) -> Result<FileStamp, String> {
     let target = resolve_target(Path::new(&req.path));
     ensure_fresh(&target, req.expected_stamp)?;
+    if req.tail_path.is_some() {
+        ensure_fresh(&req.tail_source(&target), req.tail_stamp)?;
+    }
 
     let bytes = {
         let kept = kept_line_endings(&target, req);
@@ -1424,7 +1450,7 @@ pub fn save(req: &SaveRequest) -> Result<FileStamp, String> {
     output.write_all(&bytes).map_err(err)?;
     drop(bytes);
     if let Some(offset) = req.tail_offset {
-        append_tail(&target, offset, &mut output)?;
+        append_tail(&req.tail_source(&target), offset, &mut output)?;
     }
     output.sync_all().map_err(err)?;
     drop(output);
@@ -1432,6 +1458,9 @@ pub fn save(req: &SaveRequest) -> Result<FileStamp, String> {
     // The file may have changed while the tail was being copied.
     let _serial = save_lock();
     ensure_fresh(&target, req.expected_stamp)?;
+    if req.tail_path.is_some() {
+        ensure_fresh(&req.tail_source(&target), req.tail_stamp)?;
+    }
     if must_write_in_place(&target) {
         // The complete text is in the temp file first, so a failed copy loses
         // nothing: the temp file is then kept and named in the error.
@@ -1716,7 +1745,38 @@ mod tests {
             allow_lossy: false,
             normalize_eol: false,
             original_encoding: None,
+            tail_path: None,
+            tail_stamp: None,
         }
+    }
+
+    #[test]
+    fn save_as_streams_the_tail_of_another_file() {
+        let dir = TestDir::new();
+        let source = dir.file(b"line one\nline two\nline three\n");
+        let first = read_chunk(&source, 0, 9, None).unwrap();
+        let target = dir.0.join("copy.txt");
+        let mut req = request(&target, "LINE ONE\n", Eol::Lf, Encoding::Utf8);
+        req.tail_offset = Some(first.next_offset);
+        req.tail_path = Some(source.to_string_lossy().into_owned());
+        req.tail_stamp = Some(first.stamp);
+        save(&req).unwrap();
+        let expected = format!(
+            "LINE ONE\n{}",
+            &"line one\nline two\nline three\n"[first.next_offset as usize..]
+        );
+        assert_eq!(fs::read(&target).unwrap(), expected.as_bytes());
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            b"line one\nline two\nline three\n"
+        );
+
+        // A source changed since it was read is refused.
+        fs::write(&source, b"changed by someone else, and longer").unwrap();
+        let other = dir.0.join("other.txt");
+        req.path = other.to_string_lossy().into_owned();
+        assert_eq!(save(&req).unwrap_err(), "STALE");
+        assert!(!other.exists());
     }
 
     #[test]

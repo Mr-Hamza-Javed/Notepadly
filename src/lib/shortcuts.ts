@@ -2,6 +2,7 @@
 import { engine } from "../editor";
 import { findStep } from "./findBar";
 import { isTabDragging } from "./tabDrag";
+import { cancelShownLoad } from "./loader";
 import { wheelZoomHandler } from "../editor/wheelZoom";
 import { actions } from "../state/actions";
 import { getActiveTab, useApp } from "../state/store";
@@ -225,6 +226,9 @@ function onKeyDown(event: KeyboardEvent): void {
       } else if (find.open) {
         stop();
         actions.closeFind();
+      } else if (cancelShownLoad()) {
+        // A whole-file load (Select all, Ctrl+End, Go to line…) is stopped (M13).
+        stop();
       }
     }
     return;
