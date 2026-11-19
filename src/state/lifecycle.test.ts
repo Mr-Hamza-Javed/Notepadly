@@ -438,6 +438,23 @@ describe("typing right at start, before the session is restored", () => {
   });
 });
 
+describe("H8: drafts", () => {
+  it("are not sent again when the text did not change since the last one", async () => {
+    app = await bootApp();
+    app.type("note");
+    await app.loader.flushPersistence();
+    expect(backend.count("draft_write")).toBe(1);
+    // A tab switch or rename schedules a session write, but the text is the same.
+    app.loader.markDraftChanged(app.tab().id);
+    await app.loader.flushPersistence();
+    expect(backend.count("draft_write")).toBe(1);
+    app.type("!");
+    await app.loader.flushPersistence();
+    expect(backend.count("draft_write")).toBe(2);
+    expect(backend.drafts.get(app.tab().id)).toBe("note!");
+  });
+});
+
 describe("MERGE-1: the start-up draft clean-up", () => {
   const untitled = (id: string) => ({
     id,

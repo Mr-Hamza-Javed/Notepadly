@@ -82,6 +82,8 @@ interface TabRuntime {
   diskEncoding: Encoding | null;
   /** The user was told the file looks binary. */
   binaryWarned: boolean;
+  /** What the stored draft was written from (edits, length, file state); a flush skips an unchanged one (H8). */
+  draftSig: string | null;
 }
 
 const runtimes = new Map<string, TabRuntime>();
@@ -113,6 +115,7 @@ function rtOf(id: string): TabRuntime {
       diskChars: null,
       diskEncoding: null,
       binaryWarned: false,
+      draftSig: null,
     };
     runtimes.set(id, rt);
   }
@@ -1058,13 +1061,18 @@ async function doFlush(): Promise<void> {
       if (tab.dirty) {
         if (!engine.hasDoc(id)) continue;
         const meta = { stamp: tab.stamp, loadedOffset: tab.loadedOffset, fullyLoaded: tab.fullyLoaded };
+        // The whole text crosses IPC for each draft: not again when nothing changed (H8).
+        const sig = `${rt.editSeq}:${engine.length(id)}:${tab.loadedOffset}:${tab.stamp?.size}:${tab.stamp?.mtimeMs}`;
+        if (rt.hasDraft && rt.draftSig === sig) continue;
         await ipc.draftWrite(id, engine.getText(id));
         rt.hasDraft = true;
         rt.draftMeta = meta;
+        rt.draftSig = sig;
       } else if (rt.hasDraft) {
         await ipc.draftDelete(id);
         rt.hasDraft = false;
         rt.draftMeta = null;
+        rt.draftSig = null;
       }
     } catch (error) {
       failure = error;
