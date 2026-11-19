@@ -1,585 +1,376 @@
-# Notepadly: bug and edge-case report
+# Notepadly: bug list and status
 
-**Date:** 10 November 2026 · **Code:** commit `c578712` · **Total:** 70 issues (8 critical, 16 high, 22 medium, 16 low, 8 to check on Windows)
+**Updated:** 19 November 2026 · **Branch:** `ccr-a918fa2a-qfstem`
 
-This report covers **functionality**: broken features, wrong results, data loss and unexpected behaviour. No obvious security bug was found, so there is no security section.
+**Status:**
+- The first report (10 November 2026, commit `c578712`) listed 70 issues.
+- Most are now fixed. The rest, the new bugs found since, the checks to do on Windows and the tests still to write are all in **Part 1**.
+- Everything that is done is in **Part 2**.
+- The full first report, with the original steps for every bug, is in git history (`git show 28f46c2:BUGS.md`).
 
-## How this was checked
-
-- Read all of the code: Rust backend, state and loader, editor engine, UI components.
-- `npm run typecheck` and `npm test` both pass (30 tests).
-- Ran the real frontend in Chromium against a fake Tauri backend and reproduced each suspected bug with keyboard and mouse.
-- Ran 900 random keystrokes and format commands on `sample.md`: no crash, no exception.
-
-**Limit:** this machine is Linux. The Rust code only compiles on Windows, so Rust bugs were found by reading, not by running. WebView2-only behaviour (clipboard, drag and drop, context menu) is in its own section.
+**Tests:**
+- `npm test`: 536 tests pass, none skipped.
+- `npm run typecheck` is clean.
+- The Rust code (`src-tauri`) does not build on Linux, so the Rust changes on this branch were made by careful reading and have **not been compiled or run on Windows yet**. See section 1.4.
 
 | Mark | Meaning |
 | --- | --- |
-| ✅ | Reproduced by running the app |
+| ✅ | Reproduced by running the app or a test |
 | 📖 | Found by reading the code, not run |
 | ⚠️ | Needs a check in the real app on Windows |
 
 ---
 
-## Fix these 10 first
+# Part 1: Still to do
 
-| # | Bug | Why first |
-| --- | --- | --- |
-| C1 | Save As without an extension silently overwrites another file | Data loss — fixed (965dcfc) |
-| C2 | Replace all during loading changes only part of the file | Silent wrong result |
-| C3 | Edits in a big file cannot be saved once the file changes on disk | Work is stuck — fixed (246833d) |
-| C4 | After an error message, a tab or the window can never close | App is stuck |
-| C5 | Session does not come back if the main window closed first | Unsaved notes "vanish" |
-| C6 | Urdu/Unicode saved in an ANSI file becomes `?` | Data loss — fixed (529593f, a7319a4) |
-| C8 | Typing goes into the previous tab while a tab loads | Wrong file is edited |
-| H1 | Ctrl+B in a table cell makes `****text` | Everyday feature broken |
-| H2 | Left/Right arrow gets stuck at tables, maths and diagrams | Keyboard navigation broken |
-| H9 | Print does not match the screen, and comments are printed | README says otherwise |
+## 1.1 First thing: run and check the Rust changes on Windows
 
----
+These were written on Linux and only type-checked, or only read. Do this before anything else, because several fixes depend on it.
 
-## CRITICAL: data loss or the app gets stuck
+1. **Run `cargo test` in `src-tauri` on Windows.** New or changed Rust tests that have never run:
+   - `files.rs`:
+     - Unmappable ANSI characters (C6).
+     - Invalid bytes reported by the scan (C7).
+     - Mixed line endings kept on save (H14; the test was `#[ignore]` before).
+     - UTF-16 without BOM detected (M15; was `#[ignore]`).
+     - In-place write when no temp file can be made (H15).
+     - Long-path prefix (W8).
+     - Note: `exclusive_lock_reports_an_error_and_keeps_the_original` needs real Windows locking.
+   - `store.rs`:
+     - `drafts_prune` (L16).
+     - Per-window session files (`window_sessions_read` / `window_session_write` / `window_session_delete`, C5/M18).
+   - `autoupdate.rs`: a downloaded update installs only when allowed (H13); `launched_hidden` only for the first window (WIN-1).
+   - `lib.rs`: second launch opens a new window (F1); `tab_drop_target`; new windows sized and placed from the source window.
+2. **Build the app** (`npm run app:build`) and fix any compile errors.
 
-### C1. Save As without an extension renames the file and overwrites another one ✅ — fixed (965dcfc)
-- **What happens:** in Save As, pick "All files" and type `LICENSE`. The app adds `.md` (or `.txt`) itself and writes to `LICENSE.md`. If `LICENSE.md` already exists it is **overwritten without asking**, because the Windows dialog only checked `LICENSE`.
-- **Test:** `LICENSE.md` held "IMPORTANT EXISTING CONTENT". Save As `C:\d\LICENSE` → its content became "hello".
-- **Also:** `.gitignore` becomes `.gitignore.txt`. Files with no extension (`Makefile`, `LICENSE`, `hosts`) can never be saved with Save As.
-- **Cause:** `src/state/actions.ts:383` (`withDefaultExtension`), `src/state/logic.ts:198`.
-- **Fix:** keep the path the user chose. Add an extension only when the Markdown/Text filter is selected, and ask again if the new name exists.
-
-### C2. "Replace all" before the file has loaded changes only the loaded part ✅ — fixed (2f064ce)
-- **What happens:** open a file over 2 MB and press Ctrl+H → Replace all straight away. Only the text in memory at that moment is changed. The rest loads later, unchanged. No warning.
-- **Test:** 5.4 MB file with 150,000 "foo". After Replace all: 7,521 replaced, **142,479 left**.
-- **Cause:** `src/components/FindBar.tsx:176`. `openFind` starts the full load but Replace all does not wait for it.
-- **Fix:** `await actions.ensureFullyLoaded(activeId)` before Replace and Replace all; disable the buttons while loading.
-
-### C3. Edits in a partly loaded big file cannot be saved anywhere once the file changes on disk ✅ — fixed (246833d)
-- **What happens:** edit a big file, then another program changes it (a logger, a sync tool). Now:
-  1. Save → "File changed on disk ... use Save as to keep your text under another name."
-  2. Save as → "This file changed on disk while only part of it was loaded. Reload it to continue."
-  3. Pressing "Keep mine" first changes nothing.
-- The way out the app suggests (Save as) is blocked. Only Reload is left, which throws the edits away.
-- **Cause:** `src/lib/loader.ts:219` (`LoadBlockedError`) and `:457` (old stamp kept for a partial tab).
-- **Fix:** let Save As write the loaded text plus the tail of the **new** file, or at least offer "save only the loaded text to a new file". Correct the message.
-
-### C4. If a message appears over the "save changes?" dialog, that tab and the window can never close ✅
-- **What happens:** the confirm dialog is open and an error message arrives at the same moment (an earlier slow save fails, a background load fails). The message replaces the confirm dialog, but the confirm's promise never resolves.
-- **Result:** the tab's X does nothing from then on. If it happened while closing the window, `closeInProgress` stays `true` forever and **the window will not close** (Task Manager only).
-- **Test:** both cases reproduced.
-- **Cause:** `src/state/store.ts:149`: `showMessage` sets `dialog` directly. `actions.showDialog` handles this case, `showMessage` does not.
-- **Fix:** in `showMessage`, resolve a pending `confirm-close` as `cancel` first, or queue messages.
-
-### C5. If the main window is closed first, the session does not come back next time 📖 — fixed (cb1f8a5)
-- **What happens (background mode on, the default):** open 2 windows. Close the **main** one first, then the other. The second window hides in the background. Open Notepadly again: an empty "Untitled", no previous tabs, no unsaved notes.
-- **Cause:** only the window labelled `main` restores the session. It has been destroyed, and `src-tauri/src/lib.rs:242` wakes any window that is left. That window has `isMainWindow = false`, so it neither restores nor writes drafts (`src/state/actions.ts:489`, `:515`).
-- The notes are still on disk and return after a PC restart, but until then they look lost. New notes written in that window get no draft either.
-- **Fix:** create a new `main` window when none exists, or give the last hidden window the main role.
-
-### C6. Saving in ANSI silently turns Urdu/Unicode into `?` 📖 — fixed (529593f, a7319a4)
-- **What happens:** the file is detected as ANSI (or ANSI is picked in the status bar). Type Urdu, emoji or any letter the code page lacks. On save each one becomes `?`. No warning, and the tab shows as saved.
-- **Dangerous path:** one bad byte in the first 256 KB of a UTF-8 file makes the whole file ANSI. Urdu typed into it then becomes `????` for good.
-- **Cause:** `src-tauri/src/files.rs:491` (`Unmappable(_) => out.push(b'?')`).
-- **Fix:** check before saving and ask the user ("Save as UTF-8?").
-
-### C7. Encoding is detected from the first 256 KB only 📖 — fixed (529593f, a7319a4)
-- **What happens:** an ANSI file whose first non-ASCII letter comes after 256 KB is treated as UTF-8. Those bytes show as `�` in later chunks. Saving then damages those bytes in the loaded part for good.
-- **Cause:** `src-tauri/src/files.rs:174` (`detect_encoding`); later chunks use `from_utf8_lossy`.
-- **Fix:** when a later chunk has invalid UTF-8, reload the tab as ANSI, or at least block saving with a warning.
-
-### C8. Typing goes into the previous tab's file while a tab is loading ✅ — fixed (e641629)
-- **What happens:** click a tab that is not loaded yet (restored from the session, hibernated, or on a slow drive). The tab strip shows the new tab as active at once, but the editor still holds the **previous** file until loading ends. Anything typed in between goes into the previous file and marks it unsaved.
-- **Test:** clicked `a.txt` (1.5 s read delay), typed "TYPED" → `b.txt` became "TYPEDBBB file", `a.txt` untouched.
-- **Cause:** `src/state/actions.ts:227-238`: `activeId` is set first, `engine.activate` runs after the load.
-- **Fix:** show an empty read-only state while loading, or switch `activeId` only when the document is ready.
-
----
-
-## HIGH: main features broken or wrong results
-
-### H1. Ctrl+B / Ctrl+I / the Bold button in a table cell make `****text` ✅ — fixed (1887e02)
-- Select "apple" in a cell, press Ctrl+B → the document has `| ****apple | 2 |`.
-- **Cause:** the global handler in `src/lib/shortcuts.ts:144` runs first (capture phase) and applies bold at the editor's hidden selection (start of the cell). The table's own Ctrl+B code (`widgets.ts:451`) never runs.
-- **Fix:** let the table widget handle these keys when focus is in a cell.
-
-### H2. Left/Right arrow gets stuck at rendered tables, maths blocks and Mermaid diagrams ✅ — fixed (1887e02)
-- **What happens:** from the start of the line below a table, press Left. The cursor walks through the hidden source one character at a time and cannot be seen.
-- **Test:** crossing a small 2-row table took **58** Left presses. A big diagram takes hundreds.
-- **Cause:** `src/editor/livePreview/block.ts` gives no `EditorView.atomicRanges` for its replaced blocks.
-- **Fix:** mark block widgets as atomic ranges. Also add a way to enter a table or maths block from the keyboard (only a mouse click works today).
-
-### H3. With a table at the very top of the document, Up arrow then typing scatters the text ✅ — fixed (1887e02)
-- In the header cell press Up, type "abc". "a" landed below the table (and became a new table row), "b" at the end of the document, "c" was lost.
-- **Cause:** `src/editor/livePreview/widgets.ts:393`: `anchor = Math.max(0, start - 1)`; position 0 is inside the table.
-- **Fix:** when the table starts the document, insert an empty line first and put the cursor there.
-
-### H4. Inserting a table on an empty line swallows the paragraph below it ✅
-- `first`, empty line, `second paragraph`. Insert a 2×2 table on the empty line → "second paragraph" becomes the table's third row.
-- **Cause:** `src/editor/commands.ts:312` (`suffix`) adds no empty line after the table in this case.
-- **Fix:** always add `\n` when the next line is not empty.
-
-### H5. Table commands corrupt a table inside a blockquote or callout ✅ — fixed (f551dc0)
-- In a `> | a | b |` table, "Insert row below" → every row becomes `| > | a | b |` and the table leaves the quote.
-- **Cause:** `src/editor/commands.ts:221` (`locateTable`) parses from the line start, including `> `.
-- **Also:** tables, Mermaid, block maths and `---` inside a list, quote or callout are not rendered at all (`block.ts:143` looks at top-level blocks only), yet the toolbar shows "Edit table" as enabled.
-- **Fix:** strip the quote/indent prefix before parsing, or disable the commands for nested tables.
-
-### H6. One long line (over 20,000 characters) turns off live preview for the whole document for good ✅ — fixed (0bb62e7)
-- Paste a base64 image (`![](data:image/png;base64,...)`) or a minified line. The whole document becomes raw Markdown.
-- The status bar still says **"Formatted"** and the toolbar stays. Deleting the line or pressing Undo does not bring it back; the file must be closed and reopened.
-- **Cause:** `src/editor/index.ts:323` (`checkDegrade`); the `degraded` flag never clears.
-- **Fix:** turn preview back on when the long line is gone; show the reason in the status bar; better, skip only that line.
-
-### H7. A file that is deleted and created again turns a clean tab into "unsaved" ✅ — fixed (d8a8ef6)
-- `git checkout`, OneDrive, or editors that save by delete + rename. The tab is flagged "deleted" and marked unsaved, then when the file is back it shows "This file changed on disk" and asks "save changes?" on close, though the user typed nothing.
-- **Cause:** `src/lib/loader.ts:590` forces dirty on `flag-deleted`; `decideExternal` then refuses to reload a dirty tab.
-- **Fix:** if the user made no edit, reload silently when the file returns and clear the dirty mark.
-
-### H8. The whole document is written to the draft file after every typing pause ✅ — fixed (1123dea)
-- In a 1.59 MB unsaved file, each "x" wrote a full 1.59 MB draft (4 keystrokes, 4 full writes). For a 100 MB file that is 100 MB over IPC and to disk every 800 ms.
-- The spec says "no work proportional to document length per keystroke".
-- **Cause:** `src/lib/loader.ts:729`. Save also sends the whole text over IPC.
-- **Fix:** a longer debounce for big files, write only the changes, or write during idle time.
-
-### H9. Print does not match the screen, and comments are printed ✅ — fixed (ccacdde, f2a908b)
-- README and Help say comments are "left out of printing". In fact `%% secret comment %%` is printed.
-- Printed **raw**: `$E=mc^2$`, `$$...$$`, Mermaid (as code), callouts (`[!warning]`), `==highlight==`, `[[wikilink]]`, `#tag`. Front matter prints as a rule and a heading "title: x".
-- **Cause:** `src/lib/print.ts:134` uses plain `marked` only.
-- **Fix:** remove `%%...%%` and front matter before printing; render KaTeX, Mermaid and callouts into the print HTML.
-
-### H10. The Find "x of y" counter is wrong ✅ — fixed (96a6e76, 7ff58db)
-1. Move the cursor elsewhere and press Next: on the match at line 40 the counter says **"3 of 50"** (it only adds 1).
-2. F3 / Shift+F3 move the match but never update the counter.
-3. With 10,000 or more matches: "1 of 10000", then **"0 of 10000"** after Next. It should say "10000+".
-- **Cause:** `src/editor/find.ts:197`; `src/lib/shortcuts.ts:123` does not pass the result to the find bar; `FindBar.tsx:93` ignores `FIND_COUNT_LIMIT`.
-
-### H11. Find matches inside tables, block maths and Mermaid cannot be seen ✅ — fixed (1887e02)
-- Search "pear" in a table: the counter says "1 of 1" but nothing is highlighted, so Find seems to do nothing. Replace still works, blind.
-- **Cause:** these blocks are replaced by widgets; highlight marks inside them are not drawn.
-- **Fix:** open the source or highlight the cell when the match is inside a widget.
-
-### H12. Settings and the Recent list are not shared between windows 📖 — fixed (dd7e4c3)
-- Change the theme, font or startup option in one window: the other open window does not change.
-- Each window writes the whole settings object, so the next change in an older window **wipes out** the first window's changes. Same for recent files.
-- **Cause:** `src/state/store.ts:111`; there is no `storage` event listener.
-
-### H13. Turning off "Update automatically" does not stop an update that is already downloaded 📖 — fixed (3f47212)
-- If an update is "ready" and the user turns the setting off, it still installs on close.
-- **Cause:** `src-tauri/src/autoupdate.rs:208` (`install_if_ready`) does not check `enabled`.
-
-### H14. A file with mixed line endings is fully rewritten on save 📖 — fixed (529593f, a7319a4)
-- With both CRLF and LF in a file, **every** line is saved in the first line's style. A Git diff shows the whole file changed. No warning; the status bar shows the first line's style only.
-- **Cause:** `src-tauri/src/files.rs:458` (`encode_text`).
-
-### H15. Save fails in a folder where new files cannot be created 📖 — fixed (529593f), not checked on Windows
-- The file itself is writable but a temp file cannot be made in its folder (some ACLs, drive roots, some network shares). Save gives "Access is denied" although writing in place would work.
-- **Cause:** `src-tauri/src/files.rs:644`. The in-place fallback covers a failed replace, not a failed temp file.
-
-### H16. A file deleted while the app was closed comes back as an empty "unsaved" tab ✅ — fixed (3463b7a)
-- The session had `gone.md`; the file was deleted. On start: empty document, dirty dot, "deleted" bar. "Keep mine" + Save writes an **empty file** to disk. Closing asks "save changes?" for an empty document.
-- **Cause:** `src/lib/loader.ts:397` (`materialiseOrFlag`).
-- **Fix:** do not mark such a tab dirty; ask "file not found, close this tab?".
-
----
-
-## MEDIUM
-
-### M1. Ctrl+A in a table cell selects the whole document ✅ — fixed (1887e02)
-Focus stays in the cell, the cell text is not selected, the status bar shows "68 of 68 characters". Cause: `src/lib/shortcuts.ts:131`; a table cell is not treated as a native input.
-
-### M2. F5, Ctrl+K and Edit > Paste in a table cell insert at the start of the cell ✅ — fixed (1887e02)
-The caret was at the end of the cell; F5 gave `| 11:50 AM 11/10/2026apple |` (tested). By the code, Ctrl+K and Edit > Paste insert at the same place, and Edit > Copy/Cut do not see the cell's selection (they stay disabled).
-
-### M3. After Ctrl+M the Tab key leaves the editor ✅ — fixed (05bdd86)
-Press Ctrl+M by mistake and Tab moves focus to the status bar; typing goes nowhere. Nothing shows that a mode changed. Cause: `src/editor/index.ts:212` keeps CodeMirror's `toggleTabFocusMode` from the default keymap. `Ctrl+/`, `Alt+Arrow`, `Ctrl+[` / `]` and `Ctrl+Shift+K` are also active but hidden.
-
-### M4. Heading and Bold produce wrong Markdown on several lines ✅ — fixed (d573f19, e68b4e5)
-- Select all, choose H2 → `## ` on empty lines too, and `## - item`, `## > quote`.
-- Select two paragraphs, Bold → `**one\n\ntwo**`, which is not bold.
-- Cause: `src/editor/commands.ts:108` and `:44`.
-
-### M5. Moving down out of the last table row marks the document unsaved ✅ — fixed (1887e02)
-With a table at the end of the document, Down arrow or Escape adds a newline and the tab becomes dirty. Cause: `widgets.ts:387`.
-
-### M6. Save As onto the path of another open tab gives two tabs for one file ✅ — fixed (246833d)
-Both tabs show `a.txt`; saving in one leaves the other in a stale/reload state.
-
-### M7. Links that open wrongly ✅ — fixed (ebb2058)
-| Link | What happens |
-| --- | --- |
-| `[x](report.pdf)`, `[x](photo.png)` | The PDF or image bytes open as garbage in a **text tab** |
-| `[[v1.2 notes]]` | `.md` is not added → "Could not open file" |
-| `[x](C%23 guide.md)`, `a%26b.md` | `%23`, `%26` are not decoded → file not found |
-| `[x](file:///C:/notes/a.md)` | Nothing happens |
-| `[x](sub/)` | Tries to open `sub\.md` |
-| `[x](/docs/a.md)` | Treated as relative to the document's folder |
-Cause: `src/state/logic.ts:145-161` (`decodeURI` leaves reserved characters encoded).
-
-### M8. `.mdx` is Markdown in the installer but plain text in the app ✅ — fixed (ebb2058)
-`src-tauri/windows/hooks.nsh` registers `.mdx` as a main Markdown type; `src/state/logic.ts:117` does not list it. It is missing from the Open/Save filters too.
-
-### M9. A file opened during startup can be lost 📖 — fixed (cb1f8a5)
-The `open-paths` listener is added **after** `openHere(pending)` (`src/state/actions.ts:689-690`), while Rust already counts the window as ready. A file opened from Explorer in that gap silently does not open. The close handler is added late as well.
-
-### M10. Odd results with "Open in a new window" 📖 — fixed except the last point (cb1f8a5)
-- Open a file from Explorer: a new window appears **and** the main window comes to the front too (when woken from the background, the empty or old-session window shows as well).
-- File > Open in an empty window also opens a new window and leaves the empty one.
-- Clicking a wikilink opens a new window.
-- A file open in another window is not noticed, so one file can be open in two windows.
-
-### M11. Giving a new file name on the command line does nothing 📖 — fixed (cb1f8a5)
-`notepadly newfile.txt` (file does not exist) → empty Untitled. Notepad asks "create a new file?". Launching again while the app runs only focuses the old window; no new tab or window. File names that start with `-` cannot be opened. Cause: `src-tauri/src/lib.rs:229`.
-
-### M12. Hibernation wipes the Undo history 📖 — fixed (72e2d01)
-A clean tab over 1 MB that is inactive for 60 seconds has its editor state dropped. On return Ctrl+Z does nothing and callout fold state is reset. Cause: `src/lib/loader.ts:634`.
+## 1.2 Open bugs (not fixed)
 
 ### M13. Whole-file actions fill memory on very big files 📖
-Find, Replace, Select all, Ctrl+End, Print, Save As, Go to line and changing the line ending or encoding all load the full file into RAM. There is no cancel. Above roughly 500 MB `getText()` fails on the JS string limit. Printing 100 MB freezes the UI in `marked.parse`.
+- Find, Replace, Select all, Ctrl+End, Print, Save As, Go to line and changing the line ending or encoding all load the full file into RAM. There is no cancel.
+- Above roughly 500 MB, `getText()` fails on the JS string limit. Printing 100 MB freezes the UI in `marked.parse`.
+- **To do:** streaming Find/Print/Save As and a full load that can be cancelled, across `src/lib/loader.ts`, the engine and `src/lib/print.ts`.
 
 ### M14. Find scans the whole file on each keystroke in big files 📖
-`recount` and `firstFrom` run on the UI thread (120 ms debounce only). In a 100 MB file with few matches the UI can stall on each letter. Cause: `src/editor/find.ts:107`.
+- `recount` and `firstFrom` run on the UI thread (120 ms debounce only). In a 100 MB file with few matches the UI can stall on each letter.
+- **Cause:** `src/editor/find.ts`.
+- **To do:** an incremental or background match count, with the result sent to the find bar when ready.
 
-### M15. A wrongly detected encoding cannot be corrected 📖 — mostly fixed (529593f, a7319a4)
-- A UTF-16 file without a BOM is read as UTF-8 (a NUL between every letter).
-- Changing the encoding in the status bar only affects **saving**; the file is not decoded again (no "Reopen with encoding").
-- A binary file opens as text and is damaged on save, with no warning.
-- Only code pages 874, 932, 936, 949, 950 and 1250-1258 are supported; all others (for example 866) are read as windows-1252.
+### TAB-1. Only the current Find match is shown inside a table cell 📖
+- **What happens:** search a word that appears in several table cells. The current match is marked in its cell, but the other matches in tables get no highlight (matches in normal text do).
+- **Cause:** `src/editor/livePreview/widgets.ts` `TableController.showSelection` marks the editor selection only. The `cm-find-match` marks of `src/editor/find.ts` cannot reach the widget's cells.
+- **Fix:** pass the find query to the table widgets and mark every match in the rendered cells.
 
-### M16. Edit > Cut deletes the text even when the clipboard write fails 📖 — fixed (d532e03)
-`src/editor/index.ts:611` does not wait for `writeText`. `paste()` (`:623`) has no error handling; if it fails nothing happens and nothing is shown.
+### TAB-2. Maths, images and wikilinks are not rendered in table cells (rest of L8) 📖
+- `src/editor/livePreview/widgets.ts` `renderCellHtml` handles bold, italic, strike, highlight, code and links only.
 
-### M17. "Exit" does not quit, and the wrong window can be left over 📖 — fixed (cb1f8a5)
-With background mode on, File > Exit only hides the window. With several windows there is a race: sometimes the main window is destroyed and another is left (then C5 applies).
+### TAB-3. Emphasis rules run inside a link target in a table cell 📖
+- **Steps:** a cell `[x](https://a.b/_c_/d)` or `[x](https://a.b/*c*)`.
+- **Actual:** the URL in `data-href` gets `<em>` tags, so the link is broken. **Expected:** the target is left as written.
+- **Cause:** `renderCellHtml` (`src/editor/livePreview/widgets.ts`) replaces emphasis before links.
+- **Fix:** swap links out first, as is done for code spans.
 
-### M18. Extra windows do not remember their session or size 📖 — fixed (cb1f8a5)
-Only the `main` window writes the session and drafts and remembers size and position (`src-tauri/src/lib.rs:285`). Tabs in other windows do not return; every new window opens at 1280×800.
+### TAB-4. Escape in a table at the end of a partly loaded file adds a newline in the middle of the file 📖
+- **Steps:** open a big file that loads in parts, where the loaded part ends inside a table. Click a cell of the last row and press Escape before the rest loads.
+- **Cause:** `TableController.leave` (`src/editor/livePreview/widgets.ts`) adds a `\n` at the end of the document; the loader then appends the next chunk after it. The extra newline is saved with the next real edit.
+- **Fix:** skip the newline (stay in the cell) while the tab is not fully loaded.
 
-### M19. The Formatting toggle changes every tab; a `.txt` can never be Formatted 📖 — fixed (22e2983)
-- View > Formatting off then on loses the "Markdown syntax" choice of each tab.
-- Save an Untitled (Formatted) note as `.txt`: the mode becomes Plain and the status bar cannot switch it back. Markdown inside `.txt`, `.log` and similar files cannot be viewed formatted at all.
+### FILES-1. A mixed-line-ending file cannot be normalised to its first line's style 📖
+- **What happens:** the file starts with CRLF but also has LF lines. Picking "Windows (CRLF)" in the status bar does nothing (it is already shown), so the LF lines stay; since H14, a save keeps them too.
+- **Workaround:** pick LF, then CRLF.
+- **Cause:** `src/state/actions.ts` `changeFileFormat` returns early when the picked line ending equals `tab.eol`; the frontend does not know the file is mixed.
+- **Fix:** let Rust report "mixed" in `FileChunk`, show it in the status bar, and let picking any style normalise.
 
-### M20. Wrong name in the "could not open" message, and Recent is not cleaned 📖
-`src/state/actions.ts:320` always uses the **last** file in the list. The failed file stays in Recent because the entry is "name: error" and never matches a path.
+### FILES-2. A UTF-16 file without a BOM gets a BOM when saved 📖
+- **What happens:** since M15, such a file is read as UTF-16, but `save` always writes `Encoding::bom()`, so the first save adds `FF FE` / `FE FF`.
+- **Cause:** `src-tauri/src/files.rs` `save` / `write_in_place`. The encoding enum has no "UTF-16 without BOM".
+- **Fix:** probably fine as it is (Notepad also writes a BOM). Add BOM-less UTF-16 variants only if it matters.
 
-### M21. With the find bar open, moving to an unloaded tab makes F3 say "No results" 📖 — fixed (2f064ce)
-Find runs on the old tab's document, then `engine.activate` clears the session. Next does not work until the query is typed again.
+### FILES-3. The H15 in-place save is not atomic 📖
+- **What happens:** when the folder allows no new files, the file is overwritten in place. If the write fails part way (disk full, network drop), the file is damaged and no temp copy exists.
+- **Cause:** `src-tauri/src/files.rs` `write_in_place`. Notepad has the same limit.
 
-### M22. If a restored file cannot be read, the tab is empty 📖 — fixed (3463b7a)
-When another program has locked the file, the tab opens empty (partial, offset 0). Text typed there and saved is **added to the start** of the real file. Nothing is lost, but the screen and the disk do not match.
+### MD-1. Maths and Mermaid inside a list, quote or callout show as source in Formatted mode 📖
+- **What happens:** since L12, `$$` blocks inside a list or quote are parsed as maths, but the live preview only turns top-level blocks into widgets, so they show as styled source. Print renders them.
+- The same limit applies to tables, `---` rules and Mermaid inside a list, quote or callout (from H5).
+- **Cause:** `src/editor/livePreview/block.ts` builds block widgets for children of `Document` only.
 
----
+### MD-2. The real regional date/time format is not available to F5 📖
+- **What happens:** F5 uses the WebView's locale, which follows the Windows display language. With an English UI and a UK or German region, F5 still gives the US order.
+- **Fix:** read the user's locale name in Rust (`GetUserDefaultLocaleName`) and pass it to `formatDateTime`.
 
-## LOW: small bugs and wrong detection
+### WIN-3. One file can be open in two windows (last point of M10) 📖
+- **What happens:** a window does not know which files the other windows have open, so opening a file that is open in another window opens a second copy.
+- This is safe: saving in one gives "changed on disk" in the other.
+- **Fix:** keep a shared list of open paths in Rust, updated as tabs open and close.
 
-| # | Issue | Status |
+### MERGE-1 (remaining risk). A brand-new draft can be pruned at start 📖
+- At start, the first window deletes drafts that no stored session owns (L16).
+- A window opened at start that writes a draft for a brand-new tab before that clean-up runs could still lose it. The time window is very short.
+- **Fix:** run the clean-up before opening the other windows, or have Rust skip drafts newer than the start of the run.
+
+### Smaller open points 📖
+- **Lists:**
+  - Enter on an empty nested list item removes the item instead of outdenting.
+  - Indenting with Tab does not fix the numbering.
+- **Same file, different path:** `pathsEqual` does not understand `..`, 8.3 names, or UNC vs mapped drive, so one file can open in two tabs.
+- **Zoom:** Ctrl+wheel or pinch zooms 10% per event.
+- **Deleted partial file:** a partly loaded file that was deleted first shows "changed" instead of "deleted" (it corrects itself within 3 seconds).
+- **Read-only file:** typing works and Save says "Access is denied", with no sign beforehand.
+- **Urdu / right-to-left:** table cells get no RTL alignment.
+- **Early typing:** text typed in the first ~200 ms after start, before the session is restored, can be lost.
+
+## 1.3 Remaining parts of partly fixed bugs
+
+| # | What is still missing | Where |
 | --- | --- | --- |
-| L1 | `$HOME/$USER` becomes maths (shows "Use HOME/USER for paths") | ✅ — fixed (389e22f) |
-| L2 | Colour codes like `#fff`, `#1a2b3c` become tag pills | ✅ — fixed (389e22f) |
-| L3 | In `if a==b or c==d`, "b or c" is highlighted and the `==` are hidden | ✅ — fixed (389e22f) |
-| L4 | Time/Date (F5) is always US format `3:05 PM 11/10/2026`, not the system format | ✅ — fixed (71d6fdf) |
-| L5 | "characters" counts UTF-16 units (an emoji is 2). The total of a partly loaded unsaved file is stale | 📖 — second part fixed (42e6a30) |
-| L6 | The font list has false families ("Montserrat Extra"); "Inter" is always listed even when not installed | 📖 — fixed (`ea5c821`, `fec7557`, 7968f33) |
-| L7 | After 400 undo steps, undoing back to the saved state no longer clears the unsaved dot (`index.ts:57`) | 📖 — fixed (7ea4fbd) |
-| L8 — fixed in part (7d40ede; rest is TAB-2) | In table cells `2 * 3 * 4` turns italic; `_x_`, maths, images and wikilinks are not rendered | 📖 |
-| L9 — fixed (1887e02) | In a table without padding (`\|a\|b\|`), a `\` typed at the end of a cell merges it with the next cell | 📖 |
-| L10 — fixed (f551dc0) | Table commands delete the extra cells of a row that has more cells than the header | 📖 |
-| L11 | An unclosed `$$` or `%%` restyles up to 5,000 lines; unclosed front matter up to 1,000 lines | 📖 — partly fixed (fff807a): an unclosed `$$` ends at the first blank line; unclosed `%%` and front matter unchanged |
-| L12 | Block maths, comment blocks and footnote definitions work at top level only, not inside a list, quote or callout | 📖 — fixed (fff807a) |
-| L13 | Ctrl+click on links works in Formatted mode only, not in Markdown syntax or Plain | 📖 — fixed (ccbb978) |
-| L14 | `http://` and `file://` images do not show (only `https://`, local paths and data URLs do) | 📖 — fixed (249600e) |
-| L15 | In the Find box, Ctrl+B / Ctrl+I / Ctrl+K / F5 act on the document | 📖 — fixed (7ff58db) |
-| L16 | The drafts folder is never cleaned: after a corrupt `session.json` or a crash, draft files stay forever; a draft that cannot be read is deleted | 📖 — first part fixed (90c52a9) |
+| H2 | Maths and Mermaid blocks can be entered only by double-click or the edit button, not with the arrow keys (tables work) | `src/editor/livePreview/widgets.ts`, `block.ts` |
+| H6 | Live preview turns off for the whole document when one line is over 20,000 characters. It now comes back when the line is gone, but it should skip only that line | `src/editor/index.ts` (`checkDegrade`), live preview plugins |
+| H8 | Drafts are written less often for big files, but each draft and each Save still send the whole text over IPC | `src/lib/loader.ts` |
+| L5 | "characters" counts UTF-16 units, so an emoji counts as 2. A code-point count needs an incremental count per document and a Rust change in `scan()` | engine, `src-tauri/src/files.rs` |
+| L11 | An unclosed `%%` restyles up to 5,000 lines, and unclosed front matter up to 1,000 lines (an unclosed `$$` is fixed) | `src/editor/markdown.ts` |
+| L16 | A draft that cannot be read is deleted. `materialise` treats a read error like a missing draft. Needs a "draft unreadable" state that keeps the draft and tells the user | `src/lib/loader.ts` |
+| M12 | Hibernation keeps the undo history now, but callout fold state is still reset on wake | `src/lib/loader.ts`, engine |
+| M15 | No warning when a binary file is opened as text (it is damaged on save). Code pages other than 874, 932, 936, 949, 950 and 1250-1258 (for example 866) are read as windows-1252 | `src-tauri/src/files.rs` |
+| W8 | Long paths are fixed. FAT/exFAT USB drives and network shares still need a check | `src-tauri/src/files.rs` |
 
-Other small points: Enter on an empty nested list item removes the item instead of outdenting; indenting with Tab does not fix numbering; `pathsEqual` does not understand `..`, 8.3 names or UNC vs mapped drive (one file in two tabs); Ctrl+wheel or pinch zooms 10% per event; a partly loaded file that was deleted first shows "changed" instead of "deleted" (corrects itself within 3 seconds).
+### F2. Dragging tabs between windows: what is left
+- **Undo history:** it does not move with the tab, because CodeMirror state is not serialised. The moved tab starts with an empty undo stack.
+- **Single-tab window:** with one tab, the window does not follow the mouse live during the drag. On release a new window opens under the mouse and the old one closes (a short flash). Moving the window natively (`startDragging`) would lose the drop-on-another-window case.
+- **Overlapping windows:** `tab_drop_target` does not know the z-order, so the first match wins.
 
----
+## 1.4 To check in the real app on Windows ⚠️
 
-## ⚠️ To check in the real app on Windows
+### Changes made on this branch
+| Area | What to check |
+| --- | --- |
+| C1 Save As | The Windows dialog adds the selected filter's extension itself and asks before overwriting that exact name. The fix relies on this (read in the `rfd` code, not seen). Try `LICENSE` with "All files", and `notes` with the Markdown filter |
+| C6 / C7 / M15 | The "Save as UTF-8 / ANSI / Cancel" question; an ANSI file with non-ASCII bytes after 256 KB; "Reopen with encoding" |
+| H15 / W8 | Save in a folder where new files cannot be created; paths over 260 characters; FAT/exFAT USB drive; network share |
+| Tables (H1, M1, M2, H2, H3, M5) | A table cell copies its caret and selection into the editor through the browser's `selectionchange` event. Check Ctrl+B/I, Select All, F5, Ctrl+K, Paste and the arrow keys in cells in WebView2 |
+| M7 / L14 links and images | PDFs, images and office files open in their default app (`openPath`). Programs and scripts must never be launched. `http://` images show (CSP `img-src` now allows `http:`) |
+| M16 clipboard | Cut/Copy/Paste from the Edit menu, including the error message when the clipboard fails |
+| F1 new window | A second launch opens a new window that gets the foreground (`AllowSetForegroundWindow`); how windows cascade near the screen edge |
+| F2 tab drag | Pointer capture outside the window in WebView2, `cursor_position` on mixed-DPI monitors, dropping onto a minimised or covered window |
+| C5 / M18 / M17 sessions | Several windows with unsaved tabs, then Exit, then start again: every window comes back with its own tabs and size |
+| H12 | Change the theme or Recent in one window; the other window follows |
+| H13 updater | Turn "Update automatically" off while an update is ready: it must not install on close |
 
-These look likely from the code but need a run on WebView2.
-
+### Suspected from the first report, never checked
 | # | Suspected problem | Why |
 | --- | --- | --- |
 | W1 | Selected text cannot be dragged to move it inside the editor | `dragDropEnabled: true` in `tauri.conf.json`; on Windows Tauri then turns off HTML5 drag and drop |
 | W2 | Edit > Paste shows a permission popup the first time, or does nothing | `navigator.clipboard.readText()`; clipboard access is not enabled |
-| W3 | Right-click on a table border, maths, diagram, image or checkbox shows the WebView2 page menu ("Refresh", "Back", "Save as") | `shortcuts.ts:62` treats everything inside `.cm-content` as text. "Refresh" can drop unsaved work |
-| W4 | With Settings, Help or a dialog open, F3 opens WebView2's own find bar — fixed (09913d5) | F3 is not in the suppressed list (`shortcuts.ts:45`) |
+| W3 | Right-click on a table border, maths, diagram, image or checkbox shows the WebView2 page menu ("Refresh", "Back", "Save as"). "Refresh" can drop unsaved work | `src/lib/shortcuts.ts` treats everything inside `.cm-content` as text |
 | W5 | Hovering the maximize button does not show Windows 11 Snap Layouts | Custom caption buttons |
 | W6 | The "Autocorrect" setting has no effect | The `autocorrect` attribute does nothing in Chromium |
-| W7 | A file that is one line of several MB (minified JSON) is very slow with word wrap | CodeMirror is weak on very long lines; not measured here |
-| W8 | Saving on paths over 260 characters, FAT/exFAT USB drives and network shares | `ReplaceFileW` gets the raw path (`files.rs:545`) — long paths fixed (529593f); FAT/exFAT and shares still to check |
+| W7 | A file that is one line of several MB (minified JSON) is very slow with word wrap | CodeMirror is weak on very long lines; not measured |
+
+## 1.5 Tests still to write
+
+**Rust and end-to-end:**
+- **Run the Rust tests on Windows** (section 1.1). They have only been type-checked.
+- **End-to-end tests in a real browser or WebView** (Playwright against the Vite frontend, or WebDriver against the built app), for what jsdom cannot do:
+  - Cursor movement across tables, maths and Mermaid (H2, H3, M5) with real layout.
+  - Table cell selection mirroring (H1, M1, M2).
+  - Dragging a tab out of the window and onto another window (F2).
+  - Clipboard (M16, W2), drag and drop of text (W1), and the right-click menu (W3).
+
+**Gaps in the current tests:**
+- **M21:** the current test passes with and without the fix, so it only guards against regressions. Write one that fails without `actions.whenActivated`, by controlling the order in which the load and the activation settle.
+- **Auto-updater (H13):** only the resume marker, the status wire format and the install rule are tested. The network, download and install path needs a test with a stubbed `AppHandle` and HTTP server.
+- **Fake backend:** `src/test/fakeTauri.ts` still differs from Rust. It does not model UTF-16, atomic writes or `ReplaceFileW`, or keeping mixed line endings (the header lists the differences). Close these gaps, or add Rust tests for each of these cases.
+- **MERGE-1:** add a test where a window writes a new draft while the first window's clean-up is running.
+
+**For each fix in this part:**
+- A test that fails before the fix and passes after: TAB-1 to TAB-4, FILES-1, MD-1, MD-2, WIN-3, M13, M14 and the rows of 1.3.
+
+## 1.6 Recommended hardening (not a bug yet)
+- **Opener permission:** `src-tauri/capabilities/default.json` gives `opener:allow-open-path` for every path (`"path": "**"`), so links to PDFs, images and office files can open in their default app.
+- **What protects it now:** the frontend never sends programs or scripts to `openPath`; they open as text.
+- **Recommendation:** add a deny list for executable types (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`, `.vbs`, `.js`, `.msi`, `.lnk`, `.scr`…) in the capability, so a future frontend bug cannot launch a program. Check it on Windows.
 
 ---
 
-## Edge cases: what the app does
+# Part 2: Done
+
+## 2.1 Decisions confirmed by the owner
+- **WIN-2:** with "Continue previous session", closing one of several windows asks "save changes?" for its unsaved tabs and removes its session, as in Windows Notepad. The last window, and every window on File > Exit, keep their tabs as drafts without asking. Confirmed as the intended behaviour on 19 November 2026.
+
+## 2.2 Bugs from the first report that are fixed
+
+"Part" means the rest is listed in Part 1.3.
+
+### Critical
+| # | Bug | What was fixed | Commit |
+| --- | --- | --- | --- |
+| C1 | Save As without an extension overwrote another file | Save As uses the path the dialog returns (the dialog already adds the selected filter's extension and checks that exact name), so `LICENSE` with "All files" stays `LICENSE`. ⚠️ see 1.4 | `965dcfc` |
+| C2 | Replace all during loading changed only the loaded part | Replace and Replace all wait for the whole file and are disabled while it loads | `2f064ce` |
+| C3 | Edits in a partly loaded file could not be saved once it changed on disk | Save As asks to save the loaded part (with the edits) to the new file; the tab then becomes that complete file | `246833d` |
+| C4 | A message over the "save changes?" dialog left the tab and window unable to close | `showMessage` answers a pending "save changes?" dialog as Cancel before replacing it | `d510cf2` |
+| C5 | The session did not come back if the main window closed first | Every window stores its own session (`sessions/<key>.json`) and drafts; the first window restores one and opens a window for each other one | `cb1f8a5` |
+| C6 | Urdu/Unicode saved in an ANSI file became `?` | Rust refuses the save (`UNMAPPABLE`); the app asks Save as UTF-8 / Save as ANSI (with `?`) / Cancel | `529593f`, `a7319a4` |
+| C7 | Encoding was detected from the first 256 KB only | The background scan reports bytes not valid in the encoding; an unedited UTF-8 tab is read again as ANSI, an edited one gets a warning | `529593f`, `a7319a4` |
+| C8 | Typing went into the previous tab while a tab loaded | While a tab loads, the editor shows an empty read-only placeholder | `e641629` |
+
+### High
+| # | Bug | What was fixed | Commit |
+| --- | --- | --- | --- |
+| H1 | Ctrl+B / Ctrl+I in a table cell made `****text` | A table cell copies its caret into the editor selection, so Ctrl+B/I and the toolbar wrap the selected cell text | `1887e02` |
+| H2 (part) | Left/Right got stuck at tables, maths and diagrams | Rendered blocks are atomic ranges; an arrow key that lands on a table's edge enters the table | `1887e02` |
+| H3 | Table at the top: Up then typing scattered the text | Up in the header of a table at the top of the document stays in the cell | `1887e02` |
+| H4 | Inserting a table on an empty line swallowed the paragraph below | A blank line is kept after the table | `d573f19` |
+| H5 | Table commands corrupted a table inside a blockquote or callout | Table commands and Tab keep each row's `> ` prefix and indentation | `f551dc0` |
+| H6 (part) | One long line turned live preview off for good | Preview comes back once no long line is left; the status bar says "Formatted (preview off)" with the reason | `0bb62e7` |
+| H7 | A deleted-then-recreated file made a clean tab "unsaved" | A clean tab whose file comes back before any edit is clean again, and reloads if the content changed | `d8a8ef6` |
+| H8 (part) | The whole document was written to the draft after every pause | The draft wait grows with the document (800 ms up to 1 MB, about +2 s per MB, max 30 s; a draft is never older than 60 s) | `1123dea` |
+| H9 | Print did not match the screen, and comments were printed | `%%comments%%` and front matter are left out; maths (KaTeX), Mermaid, callouts, highlights, wikilinks, embeds and tags are rendered | `ccacdde`, `f2a908b` |
+| H10 | The Find "x of y" counter was wrong | Next/Previous report the real index; F3 / Shift+F3 and Edit > Find next/previous go through the find bar; "N of 10,000+" past the limit | `96a6e76`, `7ff58db` |
+| H11 | Find matches inside tables, maths and Mermaid could not be seen | A match in a table cell is marked in the cell; one in block maths or Mermaid opens its source (other matches in cells: TAB-1) | `1887e02` |
+| H12 | Settings and Recent were not shared between windows | Windows listen for `storage` events; each write merges only that window's own changes | `dd7e4c3` |
+| H13 | Turning off auto-update did not stop a downloaded update | A downloaded update installs only while "Update automatically" is on, or after "Check for updates" was pressed | `3f47212` |
+| H14 | A file with mixed line endings was fully rewritten on save | Unchanged lines keep their own ending; picking a line ending in the status bar still converts every line | `529593f`, `a7319a4` |
+| H15 | Save failed in a folder where new files cannot be created | The file is written in place when no temp file can be made. ⚠️ see 1.4; not atomic (FILES-3) | `529593f` |
+| H16 | A file deleted while the app was closed came back as an empty "unsaved" tab | The tab stays clean with the "deleted" bar; Save does not write an empty file | `3463b7a` |
+
+### Medium
+| # | Bug | What was fixed | Commit |
+| --- | --- | --- | --- |
+| M1 | Ctrl+A in a table cell selected the whole document | Select All in a cell selects the cell's text | `1887e02` |
+| M2 | F5, Ctrl+K and Paste in a cell inserted at the start of the cell | They insert at the cell caret (escaped so they cannot split the row); Copy/Cut see the cell selection | `1887e02` |
+| M3 | After Ctrl+M the Tab key left the editor | Ctrl+M (tab focus mode) is removed from the editor keymap | `05bdd86` |
+| M4 | Heading and Bold made wrong Markdown on several lines | Headings skip blank lines; Bold/Italic/Strike wrap each paragraph separately | `d573f19`, `e68b4e5` |
+| M5 | Moving down out of the last table row marked the document unsaved | Down stays in the cell; Escape adds the line outside the undo history | `1887e02` |
+| M6 | Save As onto another open tab's path gave two tabs for one file | That tab closes if clean; if it has unsaved changes the save is refused with a message | `246833d` |
+| M7 | Links opened wrongly | `[[v1.2 notes]]`, `%23`/`%26`, `file://`, folder links and root-relative `/docs/a.md` work; PDFs, images and office files open in their default app | `ebb2058` |
+| M8 | `.mdx` was plain text in the app | `.mdx` is Markdown, also in the Open/Save filters | `ebb2058` |
+| M9 | A file opened during startup could be lost | Listeners are registered before the start-up files are taken | `cb1f8a5` |
+| M10 (part) | Odd results with "Open in a new window" | A second launch's files go to the last focused window only; an empty window takes the file; links open in their own window | `cb1f8a5` |
+| M11 | A new file name on the command line did nothing | Asks "create a new file?"; names starting with `-` open when such a file exists | `cb1f8a5` |
+| M12 (part) | Hibernation wiped the undo history | The undo history is kept and restored on wake when the file is unchanged | `72e2d01` |
+| M15 (part) | A wrongly detected encoding could not be corrected | UTF-16 without BOM is detected; the status bar Encoding menu has "Reopen with encoding" | `529593f`, `a7319a4` |
+| M16 | Cut deleted the text even when the clipboard write failed | Cut deletes only after the write succeeded; Cut/Copy/Paste failures show a message | `d532e03` |
+| M17 | "Exit" did not quit | File > Exit closes every window for good (each stores or resolves its tabs) | `cb1f8a5` |
+| M18 | Extra windows did not remember their session or size | Every window stores its own session; new windows take the size of the window they open from | `cb1f8a5` |
+| M19 | The Formatting toggle changed every tab; a `.txt` could never be Formatted | Each tab's Markdown syntax choice is kept; the mode button cycles Plain text → Formatted → Markdown syntax for non-Markdown files | `22e2983` |
+| M20 | Wrong name in "could not open", and Recent not cleaned | The message names the failed file, and that file is removed from Recent | `d510cf2` |
+| M21 | With the find bar open, moving to an unloaded tab made F3 say "No results" | The find bar searches again once the editor shows the new tab (`actions.whenActivated`) | `2f064ce` |
+| M22 | A restored file that could not be read gave an empty tab | The tab refuses to save until reloaded; for a clean tab the 3-second check retries the read | `3463b7a` |
+
+### Low
+| # | Bug | What was fixed | Commit |
+| --- | --- | --- | --- |
+| L1 | `$HOME/$USER` became maths | A closing `$` followed by a letter or digit does not end maths | `389e22f` |
+| L2 | Colour codes like `#fff` became tags | Hex colour codes are not tags | `389e22f` |
+| L3 | `a==b or c==d` was highlighted | `==` between word characters is not a highlight marker | `389e22f` |
+| L4 | F5 was always in US format | F5 uses the locale's short time and date (display language; regional format: MD-2) | `71d6fdf` |
+| L5 (part) | The character total of a partly loaded file was stale | The total counts edits and later chunks (`tailChars` replaces `totalChars`) | `42e6a30` |
+| L6 | The font list had false families; "Inter" was always listed | "Montserrat Extra" and bitmap `.fon` fonts are gone; "Inter" is listed only when installed or chosen | `ea5c821`, `fec7557`, `7968f33` |
+| L7 | After 400 undo steps the unsaved dot was not cleared | Dirty tracking follows the undo history when it drops its oldest steps | `7ea4fbd` |
+| L8 (part) | `2 * 3 * 4` turned italic in table cells | Emphasis needs markers with no space inside them; `_x_` is italic (rest: TAB-2) | `7d40ede` |
+| L9 | A `\` at the end of an unpadded cell merged two cells | The backslash gets a space before the pipe | `1887e02` |
+| L10 | Table commands deleted the extra cells of long rows | Extra cells are kept | `f551dc0` |
+| L11 (part) | An unclosed `$$` restyled up to 5,000 lines | An unclosed `$$` ends at the first blank line | `fff807a` |
+| L12 | Block maths, comments and footnotes worked at top level only | They work inside lists, quotes and callouts (rendering there: MD-1) | `fff807a` |
+| L13 | Ctrl+click on links worked in Formatted mode only | Works in Markdown syntax mode; bare web addresses open in Plain | `ccbb978` |
+| L14 | `http://` and `file://` images did not show | Both show, in the editor and in print | `249600e` |
+| L15 | Ctrl+B/I/K and F5 in the Find box changed the document | They no longer touch the document | `7ff58db` |
+| L16 (part) | The drafts folder was never cleaned | At start, drafts that no stored session owns and leftover `.tmp` files are deleted (new Rust command `drafts_prune`) | `90c52a9`, merge `95c2f1b` |
+
+### To check on Windows (first report)
+| # | Problem | What was fixed | Commit |
+| --- | --- | --- | --- |
+| W4 | F3 with a dialog open opened WebView2's own find bar | F3 / Shift+F3 are suppressed | `09913d5` |
+| W8 (part) | Saving on paths over 260 characters | Long paths get the `\\?\` prefix before `ReplaceFileW` | `529593f` |
+
+## 2.3 New bugs found and fixed
+
+| # | Bug | What was fixed | Commit |
+| --- | --- | --- | --- |
+| T1 | Choosing a heading or list kind at the start of a line put the cursor before the marker (`x# `) | A bare cursor at the insertion point moves after the new marker | `d573f19` |
+| T2 | An untitled tab closed right after typing came back named "Untitled" | Pending titles are applied before the session is stored on close | `0670f55` |
+| T3 | A first line like `con` or `com1` suggested an invalid file name | Suggests `con_.md` | `965dcfc` |
+| T4 | A Save As name ending in a dot kept a "." extension that Windows drops | Trailing dots and spaces are removed, as Windows does | `965dcfc` |
+| LOAD-1 | The find bar left an unhandled promise rejection when the full load failed | The chain in `FindBar.tsx` ends in `.catch` | `2f064ce` |
+| WIN-1 | After the hidden restart from an update, every later window hid itself | Only the first window starts hidden | `cb1f8a5` |
+| MERGE-1 | The startup draft clean-up deleted the drafts of other windows' stored sessions | `runInit` keeps the drafts of every stored session (a small risk remains, see Part 1) | `95c2f1b` |
+| — | Bitmap `.fon` fonts appeared as false families | Left out of the font list | `fec7557` |
+
+## 2.4 Features added
+
+### F1. Launching the app again opens a new window — done (`cb1f8a5`)
+- With a window on screen, a launch without files opens a new window, cascaded from the last focused one and the same size.
+- Files go to the window that last had the focus, which follows "Open files in" and comes to the front.
+- With no window on screen, the background window comes back as before.
+- One process is kept, so drafts, the session and settings stay in one place. ⚠️ see 1.4.
+
+### F2. Tabs can be dragged out to a new window or between windows — mostly done (`cb1f8a5`, `3b621a9`)
+- **Gesture** (`TitleBar.tsx`, `src/lib/tabDrag.ts`):
+  - Pulling a tab 32 px above or below the strip, or out of the window, dims it and stops reordering. Releasing there moves it.
+  - Pointer capture keeps the drag going outside the window.
+- **Rust:**
+  - `tab_drop_target` finds the window under the cursor.
+  - `window_new` can open the new window under the mouse with the tab in it.
+- **Moving the tab:**
+  - The tab's text, unsaved state, cursor, scroll, encoding, line ending, mode and draft move in one message.
+  - Nothing is saved or read from disk, and a partly loaded file keeps loading from where it stopped.
+  - The draft now belongs to the new window's session.
+- **Safety:** the source window removes the tab only after the target confirms. After 10 s with no answer the tab stays.
+- **Last tab:** dragging out the last tab closes the old window, so no empty window is left.
+- **Still open:** see Part 1.3.
+
+## 2.5 Test work done
+- **Test count:** 30 tests at the first report; **536** now, none skipped. Every test that was skipped (`it.skip`) or `#[ignore]` for a known bug now runs and passes:
+  - H5, H7, H16, M4, M7, M12, L2, L3, L8 (Vitest).
+  - H14, M15 (Rust).
+- **New test files:**
+  - `src/editor/livePreview/tables.test.ts`
+  - `src/components/FindBar.test.ts` (React in jsdom)
+  - `src/lib/findBar.test.ts`
+  - `src/state/clipboard.test.ts`
+  - `src/lib/tabDrag.test.ts`
+- **New test groups:** several windows, moving tabs between windows, H12, M10 and M19 in `actions.test.ts`.
+- **Fake backend** (`src/test/fakeTauri.ts`):
+  - Native message boxes and yes/no questions.
+  - windows-1252 ANSI.
+  - `openPath`, `drafts_prune`.
+  - Per-window sessions, window boot data, the drop target, and window events.
+- **Tests that fail without their fix:** most new tests were checked to fail before the fix and pass after. The exceptions are the M21 test (see 1.5) and the "leaving a table with Down" regression test.
+- **Earlier on this branch:**
+  - Tests are typechecked in CI (`tsconfig.test.json`).
+  - Coverage is set up with `@vitest/coverage-v8`.
+  - The guide is `docs/TESTING.md`.
+
+---
+
+# Reference
+
+## How the first report was made (10 November 2026)
+- Read all of the code: Rust backend, state and loader, editor engine, UI components.
+- Ran the real frontend in Chromium against a fake Tauri backend and reproduced each suspected bug with keyboard and mouse.
+- Ran 900 random keystrokes and format commands on `sample.md`: no crash, no exception.
+- No obvious security bug was found. A document cannot run scripts: print output is sanitised, KaTeX and Mermaid run in strict mode, and table cells escape HTML. See 1.6 for the new opener permission.
+
+## Edge cases: what the app does now
 
 | Case | What the app does | OK? |
 | --- | --- | --- |
 | Empty file | Opens; assumes UTF-8 and CRLF | ✅ |
-| 127 MB file | First 256 KB at once, the rest on scroll | ✅ (see C2, C3, M13) |
+| 127 MB file | First 256 KB at once, the rest on scroll | ✅ (memory: M13) |
 | File changed by another program, tab clean | Silent reload, scroll kept, Undo history gone | ✅ |
 | File changed, tab unsaved | Bar: Reload / Keep mine. Save is refused until Keep mine | ✅ |
-| File deleted | Bar, tab marked unsaved. If it comes back, see H7 | ⚠️ |
+| File deleted | "Deleted" bar; a clean tab stays clean and reloads if the file comes back | ✅ |
 | File renamed | Treated as deleted | Acceptable |
-| Read-only file | Typing works; Save says "Access is denied". No sign beforehand | Weak |
+| Read-only file | Typing works; Save says "Access is denied". No sign beforehand | Weak (Part 1) |
 | File locked by another program | "Could not open file" on open; error on save, original kept | ✅ |
-| Disk full, or crash during save | Temp file fails, original kept | ✅ |
+| Disk full, or crash during save | Temp file fails, original kept (in-place fallback: FILES-3) | ✅ |
 | Network drive drops | Stat errors ignored, no false flag | ✅ |
-| Window not focused | Disk changes are not seen until the window gets focus (no live view side by side) | By design, but unexpected |
-| One file in two windows | The second save is refused as stale | ✅ |
+| Window not focused | Disk changes are not seen until the window gets focus | By design |
+| One file in two windows | Possible (WIN-3); the second save is refused as stale | Safe |
 | Dropping a folder | "Could not open file" | ✅ |
-| Binary file | Garbage text; damaged on save | M15 |
+| Binary file | Garbage text; damaged on save | ❌ (M15 rest) |
 | CR-only line endings | Supported ("Macintosh (CR)") | ✅ |
 | Urdu / right-to-left text | Lines are right with `dir="auto"`; table cells get no RTL alignment | Partial |
 | Closing the only tab | Closes the window (hides in the background) | Like Notepad |
-| App crash or kill | Drafts kept except the last 800 ms (main window only) | ✅ |
-| Corrupt `session.json` | New session; old drafts are orphaned (L16) | Weak |
+| App crash or kill | Drafts kept except the last pause, in every window | ✅ |
+| Corrupt session file | New session; orphaned drafts are cleaned at the next start | ✅ |
 | Typing in the first ~200 ms after start | Text typed before the session is restored can be lost | Small risk |
-
----
-
-## What works well
-
-- Typecheck is clean and all 30 unit tests pass.
-- 900 random keystrokes and format commands caused no exception.
-- The no-lock file design, the stale check and the temp-file safe save are carefully built.
-- No obvious security bug: a document cannot run scripts (print output is sanitised, KaTeX and Mermaid run in strict mode, table cells escape HTML).
-
----
-
-## Found while writing tests (2026-11)
-
-**Branch:** `test/core-features` · **How:** Vitest (jsdom, real CodeMirror, an in-memory fake of the Rust commands at the IPC boundary) and `cargo test` on Windows. Rust tests ran on this machine this time.
-
-Nothing above was removed. Bugs from the report that a test now pins down are listed first; the tests named `it.skip(...)` / `#[ignore]` reproduce the ones still open (each fails when un-skipped).
-
-### Fixed on this branch (listed bugs)
-
-| # | What was fixed | Commit |
-| --- | --- | --- |
-| C4 | `showMessage` now answers a pending "save changes?" dialog as Cancel before replacing it, so the tab and the window can close again | `d510cf2` |
-| M20 | "Could not open file" names the file that failed, and that file is removed from Recent | `d510cf2` |
-| H4 | Inserting a table on a blank line above a paragraph keeps a blank line after the table | `d573f19` |
-| M4 (first part) | A heading change over several lines skips blank lines. Bold across paragraphs (second part) is still open | `d573f19` |
-| H10 (first part) | Find Next/Previous report the real index after the cursor was moved. Parts 2 (F3 does not update the bar) and 3 ("10000+") are still open | `96a6e76` |
-| H9 (part) | `%%comments%%` and front matter are left out of printing. Maths, Mermaid, callouts, highlights, wikilinks and tags still print raw | `ccacdde` |
-| L6 (part) | "Montserrat Extra Bold" no longer lists a false "Montserrat Extra"; bitmap `.fon` fonts ("Courier 10,12,15", "MS Sans Serif 8,10,12,14,18,24") are left out. "Inter" is still always listed | `ea5c821`, `fec7557` |
-| L8 (part) | Emphasis in table cells needs flanking markers, so `2 * 3 * 4` stays plain; `_x_` is italic. Maths, images and wikilinks in cells are still not rendered (TAB-2) | `7d40ede` |
-| H5 | Table commands and Tab keep a table's `> ` quote/callout prefix on every row. Nested tables are still shown as source, not rendered (L12) | `f551dc0` |
-| L10 | Table commands keep the extra cells of rows longer than the header | `f551dc0` |
-| H1 | A table cell mirrors its caret into the editor selection, so Ctrl+B/I and the toolbar wrap the selected cell text | `1887e02` |
-| M2 | F5, Ctrl+K and Edit > Paste insert at the cell caret (escaped so they cannot split the row); Copy/Cut see the cell selection | `1887e02` |
-| M1 | Ctrl+A / Edit > Select All in a cell selects the cell's text | `1887e02` |
-| H2 | Rendered blocks are atomic ranges; an arrow key that lands on a table's edge enters the table. Maths/Mermaid still open only by double-click or the edit button | `1887e02` |
-| H3 | Up in the header of a table at the top of the document stays in the cell | `1887e02` |
-| M5 | Down in the last row of a table at the end stays in the cell; Escape adds the line outside the undo history, so the tab stays clean | `1887e02` |
-| H11 | A Find match in a table cell is marked in the cell; one in block maths/Mermaid opens its source. Only the current match is shown in a cell (TAB-1) | `1887e02` |
-| L9 | A backslash at the end of an unpadded cell gets a space before the pipe | `1887e02` |
-| M3 | Ctrl+M (tab focus mode) removed from the editor keymap | `05bdd86` |
-| C1 | Save As uses the path the dialog returns (the dialog already adds the selected filter's extension and checks that exact name), so `LICENSE` with "All files" stays `LICENSE` | `965dcfc` |
-| T3 | A device name as first line (`con`, `nul`, `com1`...) suggests `con_.md` | `965dcfc` |
-| T4 | Trailing dots and spaces are dropped from the chosen Save As name, as Windows does | `965dcfc` |
-| M6 | Save As onto a file open in another clean tab closes that tab; if that tab has unsaved changes the save is refused with a message | `246833d` |
-| C3 | Save As on a partly loaded file that changed on disk asks to save the loaded part (with the edits) to the new file; the tab then becomes that complete file | `246833d` |
-| C6 | A save in ANSI with characters the code page lacks fails in Rust (`UNMAPPABLE`); the app asks: Save as UTF-8 / Save as ANSI (with `?`) / Cancel | `529593f`, `a7319a4` |
-| C7 | The background scan reports bytes that are not valid in the encoding; an unedited UTF-8 tab is then read again as ANSI, an edited one gets a warning | `529593f`, `a7319a4` |
-| H14 | Unchanged lines of a mixed-line-ending file keep their own ending; changing the line ending in the status bar still converts every line | `529593f`, `a7319a4` |
-| H15 | When no temp file can be created (access denied) but the file exists, it is written in place (not atomic). Rust not compiled here | `529593f` |
-| M15 (most) | UTF-16 without BOM is detected; status bar Encoding menu has "Reopen with encoding". Still open: no binary-file warning, code pages other than 874/932/936/949/950/1250-1258 | `529593f`, `a7319a4` |
-| W8 (part) | Paths of 260+ characters get the `\\?\` prefix before `ReplaceFileW`. FAT/exFAT and network shares still need a Windows check | `529593f` |
-| L1, L2, L3 | `$HOME/$USER` is not maths (a closing `$` is never followed by a letter or digit); hex colour codes are not tags; `==` between word characters is not a highlight marker | `389e22f` |
-| M4 (second part) | Bold/italic/strike over several paragraphs wraps each paragraph | `e68b4e5` |
-| H10 (parts 2, 3), L15 | F3 / Shift+F3 and Edit > Find next/previous go through the find bar, so its counter follows; "1 of 10,000+" with an exact index past the limit; Ctrl+B/I/K and F5 in the Find box no longer edit the document | `7ff58db` |
-| M7, M8 | Links: `[[v1.2 notes]]`, `%23`/`%26`, `file://`, folder links, root-relative `/docs/a.md`; PDFs, images and office files open in their default app (opener `openPath`, capability added, not run on Windows). `.mdx` is Markdown | `ebb2058` |
-| L14 | `http://` images (CSP `img-src` gains `http:`) and `file://` images, in the editor and in print | `249600e` |
-| L4 | F5 uses the locale's short time and date (the WebView's locale, which follows the Windows display language, not the regional format) | `71d6fdf` |
-| M16 | Cut deletes only after the clipboard write succeeded; Cut/Copy/Paste failures show a message | `d532e03` |
-| L13 | Ctrl+click opens links in Markdown syntax mode, and bare web addresses in Plain | `ccbb978` |
-| H6 | Live preview comes back once no long line is left (debounced check after deletions and on tab switch); the status bar says "Formatted (preview off)" with the reason. Skipping only the long line is not done | `0bb62e7` |
-| H9 (rest) | Print renders maths (KaTeX), Mermaid, callouts, highlights, wikilinks, embeds and tags | `f2a908b` |
-| L12, L11 (part) | `$$`, `%%` and footnote definitions work inside lists, quotes and callouts (the live preview still draws block widgets at top level only); an unclosed `$$` ends at a blank line | `fff807a` |
-| H7 | A clean tab whose deleted file comes back before any edit is clean again; it reloads if the content changed | `d8a8ef6` |
-| H16 | A restored tab whose file is gone stays clean with the "deleted" bar; Save does not write an empty file | `3463b7a` |
-| M22 | A tab whose file could not be read refuses to save until reloaded; the poll retries the read for a clean tab | `3463b7a` |
-| T2 | Pending untitled-tab titles are applied before the session is stored on close | `0670f55` |
-| L7 | Dirty tracking follows the undo history when it trims its oldest steps, so the saved point stays reachable after 400 steps | `7ea4fbd` |
-| M12 | Hibernation keeps the undo history (no text) and restores it when the file is unchanged on wake. Callout fold state is still reset | `72e2d01` |
-| C8 | While a tab loads, the editor shows an empty read-only placeholder instead of the previous tab | `e641629` |
-| C2 | Replace and Replace all wait for the whole file and are disabled while it loads | `2f064ce` |
-| M21 | The find bar searches again once the editor shows the newly activated tab (`actions.whenActivated`) | `2f064ce` |
-| H8 | The draft debounce grows with the document (800 ms up to 1 MB, about +2 s per MB, max 30 s; a draft is never older than 60 s). Save still sends the whole text over IPC | `1123dea` |
-| L5 (second part) | The character total of a partly loaded file counts edits and later chunks (`tailChars` replaces `totalChars`). Emoji still count as 2 | `42e6a30` |
-| L16 (first part) | At startup the main window deletes drafts no restored tab owns, and leftover `.tmp` files (new Rust command `drafts_prune`, not compiled here). A draft that cannot be read is still deleted | `90c52a9` |
-| H13 | A downloaded update installs only while "Update automatically" is on, or the user pressed "Check for updates" since turning it off | `3f47212` |
-| H12 | Windows listen for storage events and take in settings, Recent and page setup from other windows; each write merges only this window's own changes | `dd7e4c3` |
-| C5, M18 | Every window stores its own session (`sessions/<key>.json`) and drafts; the first window restores one stored session and opens a window for each other one; new windows take the size of the window they open from | `cb1f8a5` |
-| M17 | File > Exit closes every window for good (each stores or resolves its tabs), so the app quits even in background mode | `cb1f8a5` |
-| M9 | Window listeners are registered before the start-up paths are taken; early events and close requests wait for init | `cb1f8a5` |
-| M10 | A second launch's files go to the last focused window only (no extra window raised); an empty window takes the file; links open in their own window. "One file open in two windows" is still not detected | `cb1f8a5` |
-| M11 | A file name that does not exist asks "create a new file?"; names starting with `-` open when such a file exists | `cb1f8a5` |
-| M19 | Formatting off/on keeps each tab's Markdown syntax choice; the status bar's mode button cycles Plain text, Formatted, Markdown syntax for non-Markdown files | `22e2983` |
-| L6 (rest) | "Inter" is listed only when installed or chosen; a chosen font that is not installed is marked | `7968f33` |
-| W4 | F3 / Shift+F3 are suppressed, so WebView2's find bar never opens | `09913d5` |
-
-### Fixed on this branch (new)
-
-#### T1. Choosing a heading or list kind at the start of a line puts the cursor before the marker ✅ (fixed in `d573f19`)
-- **What happened:** on an empty line (or with the cursor at the start of a line), pick H1 or "Bulleted list", then type "x". The line became `x# ` / `x- ` instead of `# x` / `- x`.
-- **Cause:** `src/editor/commands.ts` (`setBlockKind`, `setListKind`) inserted the marker at the cursor position, and a cursor at an insertion point stays in front of it.
-- **Fix:** a bare cursor at the insertion point is mapped to after the new marker. Test: `commands.test.ts` "puts a cursor at the start of the line after the new marker".
-
-### Still open, with a skipped test
-
-| # | Test |
-| --- | --- |
-| H5 — fixed, test un-skipped (f551dc0) | `src/editor/commands.test.ts` "H5: adding a row to a table inside a blockquote keeps it in the quote" |
-| H7 | `src/state/actions.test.ts` "H7: a deleted-then-restored file leaves an unedited tab clean" — fixed (d8a8ef6) |
-| H14 | `src-tauri/src/files.rs` `mixed_line_endings_are_kept_on_save` (`#[ignore]`) — fixed (529593f), test runs again |
-| H16 | `src/state/actions.test.ts` "H16: a restored tab whose file is gone is not an empty unsaved document" — fixed (3463b7a) |
-| M4 (second part) — fixed, test un-skipped (e68b4e5) | `src/editor/commands.test.ts` "M4: bolding two paragraphs bolds each one" |
-| M7 — fixed, test un-skipped (ebb2058) | `src/state/logic.test.ts` "M7: [[v1.2 notes]] opens v1.2 notes.md" |
-| M12 | `src/lib/loader.test.ts` "M12: undo still works after a tab was hibernated and woken" — fixed (72e2d01) |
-| M15 | `src-tauri/src/files.rs` `utf16_without_bom_is_detected` (`#[ignore]`) — fixed (529593f), test runs again |
-| L2, L3 — fixed, tests un-skipped (389e22f) | `src/editor/markdown.test.ts` "L2: colour codes are not tags", "L3: comparison operators are not highlight markers" |
-| L8 — fixed, test un-skipped (7d40ede) | `src/editor/tableModel.test.ts` "L8: 2 * 3 * 4 stays plain text" |
-
-### New, not fixed
-
-#### T2. An untitled tab closed right after typing comes back named "Untitled" ✅ — fixed (0670f55)
-- **What happens:** type the first line of a new note and close the window within a quarter of a second. Next start the tab has its text and its draft, but the tab is called "Untitled" until the next edit.
-- **Steps:** new tab, type `Shopping list`, close the window at once (background mode, continue session), start again.
-- **Expected:** title "Shopping list". **Actual:** "Untitled".
-- **Cause:** `src/state/actions.ts:49` / `:85` (`scheduleTitle`): the title is set on a 250 ms timer, and `prepareWindowClose` (`:484`) stores the session without running a pending title update. The test in `actions.test.ts` waits for the title before closing to stay deterministic.
-- **Fix:** flush pending title timers in `prepareWindowClose`, or derive the title in `buildSession` for untitled dirty tabs.
-
-#### T3. A note whose first line is a Windows device name suggests an invalid file name 📖 — fixed (965dcfc)
-- **What happens:** an untitled tab whose first line is `con`, `nul`, `aux`, `prn`, `com1`..`com9` or `lpt1`..`lpt9` suggests `con.md` etc. in Save As. Windows reserves these names with any extension, so the dialog refuses or the save fails.
-- **Expected:** a usable suggestion (`con_.md` or `Untitled.md`). **Actual:** `con.md`.
-- **Cause:** `src/state/logic.ts:192` (`suggestedFileName`) strips forbidden characters but not reserved names.
-
-#### T4. A Save As name ending in a dot keeps a "." extension that Windows then drops 📖 — fixed (965dcfc)
-- **What happens:** in Save As type `notes.` → `extOf` sees the extension `.`, so no `.md`/`.txt` is added. Windows strips the trailing dot and writes `notes` with no extension, while the tab's path stays `...\notes.`. `pathsEqual` then treats `notes.` and `notes` as different files, so opening `notes` again gives a second tab for the same file.
-- **Cause:** `src/state/logic.ts:111` (`extOf`) and `:198` (`withDefaultExtension`); related to C1.
-- **Fix:** trim trailing dots and spaces from the chosen path before using it (Windows does the same).
-
-### Could not be checked here
-- The fake backend follows `files.rs`, but it is not Rust. Rust behaviour itself is covered by `cargo test` (56 passing, 2 ignored as known bugs).
-- Layout-dependent behaviour (cursor movement across widgets, H2; drag and drop; clipboard; WebView2 menus W1–W8) cannot run in jsdom and was not tested.
-- The auto-updater's network, download and install path needs a real `AppHandle` and GitHub; only the resume marker and status wire format are tested. H13 stays open.
-
----
-
-## Missing features (to add when fixing bugs)
-
-These are not bugs in existing code: Windows Notepad does these things and Notepadly does not. Add them together with the window bugs they touch.
-
-### F1. Launching the app again only brings back the old window; it should open a new window 📖 — done (cb1f8a5)
-- **What happens:** while Notepadly is running, starting it again from the Start menu, taskbar, a shortcut or the command line does not open anything new. The running window is shown and focused again.
-- **Expected (as in Notepad):** every new launch opens a **new window**. The windows that are already open stay as they are.
-- **Cause:** the app uses `tauri-plugin-single-instance` (`src-tauri/src/lib.rs:276`). `on_second_instance` (`src-tauri/src/lib.rs:238`) only sends the paths to the main window, then runs `unminimize`, `show` and `set_focus`.
-- **To do:** in `on_second_instance`, open a new window when there are no paths, the same way `window_new` does. When a file is opened from Explorer, still follow the "Open files in" setting (`openFilesIn`: tab or window). Keep the single process, so drafts, the session and settings stay in one place.
-- **Related:** M10, M11, M17 and M18 (extra windows do not remember their session or size). Once every launch makes a window, M18 and H12 (settings and Recent not shared between windows) matter much more, so fix them with this.
-- **Done (cb1f8a5):** with a window on screen, a launch without files opens a new window (cascaded from the last focused one, same size). Files go to the window that last had the focus; it follows "Open files in" and brings itself to the front. With no window on screen, the background window comes back as before (files open there in a tab). One process is kept. Type-checked for Windows (`cargo check --target x86_64-pc-windows-msvc`), not run.
-- **Still to check on Windows:** that the new window gets the foreground (the second process calls `AllowSetForegroundWindow`), and how windows cascade near the screen edge.
-
-### F2. Tabs cannot be dragged out to a new window or between windows 📖 — mostly done (cb1f8a5, 3b621a9)
-- **What happens:** tabs can only be reordered or used inside their own window.
-- **Expected (as in Notepad):**
-  - Drag a tab out of the tab bar and drop it outside the window: that tab opens in a **new window** of its own and leaves the old window.
-  - Drag a tab from one window and drop it on another window's tab bar: the tab **moves** into that window at the drop position.
-  - The moved tab keeps everything: its text, unsaved changes, undo history if possible, cursor and scroll position, encoding, line endings and mode. It must never be saved or reloaded from disk because of the move.
-  - Dragging the last tab out of a window moves the whole window, so no empty window is left behind.
-- **Cause:** the tab bar has no drag-out handling, and there is no Rust command that moves a tab's state from one window to another. Each window keeps its own tab list (`src/state/store.ts`), and only the `main` window writes the session (see M18).
-- **To do:**
-  - Add a `tab_move` command: the source window sends the tab's full state (or saves its draft first), Rust creates or targets the window, and the target window loads it.
-  - Use the drag position on screen to tell a drop outside every window (new window) from a drop on another window's tab bar (move).
-  - Make sure the moved tab's draft and session entry belong to the new window, so nothing is lost or duplicated on restart.
-- **Related:** M18, C5 and H12. Test the move with a dirty tab, a partly loaded big file and an untitled tab.
-- **Done:**
-  - Gesture (`TitleBar.tsx`, geometry in `src/lib/tabDrag.ts`, tested): pulling a tab 32 px above or below the strip, or out of the window, dims it and stops reordering; releasing there moves it. The tab element takes pointer capture so the drag goes on outside the window.
-  - Rust: `tab_drop_target` finds the other visible window under the cursor (`cursor_position`) and gives the drop point in its CSS pixels; `window_new` takes `transfer` and `atCursor` and opens the new window under the mouse.
-  - Frontend (`actions.ts` `moveTabOut` / `receiveTab`, loader `handOff` / `takeOver` / `releaseTab`): the tab's meta, loaded text, cursor and scroll, encoding, line ending, mode, dirty state and draft go over in one message. Nothing is saved or read from disk; a partly loaded file goes on loading from its offset. The draft keeps its id and now belongs to the new window's session. The source removes the tab only after the target confirms (10 s timeout, then the tab stays and a message says so), so a failed move loses nothing. A drop on a tab bar goes between the tabs under the mouse; elsewhere in the window it goes at the end. The last tab dragged out takes the window with it (the old window closes, no empty window is left).
-  - Tests in `actions.test.ts` "moving tabs between windows (F2)": dirty file tab to another window and to a new window, no answer, last tab, partly loaded file.
-- **Still open:**
-  - Undo history does not travel (CodeMirror state is not serialised); the moved tab starts with an empty undo stack.
-  - With one tab, the window does not follow the mouse live during the drag; on release a new window opens under the mouse and the old one closes (a short flash). Moving the window natively (`startDragging`) would lose the drop-on-another-window case.
-  - `tab_drop_target` does not know the z-order: with overlapping windows the first match wins.
-  - Needs a check on Windows: pointer capture outside the window in WebView2, `cursor_position` on mixed-DPI monitors, and dropping onto a minimised or covered window.
-
-### New (tables)
-
-#### TAB-1. Only the current Find match is shown inside a table cell 📖
-- **What happens:** search a word that appears in several table cells. The current match is marked in its cell, but the other matches in tables get no yellow highlight (matches in normal text do).
-- **Cause:** `src/editor/livePreview/widgets.ts` `TableController.showSelection` marks the editor selection only; the `cm-find-match` marks of `src/editor/find.ts` are drawn by CodeMirror and cannot reach the widget's cells.
-- **Fix:** pass the find query to the table widgets and mark every match in the rendered cells.
-
-#### TAB-2. Maths, images and wikilinks are not rendered in table cells (rest of L8) 📖
-- `src/editor/livePreview/widgets.ts` `renderCellHtml` handles bold/italic/strike/highlight/code/links only.
-
-#### TAB-3. Emphasis rules run inside a link target in a table cell 📖
-- **Steps:** a cell `[x](https://a.b/_c_/d)` or `[x](https://a.b/*c*)`.
-- **Actual:** the URL in `data-href` gets `<em>` tags, so the link is broken. **Expected:** the target is left as written.
-- **Cause:** `renderCellHtml` (`src/editor/livePreview/widgets.ts`) replaces emphasis before links; links should be swapped out first, like code spans.
-
-#### TAB-4. Escape in a table at the end of a partly loaded file adds a newline in the middle of the file 📖
-- **Steps:** open a big file that loads in parts, where the loaded part ends inside a table; click a cell of the last row and press Escape before the rest loads.
-- **Cause:** `TableController.leave` (`src/editor/livePreview/widgets.ts`) adds a `\n` at the end of the document (outside the undo history, so the tab stays clean); the loader then appends the next chunk after it. The extra newline is saved with the next real edit.
-- **Fix:** skip the newline (stay in the cell) while the tab is not fully loaded.
-
-### New (files)
-
-#### FILES-1. A mixed-line-ending file cannot be normalised to its first line's style 📖
-- **What happens:** the file starts with CRLF but also has LF lines. Picking "Windows (CRLF)" in the status bar does nothing (it is already shown), so the LF lines stay. Since H14 is fixed, a save keeps them too. Workaround: pick LF, then CRLF.
-- **Cause:** `src/state/actions.ts` `changeFileFormat` returns early when the picked line ending equals `tab.eol`; the frontend does not know the file is mixed.
-- **Fix:** let Rust report "mixed" in `FileChunk`, show it in the status bar, and let picking any style normalise.
-
-#### FILES-2. A UTF-16 file without a BOM gets a BOM when saved 📖
-- **What happens:** since M15, such a file is read as UTF-16, but `save` always writes `Encoding::bom()`, so the first save adds `FF FE` / `FE FF` and the file grows by 2 bytes.
-- **Cause:** `src-tauri/src/files.rs` `save` / `write_in_place`; the encoding enum has no "UTF-16 without BOM".
-- **Fix:** probably fine (Notepad also writes a BOM), but could add BOM-less UTF-16 variants if it matters.
-
-#### FILES-3. The H15 in-place fallback is not atomic 📖
-- **What happens:** when the folder allows no new files, the file is overwritten in place. If the write fails part way (disk full, network drop), the file is damaged and no temp copy exists.
-- **Cause:** `src-tauri/src/files.rs` `write_in_place`. Notepad has the same limit.
-
-### New (markdown)
-
-#### MD-1. Maths and Mermaid inside a list, quote or callout show as source in Formatted mode 📖
-- **What happens:** since L12, `$$` blocks inside a list or quote are parsed as maths, but the live preview only turns top-level blocks into widgets, so they show as styled source (Print renders them).
-- **Cause:** `src/editor/livePreview/block.ts` (block widgets are built for children of `Document` only, the same limit as tables in H5).
-
-#### MD-2. The real regional date/time format is not available to F5 📖
-- **What happens:** L4 now uses the WebView's locale, which follows the Windows display language. With an English UI and a UK or German region, F5 still gives the US order.
-- **Fix:** read the user's locale name in Rust (`GetUserDefaultLocaleName`) and pass it to `formatDateTime`.
-
-### New (loader)
-
-#### LOAD-1. The find bar left an unhandled promise rejection when the full load failed ✅ — fixed (2f064ce)
-- **What happened:** with the find bar open on a partly loaded file that changed on disk, `actions.ensureFullyLoaded` rejects (after showing its message). `FindBar.tsx` called it as `void ensureFullyLoaded(...).then(...)` with no `catch`, so every such switch logged an unhandled rejection.
-- **Fix:** the chain in `src/components/FindBar.tsx` (find effect) now ends in `.catch`.
-
-#### LOAD-2. Not fixed in this group, with reasons 📖
-- **M13** (whole-file actions load everything, no cancel, `getText()` over 500 MB): needs streaming Find/Print/Save As and a cancellable full load across loader, engine and print; too big for this pass.
-- **M14** (Find scans the whole file per keystroke): needs an incremental or background count in `src/editor/find.ts` with an async result in the find bar; it overlaps the Find counter work (H10). Left open.
-- **L5, first part** (an emoji counts as 2): the count is UTF-16 units on purpose in both `engine` (`doc.length`) and Rust `files.rs` `scan()`; counting code points needs an incremental count per document and a Rust change.
-- **L16, second part** (a draft that cannot be read is deleted): `materialise` in `src/lib/loader.ts` treats a read error like a missing draft, loads the file clean, and the next flush deletes the draft. Keeping it needs a "draft unreadable" state that neither overwrites nor deletes the draft and tells the user.
-
-### New (windows)
-
-#### WIN-1. A window opened after the hidden restart from an update hides itself at once 📖 — fixed (cb1f8a5)
-- **What happened:** after an update installed from the background, the app restarts hidden (`launched_hidden`). For the rest of that run, every window that boots asks `launched_hidden`, gets `true` and goes straight to the background: Ctrl+N, File > New window, and (with F1) a new launch showed nothing.
-- **Cause:** `src-tauri/src/autoupdate.rs` `launched_hidden` returned the process-wide flag; `src/main.tsx` calls it for every window.
-- **Fix:** it is true only for the first window (`main`).
-
-#### WIN-2. Closing one of several windows now asks about its unsaved tabs (behaviour change, by design) 📖
-- With "Continue previous session", a window closed while other windows stay open asks "save changes?" for its unsaved tabs and removes its session, like Notepad. The last window, and every window on File > Exit, keep their tabs as drafts without asking. Before, only the `main` window kept its tabs (and only it was restored); other windows always asked.
-- If a different rule is wanted (for example keeping closed windows' tabs), it is decided in `prepareWindowClose` (`src/state/actions.ts`).
-
-#### WIN-3. One file can still be open in two windows 📖
-- The last point of M10 is not fixed: a window does not know which files the other windows have open, so opening a file that is open in another window opens a second copy (saving in one then gets "changed on disk" in the other, which is safe). Needs a shared list of open paths (in Rust, updated as tabs open and close).
-
-### Found while merging
-
-#### MERGE-1. The startup draft clean-up (L16) deleted the drafts of other windows' stored sessions ✅ — fixed in the merge commit
-- **What happened:** with C5/M18, every window stores its own session. On start the first window restores one session and opens a window for each other one, then pruned every draft its own tabs did not own, so the other windows found their unsaved text gone.
-- **Fix:** `runInit` (`src/state/actions.ts`) passes the draft ids of every stored session to `loader.pruneDrafts`. Test: `actions.test.ts` "L16 with several windows...".
-- **Remaining risk:** a window opened at start that writes a draft for a brand-new tab before the first window's clean-up runs could still lose it; the window is very short.
