@@ -234,6 +234,33 @@ describe("markdown extensions: edge cases", () => {
     }
   });
 
+  it("a long line full of unclosed dollars parses about as fast as plain text", () => {
+    const time = (text: string) => {
+      let best = Infinity;
+      for (let run = 0; run < 3; run++) {
+        const start = performance.now();
+        plainMarkdownParser.parse(text);
+        best = Math.min(best, performance.now() - start);
+      }
+      return best;
+    };
+    const plain = time("abc ".repeat(4_950));
+    // Each dollar used to scan (and copy) the next 4,000 characters.
+    for (const opener of ["$a ", "$$a "]) {
+      expect(time(opener.repeat(19_800 / opener.length)), opener).toBeLessThan(plain * 4 + 10);
+    }
+  });
+
+  it("finds the same maths after skipping a stretch already scanned", () => {
+    // The second dollar resumes where the first one's scan stopped; its own window still counts.
+    const gap = "x ".repeat(1_500);
+    expect(texts(`$a ${gap}$b ${gap}c$ d`, "InlineMath")).toEqual([`$b ${gap}c$`]);
+    expect(texts(`$a ${gap}$b ${gap}${gap}c$ d`, "InlineMath")).toEqual([]);
+    expect(texts("$a \\$ b$ and $c$", "InlineMath")).toEqual(["$a \\$ b$", "$c$"]);
+    expect(texts("$a b\n$c$ d", "InlineMath")).toEqual(["$c$"]);
+    expect(texts("x $$a $ b$$ and $$c$$", "InlineMath")).toEqual(["$$a $ b$$", "$$c$$"]);
+  });
+
   // BUGS.md L2 and L3: false tags and highlights.
   it("L2: colour codes are not tags", () => {
     expect(texts("color: #fff and #1a2b3c", "Tag")).toEqual([]);

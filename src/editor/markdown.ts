@@ -90,19 +90,50 @@ function parseWikiBody(cx: InlineContext, start: number, nodeName: string, openL
   return cx.addElement(cx.elt(nodeName, start, close + 2, children));
 }
 
+/**
+ * A stretch of an inline section already scanned for a closing `$` (index 0) or `$$`
+ * (index 1) without finding one: `start..end`, stopped by a line break or the scan limit.
+ */
+interface MathScan {
+  start: number;
+  end: number;
+  lineBreak: boolean;
+}
+
+const mathScans = new WeakMap<InlineContext, (MathScan | null)[]>();
+
 function parseInlineMath(cx: InlineContext, next: number, pos: number): number {
   if (next !== CH_DOLLAR) return -1;
   if (pos > cx.offset && cx.char(pos - 1) === CH_BACKSLASH) return -1;
   const markLen = cx.char(pos + 1) === CH_DOLLAR ? 2 : 1;
   const first = cx.char(pos + markLen);
   if (first < 0 || first === CH_SPACE || first === CH_NEWLINE || first === CH_DOLLAR) return -1;
-  // Scanned from one slice (one extra character for the look-ahead after a closing dollar),
-  // so a line of unclosed dollars costs no call or allocation per character.
-  const text = cx.slice(pos, Math.min(cx.end, pos + MAX_INLINE_SCAN + 1));
-  const limit = Math.min(text.length, MAX_INLINE_SCAN);
-  for (let k = markLen; k < limit; k++) {
+  // A later opener inside a stretch an earlier one scanned in vain can skip that stretch:
+  // every scan that reaches a position is at the same point of any backslash escape there,
+  // so it would reject the same dollars. Without this, each dollar of a long line of
+  // unclosed ones scanned the next 4,000 characters.
+  let scans = mathScans.get(cx);
+  if (!scans) mathScans.set(cx, (scans = [null, null]));
+  const known = scans[markLen - 1];
+  let start = pos + markLen;
+  let scanFrom = start;
+  if (known && start >= known.start && start <= known.end) {
+    if (known.lineBreak) return -1;
+    start = known.start;
+    scanFrom = known.end;
+  }
+  const limit = Math.min(cx.end, pos + MAX_INLINE_SCAN);
+  // One slice from the character before the scan (the space check) to one past the limit
+  // (the look-ahead after a closing dollar): no call or allocation per character.
+  const base = scanFrom - 1;
+  const text = cx.slice(base, Math.min(cx.end, limit + 1));
+  let k = scanFrom - base;
+  for (; k < limit - base; k++) {
     const ch = text.charCodeAt(k);
-    if (ch === CH_NEWLINE) return -1;
+    if (ch === CH_NEWLINE) {
+      scans[markLen - 1] = { start, end: base + k, lineBreak: true };
+      return -1;
+    }
     if (ch === CH_BACKSLASH) {
       k++;
       continue;
@@ -116,7 +147,7 @@ function parseInlineMath(cx: InlineContext, next: number, pos: number): number {
       // never followed by a letter or digit.
       if (WORD_CHAR.test(text.charAt(k + 1))) continue;
     }
-    const i = pos + k;
+    const i = base + k;
     return cx.addElement(
       cx.elt("InlineMath", pos, i + markLen, [
         cx.elt("MathMark", pos, pos + markLen),
@@ -124,6 +155,7 @@ function parseInlineMath(cx: InlineContext, next: number, pos: number): number {
       ]),
     );
   }
+  scans[markLen - 1] = { start, end: base + k, lineBreak: false };
   return -1;
 }
 
