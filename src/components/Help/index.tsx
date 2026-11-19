@@ -17,7 +17,8 @@ interface Section {
 
 const K = ({ children }: { children: string }) => (
   <>
-    {children.split("+").map((key, i) => (
+    {/* "Ctrl++" is Ctrl and the + key: a "+" at the end is a key, not a joiner. */}
+    {children.split(/\+(?!$)/).map((key, i) => (
       <span key={i}>
         {i > 0 && "+"}
         <kbd>{key}</kbd>

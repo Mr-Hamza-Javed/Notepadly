@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ipc, type UpdateStatus } from "../../lib/ipc";
@@ -89,11 +89,32 @@ function Expander({ icon, title, subtitle, onFirstOpen, children }: { icon: Reac
   );
 }
 
+/**
+ * ARIA radio group: one Tab stop (the checked option), and the arrow keys move
+ * the choice, wrapping at the ends, as Windows radio buttons do.
+ */
 function Radios<T extends string>({ value, options, label, onChange }: { value: T; options: { value: T; label: string }[]; label: string; onChange: (v: T) => void }) {
+  const checked = Math.max(0, options.findIndex((o) => o.value === value));
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : 0;
+    const to = e.key === "Home" ? 0 : e.key === "End" ? options.length - 1 : step ? (checked + step + options.length) % options.length : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    onChange(options[to].value);
+    e.currentTarget.querySelectorAll<HTMLElement>("[role='radio']")[to]?.focus();
+  };
   return (
-    <div className="radio-group" role="radiogroup" aria-label={label}>
-      {options.map((o) => (
-        <button key={o.value} type="button" className="radio" role="radio" aria-checked={o.value === value} onClick={() => onChange(o.value)}>
+    <div className="radio-group" role="radiogroup" aria-label={label} onKeyDown={onKeyDown}>
+      {options.map((o, i) => (
+        <button
+          key={o.value}
+          type="button"
+          className="radio"
+          role="radio"
+          aria-checked={o.value === value}
+          tabIndex={i === checked ? 0 : -1}
+          onClick={() => onChange(o.value)}
+        >
           <span className="radio-mark" />
           {o.label}
         </button>
