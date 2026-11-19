@@ -305,7 +305,10 @@ function loadStep(id: string, maxBytes: number): Promise<void> {
         chunk.eof || current.tailChars === null ? null : Math.max(0, current.tailChars - chunk.text.length),
       ...(chunk.mixedEol ? { mixedEol: true } : {}),
     });
-    if (current.dirty) markDraftChanged(id);
+    // No new draft for a dirty tab: the stored one still matches its own file position
+    // (draftMeta), and loading goes on from there after a restore. Rewriting the whole,
+    // growing text after every chunk made a full load of a big edited file send it again
+    // and again (H8).
     if (!chunk.eof) startScan(id);
   })().finally(() => {
     if (rt.inFlight === read) rt.inFlight = null;

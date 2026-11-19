@@ -453,6 +453,29 @@ describe("H8: drafts", () => {
     expect(backend.count("draft_write")).toBe(2);
     expect(backend.drafts.get(app.tab().id)).toBe("note!");
   });
+
+  it("are not sent again for every chunk loaded into an edited big file, and still restore it whole", async () => {
+    app = await bootApp();
+    const big = `${"0123456789".repeat(9)}\n`.repeat(25_000); // ~2.3 MB, loaded in chunks
+    backend.write(B, big);
+    await app.actions.openPaths([B]);
+    expect(app.tab().fullyLoaded).toBe(false);
+    app.engine.restore(app.tab().id, { anchor: 0, head: 0, scrollTop: 0 });
+    app.engine.insertText("EDIT\n");
+    await app.loader.flushPersistence();
+    expect(backend.count("draft_write")).toBe(1);
+    await app.actions.ensureFullyLoaded(app.tab().id);
+    await app.loader.flushPersistence();
+    expect(backend.count("draft_write")).toBe(1);
+
+    await app.actions.closeWindow();
+    app = await bootApp({ keepDisk: true });
+    const id = app.tabByName("b.txt").id;
+    await app.actions.activate(id);
+    await app.actions.ensureFullyLoaded(id);
+    expect(app.text(id)).toBe(`EDIT\n${big}`);
+    expect(app.tab(id).dirty).toBe(true);
+  });
 });
 
 describe("MERGE-1: the start-up draft clean-up", () => {
