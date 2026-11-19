@@ -314,6 +314,35 @@ describe("a read-only file", () => {
   });
 });
 
+describe("L16: a draft that cannot be read", () => {
+  it("is kept, the user is told, and it comes back once it can be read", async () => {
+    app = await bootApp();
+    backend.write(A, "on disk");
+    await app.actions.openPaths([A]);
+    app.type(" + unsaved");
+    const id = app.tab().id;
+    await app.actions.closeWindow();
+    backend.unreadableDrafts.add(id);
+    app = await bootApp({ keepDisk: true });
+    expect(app.message()?.title).toBe("Could not restore unsaved changes");
+    expect(app.tab(id).dirty).toBe(true);
+    expect(app.engine.hasDoc(id)).toBe(false);
+    await app.loader.flushPersistence();
+    await app.loader.pruneDrafts();
+    expect(backend.drafts.get(id)).toBe("on disk + unsaved");
+    expect(JSON.parse(backend.session!).tabs[0]).toMatchObject({ id, dirty: true, hasDraft: true });
+    // Saving cannot write the file without its text.
+    app.actions.closeDialog();
+    expect(await app.actions.save(id)).toBe(false);
+    expect(backend.text(A)).toBe("on disk");
+    backend.unreadableDrafts.delete(id);
+    app.actions.closeDialog();
+    await app.actions.activate(id);
+    expect(app.text(id)).toBe("on disk + unsaved");
+    expect(app.tab(id).dirty).toBe(true);
+  });
+});
+
 describe("MERGE-1: the start-up draft clean-up", () => {
   const untitled = (id: string) => ({
     id,

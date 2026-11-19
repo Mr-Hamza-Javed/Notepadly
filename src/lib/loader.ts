@@ -128,6 +128,13 @@ function enqueue<T>(rt: TabRuntime, op: () => Promise<T>): Promise<T> {
 /** The bytes after loadedOffset are only trustworthy while the file is unchanged. */
 const tailUsable = (tab: TabMeta, rt: TabRuntime) => !tab.externalChange && rt.dismissed === null;
 
+/** The stored unsaved text of a tab exists but could not be read. */
+export class DraftUnreadableError extends Error {
+  constructor(detail: string) {
+    super(`The unsaved changes of this tab could not be read. They are kept, and Notepadly tries again when you switch to the tab.\n${detail}`);
+  }
+}
+
 export class LoadBlockedError extends Error {
   constructor() {
     super("This file changed on disk while only part of it was loaded. Reload it to continue.");
@@ -456,7 +463,14 @@ export function materialise(id: string): Promise<void> {
     const tab = getTab(id);
     if (!tab) return;
     if (tab.dirty && rt.hasDraft) {
-      const draft = await ipc.draftRead(id).catch(() => null);
+      let draft: string | null;
+      try {
+        draft = await ipc.draftRead(id);
+      } catch (error) {
+        // Not missing but unreadable (locked, access denied): the draft is kept,
+        // and the tab stays without editor state until it can be read (L16).
+        throw new DraftUnreadableError(String(error));
+      }
       if (!getTab(id) || engine.hasDoc(id)) return;
       if (draft !== null) {
         engine.createDoc(id, draft, tab.mode);
@@ -493,6 +507,12 @@ export async function materialiseOrFlag(id: string): Promise<void> {
   } catch (error) {
     const tab = getTab(id);
     if (!tab || engine.hasDoc(id)) return;
+    if (error instanceof DraftUnreadableError) {
+      // No editor state: nothing can be typed over it, and drafts are never
+      // written or deleted for it, so the stored text stays as it is.
+      showMessage("Could not restore unsaved changes", `${tab.title}: ${error.message}`);
+      return;
+    }
     const disk = tab.path ? await ipc.stat(tab.path).catch(() => undefined) : undefined;
     if (!getTab(id) || engine.hasDoc(id)) return;
     engine.createDoc(id, "", tab.mode);
