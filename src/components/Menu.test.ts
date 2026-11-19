@@ -24,6 +24,9 @@ afterEach(async () => {
   host?.remove();
   root = null;
   host = null;
+  // The editor booted by some tests answers focus changes on a short timer: let it run
+  // while the window still exists (otherwise an unhandled error after teardown).
+  await act(() => new Promise<void>((resolve) => setTimeout(resolve, 60)));
 });
 
 async function renderMenu(entries: MenuEntry[], initialActive = -1): Promise<HTMLElement> {
