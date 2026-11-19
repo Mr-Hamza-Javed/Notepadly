@@ -160,7 +160,8 @@ const SECTIONS: Section[] = [
           </li>
         </ul>
         <p>
-          Click <em>Formatted</em> in the status bar to switch to <em>Markdown syntax</em> and back. Turn formatting
+          Click <em>Formatted</em> in the status bar to switch to <em>Markdown syntax</em> and back. Click <em>Plain
+          text</em> to show any file, such as a <C>.txt</C>, formatted. Turn formatting
           off for new tabs with <em>View &gt; Formatting</em> or in Settings.
         </p>
       </>

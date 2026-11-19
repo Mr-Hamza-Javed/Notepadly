@@ -668,6 +668,30 @@ describe("settings", () => {
     expect(app.tabByName("b.txt").mode).toBe("plain");
   });
 
+  it("M19: Formatting off and on again keeps each tab's Markdown syntax choice", async () => {
+    await app.actions.activate(app.tabByName("a.md").id);
+    app.actions.toggleSyntax();
+    expect(app.tabByName("a.md").mode).toBe("syntax");
+    app.actions.setSetting("formatting", false);
+    expect(app.tabByName("a.md").mode).toBe("plain");
+    app.actions.setSetting("formatting", true);
+    expect(app.tabByName("a.md").mode).toBe("syntax");
+  });
+
+  it("M19: a .txt file can be shown formatted from the status bar and back to plain", async () => {
+    await app.actions.activate(app.tabByName("b.txt").id);
+    const modes = [app.tab().mode];
+    for (let i = 0; i < 3; i++) {
+      app.actions.nextMode();
+      modes.push(app.tab().mode);
+    }
+    expect(modes).toEqual(["plain", "formatted", "syntax", "plain"]);
+    await app.actions.activate(app.tabByName("a.md").id);
+    app.actions.nextMode();
+    app.actions.nextMode();
+    expect(app.tab().mode).toBe("formatted");
+  });
+
   it("zooms in steps and clamps to 10..500", () => {
     app.actions.zoomBy(10);
     expect(app.state().settings.zoom).toBe(110);

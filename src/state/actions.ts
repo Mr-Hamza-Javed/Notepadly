@@ -736,13 +736,33 @@ function syncWindowTheme(): void {
   getCurrentWindow().setTheme(theme === "system" ? null : theme).catch(() => {});
 }
 
+/** Each tab's view before Formatting was turned off, so turning it on brings it back (M19). */
+const modeBeforeFormattingOff = new Map<string, FormatMode>();
+
 function applyFormattingSetting(formatting: boolean): void {
   for (const tab of state().tabs) {
     if (tab.path !== null && !isMarkdownPath(tab.path)) continue;
-    if (formatting ? tab.mode === "plain" : tab.mode !== "plain") {
-      applyMode(tab.id, formatting ? "formatted" : "plain");
+    if (!formatting && tab.mode !== "plain") {
+      modeBeforeFormattingOff.set(tab.id, tab.mode);
+      applyMode(tab.id, "plain");
+    } else if (formatting && tab.mode === "plain") {
+      applyMode(tab.id, modeBeforeFormattingOff.get(tab.id) ?? "formatted");
     }
   }
+  if (formatting) modeBeforeFormattingOff.clear();
+}
+
+/**
+ * The status bar's mode button (M19): Formatted and Markdown syntax for Markdown;
+ * any other file (a .txt) can also be shown formatted and goes back to Plain text.
+ */
+function nextMode(): void {
+  const tab = getActiveTab();
+  if (!tab) return;
+  const markdownOnly = tab.path === null || isMarkdownPath(tab.path);
+  const next: FormatMode =
+    tab.mode === "plain" ? "formatted" : tab.mode === "formatted" ? "syntax" : markdownOnly ? "formatted" : "plain";
+  applyMode(tab.id, next);
 }
 
 function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void {
@@ -1070,6 +1090,7 @@ export const actions = {
   keepMine: (id: string) => loader.keepMine(id),
 
   setMode: applyMode,
+  nextMode,
   toggleSyntax: () => {
     const tab = getActiveTab();
     if (tab && tab.mode !== "plain") applyMode(tab.id, tab.mode === "formatted" ? "syntax" : "formatted");
