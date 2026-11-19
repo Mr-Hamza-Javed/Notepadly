@@ -132,3 +132,86 @@ describe("Edit > Select all in a file that is still loading", () => {
     expect(sel.anchor).toBe(sel.head);
   });
 });
+
+describe("messages wait their turn (BUGS.md UI-9)", () => {
+  beforeEach(async () => {
+    app = await bootApp();
+  });
+
+  const typeInto = async (input: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+
+  it("keeps a half-typed Go to dialog and shows the message after it", async () => {
+    const el = await renderDialogs();
+    await act(async () => app.actions.showDialog({ kind: "goto" }));
+    await typeInto(el.querySelector<HTMLInputElement>("#goto-line")!, "42");
+    await act(async () => app.store.showMessage("Could not save file", "disk full"));
+    expect(app.state().dialog?.kind).toBe("goto");
+    expect(el.querySelector<HTMLInputElement>("#goto-line")!.value).toBe("42");
+    await act(async () => app.actions.closeDialog());
+    expect(app.message()?.title).toBe("Could not save file");
+    expect(el.querySelector(".dialog-title")!.textContent).toBe("Could not save file");
+  });
+
+  it("shows a second message after the first one, not instead of it", async () => {
+    const el = await renderDialogs();
+    await act(async () => app.store.showMessage("First", "one"));
+    await act(async () => app.store.showMessage("Second", "two"));
+    expect(app.message()?.title).toBe("First");
+    await act(async () => [...el.querySelectorAll("button")].find((b) => b.textContent === "OK")!.click());
+    expect(app.message()?.title).toBe("Second");
+    await act(async () => [...el.querySelectorAll("button")].find((b) => b.textContent === "OK")!.click());
+    expect(app.state().dialog).toBeNull();
+  });
+
+  it("brings a message back after a dialog opened over it", async () => {
+    await renderDialogs();
+    await act(async () => app.store.showMessage("First", "one"));
+    await act(async () => app.actions.showDialog({ kind: "page-setup" }));
+    expect(app.state().dialog?.kind).toBe("page-setup");
+    await act(async () => app.actions.closeDialog());
+    expect(app.message()?.title).toBe("First");
+  });
+});
+
+describe("message dialog accessibility and Enter", () => {
+  beforeEach(async () => {
+    app = await bootApp();
+  });
+
+  it("links the message body with aria-describedby", async () => {
+    const el = await renderDialogs();
+    await act(async () => app.store.showMessage("Could not save file", "The disk is full."));
+    const dialog = el.querySelector<HTMLElement>("[role='dialog']")!;
+    const id = dialog.getAttribute("aria-describedby");
+    expect(id).toBeTruthy();
+    expect(document.getElementById(id!)!.textContent).toBe("The disk is full.");
+  });
+
+  it("ignores a repeated Enter, and swallows the repeats after Enter answered", async () => {
+    const el = await renderDialogs();
+    await act(async () => app.store.showMessage("Hello", "world"));
+    const ok = el.querySelector<HTMLButtonElement>(".btn.primary")!;
+    await act(async () => {
+      ok.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true }));
+    });
+    expect(app.message()?.title).toBe("Hello");
+    await act(async () => {
+      ok.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(app.state().dialog).toBeNull();
+    // The key is still held: its repeats must not reach the editor.
+    const repeat = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(repeat);
+    expect(repeat.defaultPrevented).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter" }));
+    const after = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(after);
+    expect(after.defaultPrevented).toBe(false);
+  });
+});

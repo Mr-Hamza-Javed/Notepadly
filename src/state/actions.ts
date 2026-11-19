@@ -43,6 +43,9 @@ import {
   newTabId,
   onSharedSettings,
   patchTab,
+  clearDialogs,
+  nextDialog,
+  pushDialog,
   showMessage,
   useApp,
 } from "./store";
@@ -231,23 +234,22 @@ function waitForEditorParent(): Promise<void> {
 
 function askConfirmClose(tabId: string): Promise<"save" | "discard" | "cancel"> {
   return new Promise((resolve) => {
-    useApp.setState({
-      dialog: {
-        kind: "confirm-close",
-        tabId,
-        resolve: (answer) => {
-          useApp.setState({ dialog: null });
-          resolve(answer);
-        },
+    const dialog: Dialog = {
+      kind: "confirm-close",
+      tabId,
+      resolve: (answer) => {
+        if (state().dialog === dialog) nextDialog();
+        resolve(answer);
       },
-    });
+    };
+    pushDialog(dialog);
   });
 }
 
 function closeDialog(): void {
   const { dialog } = state();
   if (dialog?.kind === "confirm-close") dialog.resolve("cancel");
-  else if (dialog) useApp.setState({ dialog: null });
+  else if (dialog) nextDialog();
 }
 
 // ---- Activation --------------------------------------------------------------
@@ -703,7 +705,8 @@ async function prepareWindowClose(exiting = false): Promise<boolean> {
  * stored or resolved every tab.
  */
 async function resetForBackground(): Promise<void> {
-  useApp.setState({ view: "editor", dialog: null, find: { open: false, replace: false } });
+  clearDialogs();
+  useApp.setState({ view: "editor", find: { open: false, replace: false } });
   if (keepsSession()) return; // the session is what comes back
   const old = state().tabs.map((t) => t.id);
   await newTab();
@@ -1290,7 +1293,7 @@ export const actions = {
 
   showDialog: (dialog: Dialog) => {
     if (state().dialog?.kind === "confirm-close") closeDialog();
-    useApp.setState({ dialog });
+    pushDialog(dialog);
   },
   closeDialog,
   openSettings: () => useApp.setState({ view: "settings" }),

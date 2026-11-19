@@ -115,7 +115,7 @@ function goToDocEnd(extend: boolean): boolean {
 }
 
 function openLinkDialog(): void {
-  useApp.setState({ dialog: { kind: "link", initialText: engine.selectionText(), initialUrl: "" } });
+  actions.showDialog({ kind: "link", initialText: engine.selectionText(), initialUrl: "" });
 }
 
 function activateIndex(index: number): void {
