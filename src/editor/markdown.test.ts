@@ -338,4 +338,12 @@ describe("overlong lines", () => {
     notepadlyParser.parse("[a](".repeat(10_000));
     expect(performance.now() - start).toBeLessThan(300);
   });
+
+  // W7: a one-line file of several MB (minified JSON with brackets) froze Syntax mode; the old
+  // parser did not finish 5 MB in 5 minutes. Now the parse only reads the line.
+  it("W7: parses a 5 MB minified-JSON line in well under a second", () => {
+    const start = performance.now();
+    notepadlyParser.parse('{"key": "value [a](b) **x**", '.repeat(5_000_000 / 30));
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
 });
