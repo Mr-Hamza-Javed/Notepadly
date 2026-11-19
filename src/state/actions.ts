@@ -477,13 +477,44 @@ async function askUser(
   return message(body, { title, kind: "warning", buttons });
 }
 
-async function writeAndReport(id: string, path: string, options: loader.WriteOptions = {}): Promise<boolean> {
+/**
+ * After a STALE answer for the tab's own file: true when the file is gone. The
+ * tab is then flagged deleted, not "changed by another program", which the poll
+ * would only correct seconds later (STATE-9).
+ */
+async function savedFileIsGone(id: string, path: string): Promise<boolean> {
+  if (!pathsEqual(getTab(id)?.path ?? null, path)) return false;
+  const disk = await ipc.stat(path).catch(() => undefined);
+  if (disk !== null || !getTab(id)) return false;
+  patchTab(id, { externalChange: "deleted" });
+  return true;
+}
+
+async function writeAndReport(
+  id: string,
+  path: string,
+  options: loader.WriteOptions & { recreating?: boolean } = {},
+): Promise<boolean> {
   const result = await loader.writeTab(id, path, options);
   if (result.ok) {
     addRecent(path);
     return true;
   }
   if (result.message.includes("UNMAPPABLE")) return saveUnmappable(id, path, options);
+  if (result.stale && (await savedFileIsGone(id, path))) {
+    const tab = getTab(id);
+    if (!tab) return false;
+    // A deleted file that is fully loaded is simply written again, as when the
+    // poll had already flagged it. Only once: a second STALE is a real change.
+    if (tab.fullyLoaded && !options.recreating) return writeAndReport(id, path, { ...options, recreating: true });
+    if (!tab.fullyLoaded) {
+      showMessage(
+        "File deleted",
+        `${tab.title} was deleted while only part of it was loaded, so the rest of it can no longer be read. Use Save as to keep the loaded part with your changes.`,
+      );
+      return false;
+    }
+  }
   if (result.stale) {
     patchTab(id, { externalChange: "modified" });
     showMessage(

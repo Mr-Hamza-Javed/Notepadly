@@ -182,6 +182,52 @@ describe("STATE-3: typing into a tab while it moves to another window", () => {
   });
 });
 
+describe("STATE-9: saving a partly loaded file that was deleted", () => {
+  const BIG = "C:\\data\\big.log";
+  const big = "abcdefghij".repeat(9).concat("\n").repeat(30_000); // ~2.7 MB: loads in parts
+
+  async function partialTab() {
+    app = await bootApp();
+    backend.write(BIG, big);
+    await app.actions.openPaths([BIG]);
+    expect(app.tab().fullyLoaded).toBe(false);
+    app.engine.restore(app.tab().id, { anchor: 0, head: 0, scrollTop: 0 });
+    app.engine.insertText("EDIT ");
+  }
+
+  it("says the file was deleted, not changed, once the poll has seen it", async () => {
+    await partialTab();
+    backend.delete(BIG);
+    await app.loader.pollExternalChanges();
+    expect(app.tab().externalChange).toBe("deleted");
+    expect(await app.actions.save()).toBe(false);
+    expect(app.tab().externalChange).toBe("deleted");
+    expect(app.message()?.title).toBe("File deleted");
+    expect(app.message()?.body).toMatch(/Save as/);
+    expect(backend.exists(BIG)).toBe(false);
+  });
+
+  it("shows \"deleted\" at once when the save is what finds out, not \"changed\" first", async () => {
+    await partialTab();
+    backend.delete(BIG);
+    expect(await app.actions.save()).toBe(false);
+    expect(app.tab().externalChange).toBe("deleted");
+    expect(app.message()?.title).toBe("File deleted");
+  });
+
+  it("a fully loaded file deleted before the poll saw it is simply written again", async () => {
+    app = await bootApp();
+    backend.write(A, "a text");
+    await app.actions.openPaths([A]);
+    app.type(" more");
+    backend.delete(A);
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(A)).toBe("a text more");
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+    expect(app.message()).toBeNull();
+  });
+});
+
 // ---- Two windows over one backend ---------------------------------------------
 
 /** Window "main" (the shared fakeWindow) and "window-1", running side by side. */
