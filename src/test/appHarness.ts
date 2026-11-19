@@ -3,7 +3,7 @@
 import "./dom";
 import { vi } from "vitest";
 import type { Settings } from "../state/types";
-import { backend, dialogs, fakeWindow } from "./fakeTauri";
+import { backend, dialogs, FakeWindow, fakeWindow, fakeWindows, tauriMocks } from "./fakeTauri";
 
 export interface BootOptions {
   /** Saved settings, as localStorage would hold them. */
@@ -15,29 +15,59 @@ export interface BootOptions {
   keepDisk?: boolean;
   /** Answers to yes/no questions asked while starting (see FakeDialogs.askAnswers). */
   askAnswers?: boolean[];
+  /**
+   * Boots a second window next to the apps already running, with its own
+   * FakeWindow (and so its own module graph, store and loader) over the same
+   * backend. Events between the windows are delivered (see `fakeWindows`).
+   * Implies `keepDisk`.
+   */
+  window?: FakeWindow;
 }
 
 /** The loader of the previous boot, so its pending timers can be silenced like a closed process. */
 let previousLoader: typeof import("../lib/loader") | null = null;
 
 export async function bootApp(options: BootOptions = {}) {
-  previousLoader?.setPersistence(false);
+  const extra = !!options.window && options.window !== fakeWindow;
+  const win = options.window ?? fakeWindow;
+  if (!extra) previousLoader?.setPersistence(false);
   vi.resetModules();
-  if (!options.keepDisk) backend.reset();
-  backend.calls = [];
+  // Each window's modules get Tauri mocks bound to that window.
+  vi.doMock("@tauri-apps/api/core", () => tauriMocks.core(win));
+  vi.doMock("@tauri-apps/api/window", () => tauriMocks.window(win));
+  vi.doMock("@tauri-apps/api/webviewWindow", () => tauriMocks.webviewWindow(win));
+  if (!options.keepDisk && !extra) backend.reset();
   backend.failNext.clear();
-  dialogs.reset();
+  win.reset(options.label ?? "main");
+  if (extra) {
+    if ([...fakeWindows.values()].some((w) => w !== win && w.label === win.label && !w.destroyed)) {
+      throw new Error(`bootApp: a window labelled ${win.label} is already running`);
+    }
+    fakeWindows.set(win.label, win);
+    backend.windows.add(win.label);
+    // The other window keeps its editor; this one gets a root of its own.
+    document.getElementById("editor-root")?.removeAttribute("id");
+    document.body.insertAdjacentHTML("beforeend", '<div id="editor-root"></div>');
+  } else {
+    backend.calls = [];
+    dialogs.reset();
+    fakeWindows.clear();
+    fakeWindows.set(win.label, win);
+    backend.windows.clear();
+    backend.windows.add(win.label);
+    backend.closingWindows.clear();
+    backend.openPaths.clear();
+    localStorage.clear();
+    document.body.innerHTML = '<div id="editor-root"></div>';
+  }
   dialogs.askAnswers = options.askAnswers ?? [];
-  fakeWindow.reset(options.label ?? "main");
-  localStorage.clear();
   if (options.settings) localStorage.setItem("notepadly.settings.v1", JSON.stringify(options.settings));
   if (options.recent) localStorage.setItem("notepadly.recent.v1", JSON.stringify(options.recent));
-  document.body.innerHTML = '<div id="editor-root"></div>';
 
   const store = await import("../state/store");
   const { actions } = await import("../state/actions");
   const loader = await import("../lib/loader");
-  previousLoader = loader;
+  if (!extra) previousLoader = loader;
   const { engine } = await import("../editor");
   await actions.init();
 
@@ -46,6 +76,8 @@ export async function bootApp(options: BootOptions = {}) {
   const tabByName = (name: string) => state().tabs.find((t) => t.title === name)!;
 
   return {
+    /** This app's window. */
+    win,
     actions,
     loader,
     engine,
@@ -74,6 +106,9 @@ export async function bootApp(options: BootOptions = {}) {
 }
 
 export type App = Awaited<ReturnType<typeof bootApp>>;
+
+/** A FakeWindow for a second app booted with `bootApp({ window })`. */
+export const newFakeWindow = () => new FakeWindow();
 
 /** Polls until the condition holds; fails the test after `timeout` ms. */
 export async function waitFor(condition: () => boolean, timeout = 10_000): Promise<void> {

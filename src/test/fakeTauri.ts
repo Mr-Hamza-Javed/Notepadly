@@ -10,8 +10,8 @@
 //   windows-1252. Like Rust, the first 256 KiB decide between UTF-8 and ANSI,
 //   and an encoding passed at offset 0 forces it. UTF-16 is not modelled.
 // - Writes are not atomic and there is no ReplaceFileW / in-place fallback.
-// - Mixed line endings are not kept on save (files.rs `kept_line_endings`):
-//   every line gets the requested ending, as with `normalizeEol`.
+// - Mixed line endings are kept on save like files.rs `kept_line_endings`, but
+//   without its 64 MiB limit.
 // - Error strings for missing files and folders copy Windows' wording, but other
 //   I/O errors only happen when a test injects them with `failNext`.
 
@@ -128,12 +128,25 @@ export class FakeBackend {
   /** Answer of `tab_drop_target`: the other window under the mouse. */
   dropTarget: { label: string; x: number; y: number } | null = null;
   /** Every command name, in order. */
-  calls: { cmd: string; args: Record<string, unknown> }[] = [];
+  calls: { cmd: string; args: Record<string, unknown>; caller?: string }[] = [];
   /** Next error for a command, by name; consumed once. */
   failNext = new Map<string, string>();
   /** Paths whose reads always fail (a locked file). */
   unreadable = new Set<string>();
+  /** Paths whose file has the read-only attribute: reads report it and saves fail. */
+  readOnly = new Set<string>();
+  /** Draft ids whose reads fail (a draft file that cannot be read). */
+  unreadableDrafts = new Set<string>();
+  /** When each draft was last written, in Date.now() milliseconds (for `drafts_prune`'s `beforeMs`). */
+  draftTimes = new Map<string, number>();
+  /** False makes `is_last_window` and `window_close_begin` say another window is on screen. */
   isLastWindow = true;
+  /** Labels of the app's windows that are on screen (bootApp adds them). */
+  windows = new Set<string>();
+  /** Windows that have started closing (`window_close_begin`, cleared by `window_close_end`). */
+  closingWindows = new Set<string>();
+  /** The paths each window has open (`window_open_paths_set`). */
+  openPaths = new Map<string, string[]>();
   private clock = 1_000;
 
   reset(): void {
@@ -148,7 +161,13 @@ export class FakeBackend {
     this.calls = [];
     this.failNext.clear();
     this.unreadable.clear();
+    this.readOnly.clear();
+    this.unreadableDrafts.clear();
+    this.draftTimes.clear();
     this.isLastWindow = true;
+    this.windows.clear();
+    this.closingWindows.clear();
+    this.openPaths.clear();
   }
 
   /** Writes a file "from another program". Strings are stored as UTF-8. */
@@ -191,8 +210,9 @@ export class FakeBackend {
     return file ? { size: file.bytes.length, mtimeMs: file.mtimeMs } : null;
   }
 
-  async invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    this.calls.push({ cmd, args });
+  /** `caller` is the label of the window that sent the command (Rust's `tauri::Window`). */
+  async invoke(cmd: string, args: Record<string, unknown> = {}, caller = "main"): Promise<unknown> {
+    this.calls.push({ cmd, args, caller });
     // Let other promise chains run first, as a real IPC round trip would.
     await Promise.resolve();
     const failure = this.failNext.get(cmd);
@@ -224,8 +244,16 @@ export class FakeBackend {
         this.session = args.json as string;
         return null;
       case "drafts_prune": {
+        // store.rs `drafts_prune`: a draft written at or after `beforeMs` belongs to
+        // this run, even when no stored session lists it yet (MERGE-1).
         const keep = args.keep as string[];
-        for (const id of [...this.drafts.keys()]) if (!keep.includes(id)) this.drafts.delete(id);
+        const before = typeof args.beforeMs === "number" ? args.beforeMs : null;
+        for (const id of [...this.drafts.keys()]) {
+          if (keep.includes(id)) continue;
+          if (before !== null && (this.draftTimes.get(id) ?? 0) >= before) continue;
+          this.drafts.delete(id);
+          this.draftTimes.delete(id);
+        }
         return null;
       }
       case "window_sessions_read":
@@ -250,9 +278,17 @@ export class FakeBackend {
       case "draft_delete": {
         const id = args.id as string;
         if (!validDraftId(id)) throw `invalid draft id: ${JSON.stringify(id)}`;
-        if (cmd === "draft_read") return this.drafts.get(id) ?? null;
-        if (cmd === "draft_write") this.drafts.set(id, args.text as string);
-        else this.drafts.delete(id);
+        if (cmd === "draft_read") {
+          if (this.unreadableDrafts.has(id)) throw "Access is denied. (os error 5)";
+          return this.drafts.get(id) ?? null;
+        }
+        if (cmd === "draft_write") {
+          this.drafts.set(id, args.text as string);
+          this.draftTimes.set(id, Date.now());
+        } else {
+          this.drafts.delete(id);
+          this.draftTimes.delete(id);
+        }
         return null;
       }
       case "take_pending_paths": {
@@ -261,7 +297,25 @@ export class FakeBackend {
         return paths;
       }
       case "is_last_window":
-        return this.isLastWindow;
+        return this.isLastWindow && [...this.windows].every((w) => w === caller);
+      case "window_close_begin": {
+        // Rust decides "last" atomically: windows that started closing do not count.
+        this.closingWindows.add(caller);
+        return this.isLastWindow && [...this.windows].every((w) => w === caller || this.closingWindows.has(w));
+      }
+      case "window_close_end":
+        this.closingWindows.delete(caller);
+        return null;
+      case "window_open_paths_set":
+        this.openPaths.set(caller, [...(args.paths as string[])]);
+        return null;
+      case "window_path_owner": {
+        const wanted = key(args.path as string);
+        for (const [label, paths] of this.openPaths) {
+          if (label !== caller && this.windows.has(label) && paths.some((p) => key(p) === wanted)) return label;
+        }
+        return null;
+      }
       case "system_fonts":
         return ["Arial", "Inter", "Segoe UI"];
       case "update_configure":
@@ -316,13 +370,18 @@ export class FakeBackend {
       start === 0
         ? firstEol(body, eof)
         : firstEol(this.stripBom(all.subarray(0, 256 * 1024)), size <= 256 * 1024);
+    const raw = (ansi ? ansiDecoder : decoder).decode(body.subarray(0, cut));
+    const known = eol ?? "CRLF";
     return {
-      text: normalize((ansi ? ansiDecoder : decoder).decode(body.subarray(0, cut))),
+      text: normalize(raw),
       nextOffset: start + bom + cut,
       eof,
       encoding: encoding === "utf-8" && bom ? "utf-8-bom" : encoding,
-      eol: eol ?? "CRLF",
+      eol: known,
       stamp: { size, mtimeMs: file.mtimeMs },
+      // This chunk holds a line ending other than the file's `eol` (FILES-1).
+      mixedEol: endingsOf(raw).some((e) => e !== known),
+      readOnly: this.readOnly.has(key(path)),
     };
   }
 
@@ -332,8 +391,9 @@ export class FakeBackend {
     if (req.expectedStamp && (stamp === null || stamp.size !== req.expectedStamp.size || stamp.mtimeMs !== req.expectedStamp.mtimeMs)) {
       throw "STALE";
     }
+    if (existing && this.readOnly.has(key(req.path))) throw "Access is denied. (os error 5)";
     const eol = req.eol === "CRLF" ? "\r\n" : req.eol === "CR" ? "\r" : "\n";
-    const final = normalize(req.text).replace(/\n/g, eol);
+    const final = (existing && this.keptLineEndings(existing.bytes, req)) ?? normalize(req.text).replace(/\n/g, eol);
     const body = req.encoding === "ansi" ? encodeAnsi(final, !!req.allowLossy) : encoder.encode(final);
     const parts: Uint8Array[] = [req.encoding === "utf-8-bom" ? new Uint8Array(BOM) : new Uint8Array(), body];
     const parent = parentKey(req.path);
@@ -347,6 +407,60 @@ export class FakeBackend {
     this.files.set(key(req.path), { bytes: concat(...parts), mtimeMs: (this.clock += 1000) });
     return this.stampOf(req.path) as FakeStamp;
   }
+
+  /** files.rs `kept_line_endings`: null when not mixed or when asked to normalise. */
+  private keptLineEndings(bytes: Uint8Array, req: SaveArgs): string | null {
+    if (req.normalizeEol) return null;
+    const end = Math.min(req.tailOffset ?? bytes.length, bytes.length);
+    let raw = bytes.subarray(0, end);
+    if (req.encoding === "utf-8-bom") raw = this.stripBom(raw);
+    const old = splitLines((req.encoding === "ansi" ? ansiDecoder : decoder).decode(raw));
+    const first = old.find((l) => l[1] !== null)?.[1];
+    if (first === undefined || old.every((l) => l[1] === null || l[1] === first)) return null;
+    const next = normalize(req.text).split("\n");
+    const fallback = req.eol === "CRLF" ? "\r\n" : req.eol === "CR" ? "\r" : "\n";
+    const endings = matchedEndings(old, next, fallback);
+    return next.map((line, i) => line + (endings[i] ?? "")).join("");
+  }
+}
+
+/** The line endings in `text`, in order. */
+function endingsOf(text: string): ("CRLF" | "LF" | "CR")[] {
+  return (text.match(/\r\n|\r|\n/g) ?? []).map((e) => (e === "\r\n" ? "CRLF" : e === "\r" ? "CR" : "LF"));
+}
+
+/** files.rs `split_lines`: each line with the ending after it (none after the last). */
+function splitLines(text: string): [string, string | null][] {
+  const lines: [string, string | null][] = [];
+  const re = /\r\n|\r|\n/g;
+  let start = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    lines.push([text.slice(start, m.index), m[0]]);
+    start = m.index + m[0].length;
+  }
+  lines.push([text.slice(start), null]);
+  return lines;
+}
+
+/** files.rs `matched_endings`: unchanged lines keep their ending, changed ones get `fallback`. */
+function matchedEndings(old: [string, string | null][], next: string[], fallback: string): string[] {
+  const endings = new Array<string>(Math.max(0, next.length - 1)).fill(fallback);
+  const keep = (n: number, o: number) => {
+    const ending = old[o][1];
+    if (n < endings.length && ending !== null) endings[n] = ending;
+  };
+  if (old.length === next.length) {
+    for (let i = 0; i < next.length; i++) keep(i, i);
+    return endings;
+  }
+  const shorter = Math.min(old.length, next.length);
+  let prefix = 0;
+  while (prefix < shorter && old[prefix][0] === next[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < shorter - prefix && old[old.length - 1 - suffix][0] === next[next.length - 1 - suffix]) suffix++;
+  for (let i = 0; i < prefix; i++) keep(i, i);
+  for (let k = 1; k < suffix; k++) keep(next.length - 1 - k, old.length - 1 - k);
+  return endings;
 }
 
 interface SaveArgs {
@@ -435,34 +549,56 @@ const shared = globalThis as unknown as {
   __fakeBackend?: FakeBackend;
   __fakeWindow?: FakeWindow;
   __fakeDialogs?: FakeDialogs;
+  __fakeWindows?: Map<string, FakeWindow>;
 };
 export const backend = (shared.__fakeBackend ??= new FakeBackend());
 export const fakeWindow = (shared.__fakeWindow ??= new FakeWindow());
 export const dialogs = (shared.__fakeDialogs ??= new FakeDialogs());
+/**
+ * The windows that can receive events from each other, by label. bootApp keeps
+ * one per booted app, so two apps booted in one test (each with its own
+ * FakeWindow and module graph) talk to each other as two real windows would.
+ */
+export const fakeWindows = (shared.__fakeWindows ??= new Map<string, FakeWindow>());
 
-/** Module factories for vi.mock, so each test file mocks Tauri the same way. */
+/** Delivers an event a window sent to the other windows it reaches, after an IPC hop. */
+function route(from: FakeWindow, target: string, event: string, payload: unknown): void {
+  for (const win of fakeWindows.values()) {
+    if (win === from || win.destroyed || (target !== "*" && win.label !== target)) continue;
+    const listener = win.listeners.get(event);
+    if (listener) setTimeout(() => listener({ payload: structuredClone(payload) }), 0);
+  }
+}
+
+/**
+ * Module factories for vi.mock, so each test file mocks Tauri the same way. `win`
+ * is the window the mocked modules belong to (see bootApp's `window` option).
+ */
 export const tauriMocks = {
-  core: () => ({
-    invoke: (cmd: string, args?: Record<string, unknown>) => backend.invoke(cmd, args),
+  core: (win: FakeWindow = fakeWindow) => ({
+    invoke: (cmd: string, args?: Record<string, unknown>) => backend.invoke(cmd, args, win.label),
     convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}`,
   }),
-  window: () => ({
+  window: (win: FakeWindow = fakeWindow) => ({
     getCurrentWindow: () => ({
       get label() {
-        return fakeWindow.label;
+        return win.label;
       },
-      close: () => fakeWindow.close(),
+      close: () => win.close(),
       destroy: async () => {
-        fakeWindow.destroyed = true;
+        win.destroyed = true;
+        backend.windows.delete(win.label);
+        backend.closingWindows.delete(win.label);
+        backend.openPaths.delete(win.label);
       },
       setTheme: async () => {},
       unminimize: async () => {},
       show: async () => {},
       setFocus: async () => {
-        fakeWindow.focused++;
+        win.focused++;
       },
       onCloseRequested: async (handler: FakeWindow["closeHandler"]) => {
-        fakeWindow.closeHandler = handler;
+        win.closeHandler = handler;
         return () => {};
       },
       onFocusChanged: async () => () => {},
@@ -472,18 +608,20 @@ export const tauriMocks = {
   webview: () => ({
     getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
   }),
-  webviewWindow: () => ({
+  webviewWindow: (win: FakeWindow = fakeWindow) => ({
     getCurrentWebviewWindow: () => ({
       listen: async (event: string, handler: (event: { payload: unknown }) => void) => {
-        fakeWindow.listeners.set(event, handler);
-        fakeWindow.listenedAt.set(event, backend.calls.length);
+        win.listeners.set(event, handler);
+        win.listenedAt.set(event, backend.calls.length);
         return () => {};
       },
       emit: async (event: string, payload: unknown) => {
-        fakeWindow.emitted.push({ target: "*", event, payload });
+        win.emitted.push({ target: "*", event, payload });
+        route(win, "*", event, payload);
       },
       emitTo: async (target: string, event: string, payload: unknown) => {
-        fakeWindow.emitted.push({ target, event, payload });
+        win.emitted.push({ target, event, payload });
+        route(win, target, event, payload);
       },
     }),
     getAllWebviewWindows: async () => [],
