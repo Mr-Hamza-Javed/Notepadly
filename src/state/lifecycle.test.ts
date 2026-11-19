@@ -73,3 +73,42 @@ describe("STATE-1: a tab with no editor state whose file is deleted", () => {
     expect(app.text(id)).toBe("a text back");
   });
 });
+
+/** Holds every call of `cmd` until the returned release() is called. */
+function holdCommand(cmd: string) {
+  const original = backend.invoke.bind(backend);
+  const held: (() => void)[] = [];
+  const spy = vi.spyOn(backend, "invoke").mockImplementation(async (name, args) => {
+    if (name === cmd) await new Promise<void>((resolve) => held.push(resolve));
+    return original(name, args);
+  });
+  return {
+    held: () => held.length,
+    release() {
+      spy.mockRestore();
+      held.splice(0).forEach((resolve) => resolve());
+    },
+  };
+}
+
+describe("STATE-2: closing a window while its drafts are being written", () => {
+  it("leaves no session and no draft behind once its tabs were discarded", async () => {
+    backend.reset();
+    app = await bootApp({ keepDisk: true, label: "window-1" });
+    app.type("note");
+    const hold = holdCommand("draft_write");
+    const flushing = app.loader.flushPersistence();
+    await waitFor(() => hold.held() === 1);
+    backend.isLastWindow = false;
+    const closing = app.actions.closeWindow();
+    await app.answerClose("discard");
+    await settle(20);
+    hold.release();
+    await flushing.catch(() => {});
+    await closing;
+    await settle(20);
+    expect(fakeWindow.closes).toEqual([true]);
+    expect(backend.windowSessions.size).toBe(0);
+    expect(backend.drafts.size).toBe(0);
+  });
+});

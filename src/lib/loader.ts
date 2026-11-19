@@ -1011,11 +1011,19 @@ export async function discardSession(session: SessionFile | null): Promise<void>
 }
 
 /** Clears what this run stored, once every dirty tab has been answered for. */
-export async function discardCurrentSession(): Promise<void> {
+export function discardCurrentSession(): Promise<void> {
   if (flushTimer !== null) clearTimeout(flushTimer);
   flushTimer = null;
-  const ids = useApp.getState().tabs.filter((t) => rtOf(t.id).hasDraft).map((t) => t.id);
-  await Promise.all(ids.map((id) => ipc.draftDelete(id).catch(noop)));
-  if (sessionKey === null) await ipc.sessionWrite(JSON.stringify({ v: 1, activeId: "", tabs: [] }));
-  else await ipc.windowSessionDelete(sessionKey);
+  pendingSince = null;
+  changedDrafts.clear();
+  // On the flush chain: a flush already writing would otherwise store the
+  // session and drafts again after they were deleted (STATE-2).
+  const run = flushChain.catch(noop).then(async () => {
+    const ids = useApp.getState().tabs.filter((t) => rtOf(t.id).hasDraft).map((t) => t.id);
+    await Promise.all(ids.map((id) => ipc.draftDelete(id).catch(noop)));
+    if (sessionKey === null) await ipc.sessionWrite(JSON.stringify({ v: 1, activeId: "", tabs: [] }));
+    else await ipc.windowSessionDelete(sessionKey);
+  });
+  flushChain = run.catch(noop);
+  return run;
 }
