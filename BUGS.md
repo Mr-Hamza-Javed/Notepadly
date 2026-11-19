@@ -1,6 +1,6 @@
 # Notepadly: bug list and status
 
-**Updated:** 20 November 2026 · **Branch:** `ccr-a918fa2a-qfstem`
+**Updated:** 20 November 2026 · **Branch:** `fix/bugs-and-multi-window`
 
 **Status:**
 - The first report (10 November 2026, commit `c578712`) listed 70 issues.
