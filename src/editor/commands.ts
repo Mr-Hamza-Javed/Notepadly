@@ -58,6 +58,9 @@ function selectedLines(state: EditorState, range: SelectionRange): Line[] {
 
 // ---------- Inline toggles ----------
 
+/** Blockquote and callout markers at the start of a line, with the space after each. */
+const QUOTE_MARKS = /^(?:[ \t]*>[ \t]?)*/;
+
 /** Quote and list markers at the start of a line. */
 const CONTAINER_PREFIX = /^[ \t]*(?:>[ \t]?)*[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?/;
 
@@ -224,21 +227,26 @@ function lineListKind(text: string): ListKind {
 function setListKind(view: EditorView, kind: ListKind): void {
   const { state } = view;
   const changes: ChangeSpec[] = [];
+  // List markers go after any quote markers: `> - item`, not `- > item`.
+  const quoteOf = (line: Line) => QUOTE_MARKS.exec(line.text)![0];
+  const body = (line: Line) => line.text.slice(quoteOf(line).length);
   for (const range of state.selection.ranges) {
     const lines = selectedLines(state, range);
-    const candidates = lines.filter((line) => line.text.trim() || lines.length === 1);
+    const candidates = lines.filter((line) => body(line).trim() || lines.length === 1);
     const target: ListKind =
-      kind !== "none" && candidates.every((line) => lineListKind(line.text) === kind) ? "none" : kind;
+      kind !== "none" && candidates.every((line) => lineListKind(body(line)) === kind) ? "none" : kind;
     let number = 1;
     for (const line of candidates) {
-      const match = LIST_LINE.exec(line.text);
-      const indent = match ? match[1] : /^\s*/.exec(line.text)![0];
+      const from = line.from + quoteOf(line).length;
+      const text = body(line);
+      const match = LIST_LINE.exec(text);
+      const indent = match ? match[1] : /^\s*/.exec(text)![0];
       const consumed = match ? match[0].length : indent.length;
       let marker = "";
       if (target === "bullet") marker = "- ";
       else if (target === "task") marker = "- [ ] ";
       else if (target === "number") marker = `${number++}. `;
-      changes.push({ from: line.from, to: line.from + consumed, insert: indent + marker });
+      changes.push({ from, to: from + consumed, insert: indent + marker });
     }
   }
   dispatchPrefixChanges(view, changes);
@@ -500,8 +508,6 @@ function editTable(view: EditorView, op: Extract<FormatCommand, { type: "table-e
 }
 
 // ---------- Key handlers ----------
-
-const QUOTE_MARKS = /^(?:[ \t]*>[ \t]?)*/;
 
 function renumberFollowing(state: EditorState, line: Line, start: number): ChangeSpec[] {
   const changes: ChangeSpec[] = [];

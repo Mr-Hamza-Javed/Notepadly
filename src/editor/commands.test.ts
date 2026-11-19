@@ -438,6 +438,18 @@ describe("EDIT-5: Enter renumbers the items below in quotes and indented lists",
   });
 });
 
+describe("EDIT-6: lists inside a quote", () => {
+  it("puts the list marker after the quote marker", () => {
+    expect(format("> qu|ote", { type: "list", kind: "bullet" })).toBe("> - qu|ote");
+    expect(format("|> one\n>\n> two|", { type: "list", kind: "number" })).toBe("|> 1. one\n>\n> 2. two|");
+  });
+
+  it("converts and removes a list inside a quote", () => {
+    expect(format("> - it|em", { type: "list", kind: "task" })).toBe("> - [ ] it|em");
+    expect(format("> - it|em", { type: "list", kind: "bullet" })).toBe("> it|em");
+  });
+});
+
 describe("EDIT-4: headings inside quotes and list items", () => {
   it("puts the heading marker after the quote or list marker", () => {
     expect(format("> qu|ote", { type: "block", kind: "h2" })).toBe("> ## qu|ote");
