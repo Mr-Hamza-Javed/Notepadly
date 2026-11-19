@@ -58,33 +58,58 @@ function selectedLines(state: EditorState, range: SelectionRange): Line[] {
 
 // ---------- Inline toggles ----------
 
+/** Blockquote and callout markers at the start of a line, with the space after each. */
+const QUOTE_MARKS = /^(?:[ \t]*>[ \t]?)*/;
+
+/** Quote and list markers at the start of a line. */
+const CONTAINER_PREFIX = /^[ \t]*(?:>[ \t]?)*[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?/;
+
+/** Quote, list and heading markers at the start of a line: inline markers go after them. */
+const BLOCK_PREFIX = /^[ \t]*(?:>[ \t]?)*[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?|#{1,6}[ \t]+)?/;
+
 /**
- * The non-blank stretches of `from..to` between blank lines, trimmed of the
- * whitespace at their ends. One entry when the range has no blank line.
+ * The stretches of `from..to` to wrap in an inline marker, trimmed of the whitespace at
+ * their ends and of quote, list and heading markers. A blank line, or a line that starts a
+ * quote, list item or heading, starts a new stretch: `**- one\n- two**` would break the list.
  */
 function paragraphSegments(state: EditorState, from: number, to: number): [number, number][] {
   const first = state.doc.lineAt(from);
   const last = state.doc.lineAt(to);
-  if (first.number === last.number) return [[from, to]];
   const segments: [number, number][] = [];
   let start = -1;
   let end = -1;
   for (let n = first.number; n <= last.number; n++) {
     const line = state.doc.line(n);
-    const lineFrom = Math.max(line.from, from);
+    const prefix = BLOCK_PREFIX.exec(line.text)![0];
+    const lineFrom = Math.max(line.from + prefix.length, from);
     const lineTo = Math.min(line.to, to);
-    const text = state.sliceDoc(lineFrom, lineTo);
+    const text = lineTo > lineFrom ? state.sliceDoc(lineFrom, lineTo) : "";
     if (!text.trim()) {
-      if (line.text.trim() && start >= 0) continue; // only the selected part is blank: not a break
+      if (line.text.slice(prefix.length).trim() && start >= 0) continue; // only the selected part is blank: not a break
       if (start >= 0) segments.push([start, end]);
       start = -1;
       continue;
+    }
+    if (start >= 0 && prefix.trim()) {
+      segments.push([start, end]);
+      start = -1;
     }
     if (start < 0) start = lineFrom + (/^\s*/.exec(text)?.[0].length ?? 0);
     end = lineTo - (/\s*$/.exec(text)?.[0].length ?? 0);
   }
   if (start >= 0) segments.push([start, end]);
   return segments.length ? segments : [[from, to]];
+}
+
+/**
+ * The opening and closing marks of the `nodeName` node that wraps `from..to`, give or take
+ * its own markers (`slack` characters at each end), or null.
+ */
+function wrappingMarks(state: EditorState, from: number, to: number, nodeName: string, markName: string, slack: number) {
+  const node = ancestorOf(syntaxTree(state).resolveInner(from, 1), [nodeName]);
+  if (!node || node.from < from - slack || node.from > from || node.to < to || node.to > to + slack) return null;
+  const marks = node.getChildren(markName);
+  return marks.length >= 2 ? [marks[0], marks[marks.length - 1]] : null;
 }
 
 function toggleInline(view: EditorView, marker: string, nodeName: string, markName: string): void {
@@ -117,7 +142,15 @@ function toggleInline(view: EditorView, marker: string, nodeName: string, markNa
         }
       }
       const segments = paragraphSegments(state, range.from, range.to);
-      if (segments.length > 1 || segments[0][0] !== range.from || segments[0][1] !== range.to) {
+      const keepDirection = (start: number, end: number) =>
+        range.anchor <= range.head ? EditorSelection.range(start, end) : EditorSelection.range(end, start);
+      if (segments.length > 1) {
+        // A second toggle over the same lines removes what the first one added.
+        const inner = segments.map(([from, to]) => wrappingMarks(state, from, to, nodeName, markName, size));
+        if (inner.every((marks) => marks !== null)) {
+          const changes = state.changes(inner.flatMap((marks) => marks!.map(({ from, to }) => ({ from, to }))));
+          return { changes, range: keepDirection(changes.mapPos(range.from, 1), changes.mapPos(range.to, -1)) };
+        }
         // `**one\n\ntwo**` is not bold: wrap each paragraph on its own, inside its whitespace.
         const changes = state.changes(
           segments.flatMap(([from, to]) => [
@@ -125,19 +158,18 @@ function toggleInline(view: EditorView, marker: string, nodeName: string, markNa
             { from: to, insert: marker },
           ]),
         );
-        const start = changes.mapPos(range.from, 1);
-        const end = changes.mapPos(range.to, -1);
-        return {
-          changes,
-          range: range.anchor <= range.head ? EditorSelection.range(start, end) : EditorSelection.range(end, start),
-        };
+        return { changes, range: keepDirection(changes.mapPos(range.from, 1), changes.mapPos(range.to, -1)) };
       }
+      // One stretch: `**word **` is not bold, so the markers go inside the selected whitespace.
+      const [from, to] = segments[0];
       return {
         changes: [
-          { from: range.from, insert: marker },
-          { from: range.to, insert: marker },
+          { from, insert: marker },
+          { from: to, insert: marker },
         ],
-        range: EditorSelection.range(range.anchor + size, range.head + size),
+        range: from === range.from && to === range.to
+          ? EditorSelection.range(range.anchor + size, range.head + size)
+          : keepDirection(from + size, to + size),
       };
     }),
     { userEvent: "input.format", scrollIntoView: true },
@@ -175,9 +207,11 @@ function setBlockKind(view: EditorView, kind: BlockKind): void {
     const lines = selectedLines(state, range);
     for (const line of lines) {
       // "## " on a blank line is an empty heading, not formatting: skip blanks in a multi-line selection.
-      if (lines.length > 1 && !line.text.trim()) continue;
-      const existing = /^#{1,6}[ \t]+/.exec(line.text);
-      changes.push({ from: line.from, to: line.from + (existing ? existing[0].length : 0), insert: prefix });
+      if (lines.length > 1 && !line.text.slice(CONTAINER_PREFIX.exec(line.text)![0].length).trim()) continue;
+      // The heading marker goes after any quote or list marker: `> ## text`, not `## > text`.
+      const at = line.from + CONTAINER_PREFIX.exec(line.text)![0].length;
+      const existing = /^#{1,6}(?:[ \t]+|$)/.exec(state.sliceDoc(at, line.to));
+      changes.push({ from: at, to: at + (existing ? existing[0].length : 0), insert: prefix });
     }
   }
   dispatchPrefixChanges(view, changes);
@@ -193,21 +227,26 @@ function lineListKind(text: string): ListKind {
 function setListKind(view: EditorView, kind: ListKind): void {
   const { state } = view;
   const changes: ChangeSpec[] = [];
+  // List markers go after any quote markers: `> - item`, not `- > item`.
+  const quoteOf = (line: Line) => QUOTE_MARKS.exec(line.text)![0];
+  const body = (line: Line) => line.text.slice(quoteOf(line).length);
   for (const range of state.selection.ranges) {
     const lines = selectedLines(state, range);
-    const candidates = lines.filter((line) => line.text.trim() || lines.length === 1);
+    const candidates = lines.filter((line) => body(line).trim() || lines.length === 1);
     const target: ListKind =
-      kind !== "none" && candidates.every((line) => lineListKind(line.text) === kind) ? "none" : kind;
+      kind !== "none" && candidates.every((line) => lineListKind(body(line)) === kind) ? "none" : kind;
     let number = 1;
     for (const line of candidates) {
-      const match = LIST_LINE.exec(line.text);
-      const indent = match ? match[1] : /^\s*/.exec(line.text)![0];
+      const from = line.from + quoteOf(line).length;
+      const text = body(line);
+      const match = LIST_LINE.exec(text);
+      const indent = match ? match[1] : /^\s*/.exec(text)![0];
       const consumed = match ? match[0].length : indent.length;
       let marker = "";
       if (target === "bullet") marker = "- ";
       else if (target === "task") marker = "- [ ] ";
       else if (target === "number") marker = `${number++}. `;
-      changes.push({ from: line.from, to: line.from + consumed, insert: indent + marker });
+      changes.push({ from, to: from + consumed, insert: indent + marker });
     }
   }
   dispatchPrefixChanges(view, changes);
@@ -470,20 +509,26 @@ function editTable(view: EditorView, op: Extract<FormatCommand, { type: "table-e
 
 // ---------- Key handlers ----------
 
-function renumberFollowing(state: EditorState, line: Line, indent: string, start: number): ChangeSpec[] {
+function renumberFollowing(state: EditorState, line: Line, start: number): ChangeSpec[] {
   const changes: ChangeSpec[] = [];
+  const quote = QUOTE_MARKS.exec(line.text)![0];
+  const indent = /^\s*/.exec(line.text.slice(quote.length))![0];
   let number = start;
   for (let n = line.number + 1, scanned = 0; n <= state.doc.lines && scanned < 500; n++, scanned++) {
     const next = state.doc.line(n);
-    const match = /^(\s*)(\d+)([.)])/.exec(next.text);
+    // Items in a quote carry its markers: compare and number what follows them.
+    const nextQuote = QUOTE_MARKS.exec(next.text)![0];
+    if (nextQuote.replace(/\s/g, "") !== quote.replace(/\s/g, "")) break;
+    const text = next.text.slice(nextQuote.length);
+    const match = /^(\s*)(\d+)([.)])/.exec(text);
     if (!match) {
-      if (next.text.trim() === "" || next.text.startsWith(`${indent} `)) continue;
+      if (text.trim() === "" || text.startsWith(`${indent} `)) continue;
       break;
     }
     if (match[1].length > indent.length) continue;
     if (match[1] !== indent) break;
     if (Number(match[2]) !== number) {
-      const numFrom = next.from + match[1].length;
+      const numFrom = next.from + nextQuote.length + match[1].length;
       changes.push({ from: numFrom, to: numFrom + match[2].length, insert: String(number) });
     }
     number++;
@@ -517,7 +562,7 @@ export const continueMarkup: Command = (view) => {
     const nextMarker = numeric ? `${nextNumber}${numeric[2]}` : marker;
     const insert = `\n${quote}${indent}${nextMarker}${gap}${task ? "[ ] " : ""}`;
     const changes: ChangeSpec[] = [{ from: range.from, to: range.to, insert }];
-    if (numeric) changes.push(...renumberFollowing(state, line, indent, nextNumber + 1));
+    if (numeric) changes.push(...renumberFollowing(state, line, nextNumber + 1));
     view.dispatch({
       changes,
       selection: { anchor: range.from + insert.length },
@@ -664,14 +709,20 @@ export function formatContextAt(state: EditorState): FormatContext {
   inspect(tree.resolveInner(head, -1));
   inspect(tree.resolveInner(head, 1));
 
-  const contentStart = line.from + (/^\s*/.exec(line.text)?.[0].length ?? 0);
-  for (let node: SyntaxNode | null = tree.resolveInner(contentStart, 1); node; node = node.parent) {
-    const heading = /^(?:ATX|Setext)Heading(\d)$/.exec(node.name);
-    if (heading) {
-      context.block = `h${heading[1]}` as BlockKind;
-    } else if (node.name === "ListItem" && context.list === "none") {
-      if (node.getChild("Task")) context.list = "task";
-      else context.list = node.parent?.name === "OrderedList" ? "number" : "bullet";
+  // From the first marker (an empty list item has nothing after it) and from after the quote
+  // and list markers (a heading inside a quote or list item starts there).
+  const markerStart = line.from + (/^\s*/.exec(line.text)?.[0].length ?? 0);
+  const contentStart = line.from + CONTAINER_PREFIX.exec(line.text)![0].length;
+  const starts = contentStart > markerStart ? [markerStart, contentStart] : [markerStart];
+  for (const start of starts) {
+    for (let node: SyntaxNode | null = tree.resolveInner(start, 1); node; node = node.parent) {
+      const heading = /^(?:ATX|Setext)Heading(\d)$/.exec(node.name);
+      if (heading) {
+        context.block = `h${heading[1]}` as BlockKind;
+      } else if (node.name === "ListItem" && context.list === "none") {
+        if (node.getChild("Task")) context.list = "task";
+        else context.list = node.parent?.name === "OrderedList" ? "number" : "bullet";
+      }
     }
   }
   return context;

@@ -456,4 +456,27 @@ describe("editor engine: live preview comes back after a long line is gone", () 
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(editorClass()).toContain("cm-mode-formatted");
   });
+
+  it("EDIT-1: a long line pasted in Markdown syntax mode is caught when switching to Formatted", async () => {
+    const { log } = mountEngine();
+    engine.createDoc("a", "short", "syntax");
+    engine.activate("a");
+    engine.insertText("x".repeat(20_001));
+    engine.setMode("a", "formatted");
+    await nextFrame();
+    expect(editorClass()).toContain("cm-mode-syntax");
+    expect(log.cursor.at(-1)?.[1].previewLimited).toBe(true);
+  });
+
+  it("EDIT-1: a long line deleted in Markdown syntax mode no longer limits Formatted", () => {
+    mountEngine();
+    const long = "z".repeat(20_001);
+    engine.createDoc("a", `short\n${long}`, "formatted");
+    engine.activate("a");
+    engine.setMode("a", "syntax");
+    engine.restore("a", { anchor: 5, head: 6 + long.length, scrollTop: 0 });
+    engine.deleteSelection();
+    engine.setMode("a", "formatted");
+    expect(editorClass()).toContain("cm-mode-formatted");
+  });
 });

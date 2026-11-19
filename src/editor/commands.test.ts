@@ -390,9 +390,86 @@ describe("known open bugs (see BUGS.md)", () => {
   it("M4: bolding two paragraphs bolds each one", () => {
     expect(format("|one\n\ntwo|", { type: "bold" })).toBe("**|one**\n\n**two|**");
     expect(format("a |one\n  \n\ntwo\nthree| b", { type: "italic" })).toBe("a *|one*\n  \n\n*two\nthree|* b");
-    expect(format("|one\n\n|two", { type: "strike" })).toBe("~~|one~~\n\n|two");
+    // The selection becomes the wrapped text, so a second toggle removes the markers again.
+    expect(format("|one\n\n|two", { type: "strike" })).toBe("~~|one|~~\n\ntwo");
     // A soft line break inside one paragraph is still wrapped as a whole.
     expect(format("|one\ntwo|", { type: "bold" })).toBe("**|one\ntwo|**");
+  });
+});
+
+describe("EDIT-3: inline markers across list items, quotes, headings and spaces", () => {
+  it("puts the markers inside selected spaces, where Markdown reads them", () => {
+    expect(format("|hello |world", { type: "bold" })).toBe("**|hello|** world");
+    expect(format("a| b |c", { type: "italic" })).toBe("a *|b|* c");
+  });
+
+  it("wraps each list item, quote line or heading after its marker", () => {
+    expect(format("|- one\n- two|", { type: "bold" })).toBe("|- **one**\n- **two|**");
+    expect(format("|> one\n> two|", { type: "bold" })).toBe("|> **one**\n> **two|**");
+    expect(format("|1. one\n2. [ ] two|", { type: "strike" })).toBe("|1. ~~one~~\n2. [ ] ~~two|~~");
+    expect(format("|# one\n## two|", { type: "italic" })).toBe("|# *one*\n## *two|*");
+  });
+
+  it("removes the markers again on a second toggle", () => {
+    for (const input of ["|- one\n- two|", "|one\n\ntwo|", "|hello |world"]) {
+      const view = markdownView(input);
+      const before = view.state.doc.toString();
+      applyFormat(view, { type: "bold" });
+      applyFormat(view, { type: "bold" });
+      expect(view.state.doc.toString(), input).toBe(before);
+    }
+  });
+});
+
+describe("EDIT-5: Enter renumbers the items below in quotes and indented lists", () => {
+  const enter = (input: string) => run(input, continueMarkup)[1];
+
+  it("renumbers a numbered list inside a quote", () => {
+    expect(enter("> 1. a|\n> 2. b\n> 3. c")).toBe("> 1. a\n> 2. |\n> 3. b\n> 4. c");
+  });
+
+  it("renumbers an indented numbered list", () => {
+    expect(enter("- x\n  1. a|\n  2. b")).toBe("- x\n  1. a\n  2. |\n  3. b");
+  });
+
+  it("leaves nested items and the items after the quote alone", () => {
+    expect(enter("1. a|\n    1. sub\n2. b")).toBe("1. a\n2. |\n    1. sub\n3. b");
+    expect(enter("> 1. a|\n\n2. other")).toBe("> 1. a\n> 2. |\n\n2. other");
+  });
+});
+
+describe("EDIT-6: lists inside a quote", () => {
+  it("puts the list marker after the quote marker", () => {
+    expect(format("> qu|ote", { type: "list", kind: "bullet" })).toBe("> - qu|ote");
+    expect(format("|> one\n>\n> two|", { type: "list", kind: "number" })).toBe("|> 1. one\n>\n> 2. two|");
+  });
+
+  it("converts and removes a list inside a quote", () => {
+    expect(format("> - it|em", { type: "list", kind: "task" })).toBe("> - [ ] it|em");
+    expect(format("> - it|em", { type: "list", kind: "bullet" })).toBe("> it|em");
+  });
+});
+
+describe("EDIT-4: headings inside quotes and list items", () => {
+  it("puts the heading marker after the quote or list marker", () => {
+    expect(format("> qu|ote", { type: "block", kind: "h2" })).toBe("> ## qu|ote");
+    expect(format("- it|em", { type: "block", kind: "h1" })).toBe("- # it|em");
+    expect(format("> > |", { type: "block", kind: "h3" })).toBe("> > ### |");
+  });
+
+  it("changes and removes a heading inside a quote", () => {
+    expect(format("> ## qu|ote", { type: "block", kind: "body" })).toBe("> qu|ote");
+    expect(format("> ## qu|ote", { type: "block", kind: "h4" })).toBe("> #### qu|ote");
+  });
+
+  it("skips quote lines with no text in a multi-line selection", () => {
+    expect(format("|> one\n>\n> two|", { type: "block", kind: "h2" })).toBe("|> ## one\n>\n> ## two|");
+  });
+
+  it("reports the heading level inside a quote, and the list kind of an empty item", () => {
+    expect(formatContextAt(markdownView("> ## qu|ote").state).block).toBe("h2");
+    expect(formatContextAt(markdownView("- |").state).list).toBe("bullet");
+    expect(formatContextAt(markdownView("1. |").state).list).toBe("number");
   });
 });
 

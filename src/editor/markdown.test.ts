@@ -199,6 +199,31 @@ describe("markdown extensions: edge cases", () => {
     expect(texts("$a " + "x ".repeat(100) + "b$", "InlineMath")).toHaveLength(1);
   });
 
+  it("finds a closer up to exactly the scan limit", () => {
+    expect(texts("[[" + "a".repeat(3999) + "]]", "WikiLink")).toHaveLength(1);
+    expect(texts("[[" + "a".repeat(4000) + "]]", "WikiLink")).toEqual([]);
+    expect(texts("[[a\n]]", "WikiLink")).toEqual([]);
+    expect(texts("$" + "a".repeat(3998) + "$", "InlineMath")).toHaveLength(1);
+    expect(texts("$" + "a".repeat(3999) + "$", "InlineMath")).toEqual([]);
+  });
+
+  it("EDIT-2: a long line full of unclosed openers parses about as fast as plain text", () => {
+    const time = (text: string) => {
+      let best = Infinity;
+      for (let run = 0; run < 3; run++) {
+        const start = performance.now();
+        plainMarkdownParser.parse(text);
+        best = Math.min(best, performance.now() - start);
+      }
+      return best;
+    };
+    const plain = time("abc ".repeat(4_900));
+    // Each opener used to cut one string per character it scanned: about 50 times slower.
+    for (const opener of ["[[a ", "![[a ", "[^a "]) {
+      expect(time(opener.repeat(4_900)), opener).toBeLessThan(plain * 15 + 20);
+    }
+  });
+
   // BUGS.md L2 and L3: false tags and highlights.
   it("L2: colour codes are not tags", () => {
     expect(texts("color: #fff and #1a2b3c", "Tag")).toEqual([]);

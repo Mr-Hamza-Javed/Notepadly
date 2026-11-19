@@ -51,12 +51,13 @@ const MAX_INLINE_SCAN = 4000;
 const HighlightDelim: DelimiterType = { resolve: "Highlight", mark: "HighlightMark" };
 
 function findOnLine(cx: InlineContext, from: number, close: string): number {
-  const limit = Math.min(cx.end, from + MAX_INLINE_SCAN);
-  for (let i = from; i < limit; i++) {
-    if (cx.char(i) === CH_NEWLINE) return -1;
-    if (cx.slice(i, i + close.length) === close) return i;
-  }
-  return -1;
+  // One slice and native searches: a per-character slice made a line full of unclosed
+  // openers cost thousands of string allocations per opener.
+  const text = cx.slice(from, Math.min(cx.end, from + MAX_INLINE_SCAN + close.length - 1));
+  const lineEnd = text.indexOf("\n");
+  const found = text.indexOf(close);
+  if (found < 0 || (lineEnd >= 0 && found > lineEnd) || found >= MAX_INLINE_SCAN) return -1;
+  return from + found;
 }
 
 const WORD_CHAR = /[\p{L}\p{N}_]/u;
@@ -95,24 +96,27 @@ function parseInlineMath(cx: InlineContext, next: number, pos: number): number {
   const markLen = cx.char(pos + 1) === CH_DOLLAR ? 2 : 1;
   const first = cx.char(pos + markLen);
   if (first < 0 || first === CH_SPACE || first === CH_NEWLINE || first === CH_DOLLAR) return -1;
-  const limit = Math.min(cx.end, pos + MAX_INLINE_SCAN);
-  for (let i = pos + markLen; i < limit; i++) {
-    const ch = cx.char(i);
+  // Scanned from one slice (one extra character for the look-ahead after a closing dollar),
+  // so a line of unclosed dollars costs no call or allocation per character.
+  const text = cx.slice(pos, Math.min(cx.end, pos + MAX_INLINE_SCAN + 1));
+  const limit = Math.min(text.length, MAX_INLINE_SCAN);
+  for (let k = markLen; k < limit; k++) {
+    const ch = text.charCodeAt(k);
     if (ch === CH_NEWLINE) return -1;
     if (ch === CH_BACKSLASH) {
-      i++;
+      k++;
       continue;
     }
     if (ch !== CH_DOLLAR) continue;
     if (markLen === 2) {
-      if (cx.char(i + 1) !== CH_DOLLAR) continue;
+      if (text.charCodeAt(k + 1) !== CH_DOLLAR) continue;
     } else {
-      const prev = cx.char(i - 1);
-      if (prev === CH_SPACE) continue;
+      if (text.charCodeAt(k - 1) === CH_SPACE) continue;
       // "$5 and $6" style prices and "$HOME/$USER" style variables: a closing dollar is
       // never followed by a letter or digit.
-      if (WORD_CHAR.test(cx.slice(i + 1, i + 2))) continue;
+      if (WORD_CHAR.test(text.charAt(k + 1))) continue;
     }
+    const i = pos + k;
     return cx.addElement(
       cx.elt("InlineMath", pos, i + markLen, [
         cx.elt("MathMark", pos, pos + markLen),

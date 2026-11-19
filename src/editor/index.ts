@@ -721,6 +721,8 @@ class Engine implements EditorEngine {
     const doc = this.docs.get(tabId);
     if (!doc || doc.mode === mode) return;
     doc.mode = mode;
+    // Edits made in another mode are not checked for long lines (checkDegrade), so look again.
+    if (mode === "formatted") doc.degraded = needsDegrade(this.stateOf(doc).doc);
     const effects = modeCompartment.reconfigure(modeExtensions[this.effectiveMode(doc)]);
     if (doc.id === this.activeId && this.view) {
       this.view.dispatch({ effects });

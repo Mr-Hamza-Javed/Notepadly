@@ -407,6 +407,47 @@ Fixed on this branch: UI-1 to UI-8 (see 2.3; each has a test that fails without 
   - `inert` in WebView2 (UI-6; Chromium supports it since version 102).
   - High contrast (UI-10).
 
+## Review: editor core
+
+Reviewed `src/editor/index.ts`, `markdown.ts`, `commands.ts`, `find.ts`, `tableModel.ts` (live preview excluded). Fixed bugs EDIT-1 to EDIT-6 are in 2.3; the ones below are still open.
+
+### Bugs
+
+#### EDIT-7. Bold over a selection that already holds bold text doubles the markers ✅
+- **Steps:** select all of `**bold** and **more**`, press Ctrl+B.
+- **Actual:** `****bold** and **more****` (broken Markdown). **Expected:** the whole line bold (`**bold and more**`), as Word and Typora do, or the bold removed.
+- **Cause:** `src/editor/commands.ts` `toggleInline` only unwraps when one node of that kind encloses the whole selection; otherwise it always wraps.
+- **Fix:** when the selection contains nodes of the same kind, remove their marks inside the range and wrap the whole once.
+
+#### EDIT-8. "Insert column" in an extra cell of a long row puts the column in the wrong place ✅
+- **Steps:** table `| a | b |` / `| --- | --- |` / `| 1 | 2 | 3 |`; cursor in the `3` cell; Insert column right.
+- **Actual:** header `| a | b |  |`, row `| 1 | 2 | 3 |  |`: the new header column lines up with `3`, the new body cell is a 4th one. **Expected:** the command does nothing past the header's columns, or pads the header first.
+- **Cause:** `src/editor/commands.ts` `editTable` (`col-left` / `col-right`): `locateTable` can return a column ≥ the header's column count since L10, and `splice` on the shorter rows appends at their end.
+- **Fix:** clamp `column` to `columns - 1` for the column commands, or pad every row to the longest row first.
+
+#### EDIT-9. A paragraph line starting with `$$` turns the rest of the paragraph into maths ✅
+- **Steps:** `Cost:` then on the next line `$$5 total`, then `more text`.
+- **Actual:** `$$5 total` and `more text` become a `BlockMath` block up to the next blank line. **Expected:** text, as `$$` with no closing `$$` on that line inside a paragraph is not display maths in Obsidian/KaTeX editors.
+- **Cause:** `src/editor/markdown.ts` `BlockMath.endLeaf` interrupts a paragraph at any line starting with `$$`.
+- **Fix:** in `endLeaf`, interrupt only when the line is `$$` alone (optionally with trailing spaces) or holds a closing `$$`.
+
+#### EDIT-10. Edit > Paste can land in another tab 📖
+- **Steps:** Edit > Paste while WebView2 shows its clipboard permission prompt (W2), click another tab, then allow.
+- **Cause:** `src/editor/index.ts` `paste()` awaits `navigator.clipboard.readText()` and then inserts into whatever document is active. `cut()` already checks that the view state did not change; `paste()` does not.
+- **Fix:** remember `activeId` (and the selection) before the await and drop the paste if they changed.
+
+#### EDIT-11. Paste or F5 with several cursors can break a table row 📖
+- **Cause:** `src/editor/index.ts` `insertText` decides on `escapeCellText` from the main selection only, then `replaceSelection` inserts the same text at every cursor. A secondary cursor inside a table gets raw newlines and pipes.
+- **Fix:** use `changeByRange` and escape per range.
+
+### Improvements
+- **Inline maths scan is still O(line × 4000):** a 19,800-character line of `$a $a ...` takes ~100 ms to parse (each `$` scans 4,000 characters). Remember, per inline context, the furthest position already scanned without a closer (`src/editor/markdown.ts` `parseInlineMath`).
+- **Lezer link parsing on `[a](` repeated:** ~300-400 ms for a 19,600-character line, inside `@lezer/markdown` itself. Consider lowering `MAX_LINE_FOR_PREVIEW` for the parser, or report upstream.
+- **Find has no "whole word" or regular expression option** (Notepad has "Match whole word"; `SearchQuery` supports `wholeWord` and `regexp`, `src/editor/find.ts:144`). Replace is already literal, so `$1` and `$&` are inserted as typed (tested).
+- **Selection-change cost of Find highlights:** `find.ts` `matchPlugin` rebuilds all visible matches on every selection change; only the current-match mark changes. Map the set and swap the two marks instead.
+- **Hidden key bindings:** `historyKeymap` adds Ctrl+U / Alt+U (undo/redo selection), which Notepad does not have (`src/editor/index.ts` `keymapExtension`).
+- **Tests to add:** undo/redo dirty state after each table command (checked by hand in this review: row add, Replace all, undo past and redo to the save point all report correctly).
+
 ---
 
 # Part 2: Done
@@ -535,6 +576,12 @@ Fixed on this branch: UI-1 to UI-8 (see 2.3; each has a test that fails without 
 | UI-6 | Under Settings and Help, Tab reached the invisible tab strip, menu bar, find bar and status bar (Enter or Delete could close a tab unseen) | That chrome is `inert` while a page covers it | `c85d3f1` |
 | UI-7 | Go to line in a loading file, then Escape and Ctrl+K: when the load ended, the old jump closed the Link dialog and moved the cursor | The jump runs only while its own dialog is open on the same tab; load errors are caught | `8480f8a` |
 | UI-8 | Edit > Select all in a loading file selected all in whichever tab was shown when the load ended | Uses the same guarded path as Ctrl+A | `a664f28` |
+| EDIT-1 | A long line pasted in Markdown syntax or Plain mode turned on full live preview when switching to Formatted (H6); a long line deleted outside Formatted kept preview limited | `setMode` checks the document for long lines again | `b370e05` |
+| EDIT-2 | A long line full of unclosed `[[`, `![[` or `[^` took ~200 ms to parse on each keystroke | Closers are searched in one slice, not one string per character (~10 ms) | `01234ea` |
+| EDIT-3 | Bold/italic/strike over several list items, quote lines or headings gave `**- one\n- two**` (list broken); `**word **` with a selected trailing space was not bold; a second toggle over several paragraphs doubled the markers | Each such line is wrapped after its marker; spaces stay outside; a second toggle unwraps | `b59b30e` |
+| EDIT-4 | H1-H6 on `> quote` or `- item` gave `## > quote` / `## - item`; Body did not remove `> ## x`; the toolbar showed Body for a heading in a quote | The heading marker is placed and found after quote/list markers | `e0c7a14` |
+| EDIT-5 | Enter in a numbered list inside a quote or an indented list did not renumber the items below; a list after a quote was renumbered as part of it | `renumberFollowing` compares quote markers and indent per line | `e6acaac` |
+| EDIT-6 | "Bulleted list" on `> quote` gave `- > quote`; lists inside a quote could not be converted or removed | List markers go after the quote markers | `3b42323` |
 
 ## 2.4 Features added
 
