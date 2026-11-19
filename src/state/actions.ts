@@ -174,6 +174,7 @@ export const editorHost: EditorHost = {
   onDocChange: (id) => {
     loader.noteEdit(id);
     scheduleTitle(id);
+    warnIfReadOnly(id);
   },
   onCursor: (id, info) => {
     const s = state();
@@ -204,6 +205,20 @@ export const editorHost: EditorHost = {
   },
   isFullyLoaded: (id) => getTab(id)?.fullyLoaded ?? true,
 };
+
+/** Tabs already told that their file is read-only. */
+const readOnlyWarned = new Set<string>();
+
+/** On the first edit of a read-only file, say so before the work is done, not at Save. */
+function warnIfReadOnly(id: string): void {
+  const tab = getTab(id);
+  if (!tab?.readOnly || readOnlyWarned.has(id)) return;
+  readOnlyWarned.add(id);
+  showMessage(
+    "File is read-only",
+    `${tab.title} is read-only, so your changes cannot be saved to it. Use Save as to keep them in another file.`,
+  );
+}
 
 function reportError(title: string) {
   return (error: unknown) => showMessage(title, errorText(error));
@@ -340,9 +355,36 @@ function dedupePaths(paths: string[]): string[] {
   return paths.filter((path, index) => paths.findIndex((other) => pathsEqual(other, path)) === index);
 }
 
+/**
+ * Drops the paths another window already has open: Rust brings that window to
+ * the front with the tab shown, so one file is never open in two windows (WIN-3).
+ */
+async function notOpenElsewhere(paths: string[]): Promise<string[]> {
+  const owners = await Promise.all(
+    paths.map((p) => (findOpen(p) ? Promise.resolve(null) : ipc.pathOpenElsewhere(p).catch(() => null))),
+  );
+  return paths.filter((_, index) => !owners[index]);
+}
+
+/** Tells Rust which files this window has open, whenever that changes (WIN-3). */
+function publishOpenPaths(): void {
+  let last = "";
+  const send = () => {
+    const paths = state().tabs.flatMap((t) => (t.path ? [t.path] : []));
+    const joined = paths.join("\n");
+    if (joined === last) return;
+    last = joined;
+    ipc.openPathsSet(paths).catch(() => {});
+  };
+  useApp.subscribe((s, previous) => {
+    if (s.tabs !== previous.tabs) send();
+  });
+  send();
+}
+
 /** Opens in this window. Only the last file is read now; the others load on first activate. */
 async function openHere(input: string[]): Promise<void> {
-  const paths = dedupePaths(input);
+  const paths = await notOpenElsewhere(dedupePaths(input));
   if (paths.length === 0) return;
   const pristine = getActiveTab();
   const stats = await Promise.all(paths.map((p) => ipc.stat(p).catch(() => null)));
@@ -421,7 +463,7 @@ async function openPaths(paths: string[]): Promise<void> {
   if (paths.length === 0) return;
   // An empty window takes the file instead of leaving itself behind (M10).
   if (state().settings.openFilesIn !== "window" || windowIsPristine()) return openHere(paths);
-  const fresh = dedupePaths(paths).filter((p) => !findOpen(p));
+  const fresh = await notOpenElsewhere(dedupePaths(paths).filter((p) => !findOpen(p)));
   const open = paths.map(findOpen).filter((t): t is TabMeta => !!t);
   if (open.length > 0) {
     await activate(open[open.length - 1].id);
@@ -498,18 +540,54 @@ async function askUser(
   return message(body, { title, kind: "warning", buttons });
 }
 
-async function writeAndReport(id: string, path: string, options: loader.WriteOptions = {}): Promise<boolean> {
+/**
+ * After a STALE answer for the tab's own file: true when the file is gone. The
+ * tab is then flagged deleted, not "changed by another program", which the poll
+ * would only correct seconds later (STATE-9).
+ */
+async function savedFileIsGone(id: string, path: string): Promise<boolean> {
+  if (!pathsEqual(getTab(id)?.path ?? null, path)) return false;
+  const disk = await ipc.stat(path).catch(() => undefined);
+  if (disk !== null || !getTab(id)) return false;
+  patchTab(id, { externalChange: "deleted" });
+  return true;
+}
+
+async function writeAndReport(
+  id: string,
+  path: string,
+  options: loader.WriteOptions & { recreating?: boolean } = {},
+): Promise<boolean> {
   const result = await loader.writeTab(id, path, options);
   if (result.ok) {
     addRecent(path);
     return true;
   }
   if (result.message.includes("UNMAPPABLE")) return saveUnmappable(id, path, options);
+  if (result.stale && (await savedFileIsGone(id, path))) {
+    const tab = getTab(id);
+    if (!tab) return false;
+    // A deleted file that is fully loaded is simply written again, as when the
+    // poll had already flagged it. Only once: a second STALE is a real change.
+    if (tab.fullyLoaded && !options.recreating) return writeAndReport(id, path, { ...options, recreating: true });
+    if (!tab.fullyLoaded) {
+      showMessage(
+        "File deleted",
+        `${tab.title} was deleted while only part of it was loaded, so the rest of it can no longer be read. Use Save as to keep the loaded part with your changes.`,
+      );
+      return false;
+    }
+  }
   if (result.stale) {
     patchTab(id, { externalChange: "modified" });
     showMessage(
       "File changed on disk",
       "This file was changed by another program, so it was not saved. Reload it to see those changes, or use Save as to keep your text under another name.",
+    );
+  } else if (getTab(id)?.readOnly && pathsEqual(getTab(id)?.path ?? null, path)) {
+    showMessage(
+      "Could not save file",
+      `${fileNameOf(path)} is read-only. Use Save as to keep your changes in another file.\n${result.message}`,
     );
   } else {
     showMessage("Could not save file", result.message);
@@ -557,8 +635,12 @@ async function saveAs(tabId?: string): Promise<boolean> {
     filters: saveFilters(tab.mode),
   });
   if (!chosen) return false;
+  // The dialog is modal only to the window: the tab may have been closed,
+  // moved or saved under another name meanwhile.
+  const current = getTab(id);
+  if (!current) return false;
   const path = chosenSavePath(chosen);
-  const movesFile = !pathsEqual(path, tab.path);
+  const movesFile = !pathsEqual(path, current.path);
   // Another tab showing the file about to be replaced would be left stale.
   const other = movesFile ? state().tabs.find((t) => t.id !== id && pathsEqual(t.path, path)) : undefined;
   if (other?.dirty) {
@@ -634,12 +716,14 @@ async function resolveDirtyTab(id: string): Promise<boolean> {
   return answer === "save" ? save(id) : true;
 }
 
-/** `moved`: the tab went to another window, which now owns its draft. */
-function removeFromList(id: string, moved = false): void {
+/**
+ * Also deletes the tab's draft. A tab that moved to another window has its own
+ * copy there, under its new id (STATE-5).
+ */
+function removeFromList(id: string): void {
   useApp.setState((s) => ({ tabs: s.tabs.filter((t) => t.id !== id) }));
   engine.dropDoc(id); // also forgets the undo history of a hibernated tab
-  if (moved) loader.releaseTab(id);
-  else loader.disposeTab(id);
+  loader.disposeTab(id);
   const pending = titleTimers.get(id);
   if (pending !== undefined) clearTimeout(pending);
   titleTimers.delete(id);
@@ -689,6 +773,23 @@ async function closeMany(ids: string[]): Promise<void> {
 
 let closeInProgress = false;
 
+/** How long after this window's close another window's close still makes it an exit (STATE-8). */
+const CLOSE_TOGETHER_MS = 300;
+
+/**
+ * Whether this window is the last to stay, so it keeps its tabs as drafts. Rust
+ * decides atomically, not counting windows that have started closing too. A
+ * "Close all windows" closes every window within moments, so when another
+ * window is still open, this asks once more after a short pause: a close that
+ * came meanwhile makes it an exit, and no window asks (STATE-8).
+ */
+async function isLastToStay(): Promise<boolean> {
+  const ask = () => ipc.windowClosing().catch(() => ipc.isLastWindow().catch(() => true));
+  if (await ask()) return true;
+  await new Promise((resolve) => setTimeout(resolve, CLOSE_TOGETHER_MS));
+  return ask();
+}
+
 /**
  * Decides whether this window may go. True means every tab has been answered for.
  * With "continue previous session", the last window (or every window on Exit)
@@ -698,26 +799,37 @@ let closeInProgress = false;
 async function prepareWindowClose(exiting = false): Promise<boolean> {
   if (closeInProgress) return false;
   closeInProgress = true;
+  let marked = false;
   try {
-    flushPersistedPrefs();
-    flushTitles();
-    if (keepsSession() && (exiting || (await ipc.isLastWindow().catch(() => true)))) {
-      try {
-        await loader.flushPersistence();
-        return true;
-      } catch (error) {
-        // Text that cannot be stored as a draft must not vanish: ask instead.
-        console.error("Notepadly: could not store drafts", error);
-      }
-    }
-    for (const { id } of state().tabs.filter((t) => t.dirty)) {
-      if (getTab(id)?.dirty && !(await resolveDirtyTab(id))) return false;
-    }
-    await loader.discardCurrentSession().catch(() => {});
-    return true;
+    const allowed = await decideWindowClose(exiting, () => (marked = true));
+    if (!allowed && marked) await ipc.windowCloseCancelled().catch(() => {});
+    return allowed;
   } finally {
     closeInProgress = false;
   }
+}
+
+async function decideWindowClose(exiting: boolean, onMarked: () => void): Promise<boolean> {
+  flushPersistedPrefs();
+  flushTitles();
+  const last = () => {
+    onMarked();
+    return isLastToStay();
+  };
+  if (keepsSession() && (exiting || (await last()))) {
+    try {
+      await loader.flushPersistence();
+      return true;
+    } catch (error) {
+      // Text that cannot be stored as a draft must not vanish: ask instead.
+      console.error("Notepadly: could not store drafts", error);
+    }
+  }
+  for (const { id } of state().tabs.filter((t) => t.dirty)) {
+    if (getTab(id)?.dirty && !(await resolveDirtyTab(id))) return false;
+  }
+  await loader.discardCurrentSession().catch(() => {});
+  return true;
 }
 
 /**
@@ -835,40 +947,66 @@ async function moveTabOut(id: string, toNewWindow = false): Promise<void> {
     return;
   }
   if (!(await receipt.done)) {
-    stay("The other window did not take the tab, so it stays here.");
+    // The other window may still take it late; its copy then has an id and a
+    // draft of its own (STATE-5), so keeping this one loses nothing.
+    stay("The other window did not confirm that it took the tab, so it stays here.");
     return;
   }
   leaving.delete(id);
   if (state().tabs.length > 1) {
-    removeFromList(id, true);
+    removeFromList(id);
+    // Stored without the tab at once, so a crash cannot bring it back twice (STATE-7).
+    await loader.flushPersistence().catch(() => {});
     return;
   }
   // The last tab left: the window goes with it instead of staying empty.
   await newTab();
-  removeFromList(id, true);
+  removeFromList(id);
   await loader.discardCurrentSession().catch(() => {});
   await getCurrentWindow().destroy();
 }
 
+/** Ids of tabs received from other windows, by the id they had there; for a repeated delivery. */
+const received = new Map<string, string>();
+
 /** Takes a tab moved here from another window, at `index` (null: at the end). */
 async function receiveTab(transfer: TabTransfer, index: number | null): Promise<void> {
   const { from, handoff } = transfer;
-  const tab: TabMeta = { ...transfer.tab, hibernated: handoff.text === null && transfer.tab.path !== null };
+  const fromId = transfer.tab.id;
   const answer = () =>
     getCurrentWebviewWindow()
-      .emitTo(from, TAB_RECEIVED_EVENT, { id: tab.id })
+      .emitTo(from, TAB_RECEIVED_EVENT, { id: fromId })
       .catch((error: unknown) => console.error("Notepadly: could not confirm a moved tab", error));
-  if (getTab(tab.id)) {
+  if (received.has(fromId)) {
     await answer();
     return;
   }
+  // A new id: if the other window gives up waiting and keeps the tab, the two
+  // copies must not share one draft, or closing one deletes the other's (STATE-5).
+  const tab: TabMeta = {
+    ...transfer.tab,
+    id: newTabId(),
+    hibernated: handoff.text === null && transfer.tab.path !== null,
+  };
+  received.set(fromId, tab.id);
   const pristine = windowIsPristine() ? state().tabs[0] : null;
   useApp.setState((s) => {
     const list = s.tabs.slice();
     list.splice(Math.max(0, Math.min(index ?? list.length, list.length)), 0, tab);
     return { tabs: list };
   });
-  loader.takeOver(tab, handoff);
+  try {
+    await loader.takeOver(tab, handoff, fromId);
+  } catch (error) {
+    // No answer: the other window keeps the tab.
+    console.error("Notepadly: could not take a moved tab", error);
+    received.delete(fromId);
+    removeFromList(tab.id);
+    return;
+  }
+  // Its draft and this window's session are stored before the other window lets
+  // the tab go, so a crash right after the move cannot lose it (STATE-7).
+  await loader.flushPersistence().catch((error) => console.error("Notepadly: could not store a moved tab", error));
   await answer();
   await activate(tab.id);
   if (pristine && pristine.id !== tab.id) removeFromList(pristine.id);
@@ -971,13 +1109,19 @@ async function changeFileFormat(patch: { eol: Eol } | { encoding: Encoding }): P
   const id = state().activeId;
   const tab = getTab(id);
   if (!tab) return;
-  if (("eol" in patch && patch.eol === tab.eol) || ("encoding" in patch && patch.encoding === tab.encoding)) return;
+  if ("encoding" in patch && patch.encoding === tab.encoding) return;
+  // In a file with mixed line endings, picking the one shown still writes it on
+  // every line (FILES-1). The unloaded rest may hold the other kind: look first.
+  const sameEol = (t: TabMeta) => "eol" in patch && patch.eol === t.eol && !t.mixedEol;
+  if (sameEol(tab) && tab.fullyLoaded) return;
   try {
     await ensureFullyLoaded(id);
   } catch {
     return;
   }
-  patchTab(id, patch);
+  const loaded = getTab(id);
+  if (!loaded || sameEol(loaded)) return;
+  patchTab(id, "eol" in patch ? { ...patch, mixedEol: false } : patch);
   if ("eol" in patch) loader.markEolChosen(id);
   loader.forceDirty(id);
   loader.scheduleSessionWrite();
@@ -1065,6 +1209,8 @@ async function wireWindowEvents(ready: Promise<void>): Promise<void> {
       // Like Notepad: the last window hides and waits instead of quitting.
       if (!state().settings.background || !(await ipc.isLastWindow().catch(() => false))) return;
       event.preventDefault();
+      // It stays, hidden: it is not closing any more.
+      await ipc.windowCloseCancelled().catch(() => {});
       await resetForBackground();
       await ipc
         .enterBackground()
@@ -1091,7 +1237,13 @@ async function wireWindowEvents(ready: Promise<void>): Promise<void> {
 async function restoreSession(session: SessionFile | null): Promise<boolean> {
   if (!session || session.tabs.length === 0) return false;
   session.tabs.forEach(loader.registerRestored);
-  useApp.setState({ tabs: session.tabs.map(tabFromSession), activeId: session.activeId });
+  // Text typed before the session was read stays, in its own tab, shown.
+  const early = state().tabs.find((t) => t.path === null && engine.hasDoc(t.id) && engine.length(t.id) > 0);
+  for (const t of state().tabs) if (t !== early) engine.dropDoc(t.id);
+  useApp.setState({
+    tabs: [...session.tabs.map(tabFromSession), ...(early ? [early] : [])],
+    activeId: early ? early.id : session.activeId,
+  });
   await loader.materialiseOrFlag(session.activeId);
   return true;
 }
@@ -1146,6 +1298,12 @@ async function adoptSession(boot: WindowBoot): Promise<{ restored: boolean; merg
     discardStoredSessions(stored).catch(() => {});
     return none;
   }
+  // Drafts that no stored session owns are left by a crash (L16). They are
+  // cleared before any other window opens and writes drafts of its own, and
+  // Rust spares any draft created during this run (MERGE-1).
+  await loader
+    .pruneDrafts(stored.flatMap((s) => s.session.tabs.filter((t) => t.hasDraft).map((t) => t.id)))
+    .catch(() => {});
   if (stored.length === 0) return none;
   const [mine, ...others] = stored;
   loader.setSessionKey(mine.key);
@@ -1162,6 +1320,9 @@ async function adoptSession(boot: WindowBoot): Promise<{ restored: boolean; merg
   return { restored: await restoreSession(mine.session), merged: [] };
 }
 
+/** The regional format Rust reports (MD-2); "" uses the WebView's locale. */
+let userLocale = "";
+
 async function runInit(): Promise<void> {
   windowLabel = getCurrentWindow().label;
   installShortcuts();
@@ -1171,6 +1332,14 @@ async function runInit(): Promise<void> {
     markReady = resolve;
   });
   await Promise.all([waitForEditorParent(), wireWindowEvents(ready)]);
+  // Keys typed while the session is still being read go into the first tab,
+  // instead of the read-only placeholder; restoreSession keeps that tab.
+  const first = state().activeId;
+  if (!engine.hasDoc(first)) {
+    engine.createDoc(first, "", getTab(first)?.mode ?? "plain");
+    engine.activate(first);
+    engine.focus();
+  }
 
   const [pending, boot] = await Promise.all([
     ipc.takePendingPaths().catch(() => [] as string[]),
@@ -1179,19 +1348,19 @@ async function runInit(): Promise<void> {
   const { restored, merged } = await adoptSession(boot);
 
   const { activeId } = state();
-  if (!restored) engine.createDoc(activeId, "", getTab(activeId)?.mode ?? "plain");
+  if (!restored && !engine.hasDoc(activeId)) engine.createDoc(activeId, "", getTab(activeId)?.mode ?? "plain");
   if (engine.hasDoc(activeId)) {
     engine.activate(activeId);
     engine.focus();
   }
-  // The first window clears out drafts that no stored session owns. Drafts of
-  // the other stored sessions are kept: their windows are restoring them now.
-  if (isFirstWindow() && keepsSession()) {
-    readStoredSessions()
-      .then((stored) => loader.pruneDrafts(stored.flatMap((s) => s.session.tabs.filter((t) => t.hasDraft).map((t) => t.id))))
-      .catch(() => {});
-  }
   loader.setPersistence(keepsSession());
+  publishOpenPaths();
+  ipc
+    .userLocale()
+    .then((locale) => {
+      userLocale = typeof locale === "string" ? locale : "";
+    })
+    .catch(() => {});
   initFinished = true;
 
   if (merged.length > 0) {
@@ -1294,7 +1463,17 @@ export const actions = {
   ensureFullyLoaded,
   whenActivated,
 
-  insertDateTime: () => engine.insertText(formatDateTime(new Date())),
+  // In the user's regional format, which may differ from the display language (MD-2).
+  insertDateTime: () => {
+    const now = new Date();
+    let text: string;
+    try {
+      text = formatDateTime(now, userLocale || undefined);
+    } catch {
+      text = formatDateTime(now); // a locale name the WebView does not know
+    }
+    engine.insertText(text);
+  },
   /** Edit > Cut / Copy / Paste. A clipboard failure is reported, and Cut then keeps the text. */
   clipboard: (op: "cut" | "copy" | "paste"): Promise<void> =>
     engine[op]().catch(reportError(op === "paste" ? "Could not paste" : "Could not copy to the clipboard")),

@@ -130,11 +130,34 @@ export function extOf(path: string): string {
 const MARKDOWN_EXTENSIONS = [".md", ".markdown", ".mdown", ".mkd", ".mdx"];
 export const isMarkdownPath = (path: string) => MARKDOWN_EXTENSIONS.includes(extOf(path));
 
-/** Windows paths: separators and case do not matter. */
+/**
+ * A Windows path in one spelling for comparing: `\` separators, no repeated or
+ * trailing ones, `.` and `..` resolved, the `\\?\` long-path prefix removed,
+ * lower case. 8.3 short names and mapped drives need the file system (Rust).
+ */
+export function pathKey(path: string): string {
+  let p = path.replace(/\//g, "\\");
+  if (/^\\\\\?\\unc\\/i.test(p)) p = `\\\\${p.slice(8)}`;
+  else if (p.startsWith("\\\\?\\")) p = p.slice(4);
+  const unc = p.startsWith("\\\\");
+  const parts: string[] = [];
+  const pieces = p.split("\\").filter((piece) => piece !== "");
+  // The drive (`C:`) or the share (`server\share`) is never climbed out of.
+  const rootCount = unc ? Math.min(2, pieces.length) : /^[a-z]:$/i.test(pieces[0] ?? "") ? 1 : 0;
+  pieces.forEach((piece, index) => {
+    if (index < rootCount) parts.push(piece);
+    else if (piece === ".") return;
+    else if (piece === "..") {
+      if (parts.length > rootCount) parts.pop();
+    } else parts.push(piece);
+  });
+  return `${unc ? "\\\\" : ""}${parts.join("\\")}`.toLowerCase();
+}
+
+/** Windows paths: separators, case, `.` and `..` and the `\\?\` prefix do not matter. */
 export function pathsEqual(a: string | null, b: string | null): boolean {
   if (a === null || b === null) return false;
-  const norm = (p: string) => p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
-  return norm(a) === norm(b);
+  return pathKey(a) === pathKey(b);
 }
 
 export function resolveRelative(baseDir: string, relative: string): string {
@@ -462,6 +485,10 @@ export interface SessionTab {
   fullyLoaded: boolean;
   hasDraft: boolean;
   snap: ScrollSnapshot | null;
+  /** A line ending was picked for this tab: its next save writes it on every line (STATE-6). */
+  eolChosen?: boolean;
+  /** The file has more than one kind of line ending (FILES-1). */
+  mixedEol?: boolean;
 }
 
 export interface SessionFile {
@@ -511,6 +538,9 @@ export function parseSession(raw: string | null): SessionFile | null {
       fullyLoaded: bool(item.fullyLoaded, false),
       hasDraft: bool(item.hasDraft, false),
       snap: parseSnap(item.snap),
+      // Only stored when set, like the app writes them.
+      ...(item.eolChosen === true ? { eolChosen: true } : {}),
+      ...(item.mixedEol === true ? { mixedEol: true } : {}),
     });
   }
   const activeId = typeof data.activeId === "string" && seen.has(data.activeId) ? data.activeId : tabs[0]?.id ?? "";
@@ -532,6 +562,7 @@ export function tabFromSession(s: SessionTab): TabMeta {
     tailChars: null,
     externalChange: null,
     hibernated: !(s.dirty && s.hasDraft) && s.path !== null,
+    ...(s.mixedEol ? { mixedEol: true } : {}),
   };
 }
 

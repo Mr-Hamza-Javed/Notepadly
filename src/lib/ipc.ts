@@ -20,6 +20,15 @@ export interface FileChunk {
   /** Detected from the first chunk; later chunks repeat the known value. */
   eol: Eol;
   stamp: FileStamp;
+  /**
+   * This chunk's text has a line ending other than `eol` (FILES-1). Optional:
+   * a backend that does not report it is taken as "not mixed".
+   */
+  mixedEol?: boolean;
+  /** The file has the read-only attribute, so saving it in place will fail. Only on the chunk at offset 0. */
+  readOnly?: boolean;
+  /** This chunk holds NUL characters: probably not a text file, and saving can damage it. */
+  binary?: boolean;
 }
 
 export interface SaveRequest {
@@ -46,6 +55,8 @@ export interface SaveRequest {
    * endings, the lines the save leaves unchanged keep their own.
    */
   normalizeEol?: boolean;
+  /** The encoding the file was read with, so Rust can read its old lines after an encoding change. */
+  originalEncoding?: Encoding;
 }
 
 export interface FileScan {
@@ -75,7 +86,10 @@ export const ipc = {
   draftRead: (id: string) => invoke<string | null>("draft_read", { id }),
   draftWrite: (id: string, text: string) => invoke<void>("draft_write", { id, text }),
   draftDelete: (id: string) => invoke<void>("draft_delete", { id }),
-  /** Deletes every draft whose id is not in `keep`. */
+  /**
+   * Deletes every draft whose id is not in `keep`. Rust spares drafts created
+   * during this run, even if no stored session lists them yet (MERGE-1).
+   */
   draftsPrune: (keep: string[]) => invoke<void>("drafts_prune", { keep }),
 
   /** Every window's stored session (one per window, see loader.setSessionKey). */
@@ -99,8 +113,26 @@ export const ipc = {
   systemFonts: () => invoke<string[]>("system_fonts"),
   revealInExplorer: (path: string) => invoke<void>("reveal_in_explorer", { path }),
 
+  /** Replaces the list of paths this window has open, for path_open_elsewhere (WIN-3). */
+  openPathsSet: (paths: string[]) => invoke<void>("open_paths_set", { paths }),
+  /**
+   * The label of another window that has `path` open, or null. Rust then focuses
+   * that window and sends it OPEN_PATHS_HERE_EVENT with [path], so it shows the
+   * tab: the file must not be opened here too (WIN-3).
+   */
+  pathOpenElsewhere: (path: string) => invoke<string | null>("path_open_elsewhere", { path }),
+  /** The user's regional format, for example "en-GB"; "" when unknown (MD-2). */
+  userLocale: () => invoke<string>("user_locale"),
   /** True when no other app window is on screen. */
   isLastWindow: () => invoke<boolean>("is_last_window"),
+  /**
+   * Marks this window as closing and answers, in one step, whether every other
+   * window on screen is closing too (STATE-8). Two windows closed together can
+   * then not both think another window stays.
+   */
+  windowClosing: () => invoke<boolean>("window_closing"),
+  /** This window's close was cancelled or it went to the background: it counts as staying again. */
+  windowCloseCancelled: () => invoke<void>("window_close_cancelled"),
   /** Hides this window and suspends its webview; the next launch wakes it. */
   enterBackground: () => invoke<void>("enter_background"),
 

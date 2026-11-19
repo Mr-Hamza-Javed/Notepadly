@@ -71,6 +71,18 @@ describe("paths", () => {
     expect(pathsEqual("C:\\a.md", null)).toBe(false);
   });
 
+  it("sees one file behind `..`, `.`, doubled separators and the long-path prefix", () => {
+    expect(pathsEqual("C:\\notes\\sub\\..\\a.md", "C:\\notes\\a.md")).toBe(true);
+    expect(pathsEqual("C:\\notes\\.\\a.md", "c:\\NOTES\\a.md")).toBe(true);
+    expect(pathsEqual("C:\\notes\\\\a.md", "C:/notes/a.md")).toBe(true);
+    expect(pathsEqual("\\\\?\\C:\\notes\\a.md", "C:\\notes\\a.md")).toBe(true);
+    expect(pathsEqual("\\\\?\\UNC\\srv\\share\\a.md", "\\\\srv\\share\\a.md")).toBe(true);
+    expect(pathsEqual("C:\\..\\a.md", "C:\\a.md")).toBe(true);
+    expect(pathsEqual("\\\\srv\\share\\..\\a.md", "\\\\srv\\share\\a.md")).toBe(true);
+    expect(pathsEqual("C:\\notes\\a.md", "D:\\notes\\a.md")).toBe(false);
+    expect(pathsEqual("C:\\notes\\a.md", "C:\\notes\\sub\\a.md")).toBe(false);
+  });
+
   it("resolves relative paths", () => {
     expect(resolveRelative("C:\\notes\\sub", "../img/x.png")).toBe("C:\\notes\\img\\x.png");
     expect(resolveRelative("C:\\notes", "D:\\abs.md")).toBe("D:\\abs.md");

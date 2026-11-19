@@ -78,6 +78,12 @@ interface TabRuntime {
   diskChars: number | null;
   /** The file state a hibernated tab's kept undo history belongs to. */
   sleep: { stamp: FileStamp | null; encoding: Encoding } | null;
+  /** The encoding the file was last read with (SaveRequest.originalEncoding). */
+  diskEncoding: Encoding | null;
+  /** The user was told the file looks binary. */
+  binaryWarned: boolean;
+  /** What the stored draft was written from (edits, length, file state); a flush skips an unchanged one (H8). */
+  draftSig: string | null;
 }
 
 const runtimes = new Map<string, TabRuntime>();
@@ -107,6 +113,9 @@ function rtOf(id: string): TabRuntime {
       unreadable: false,
       sleep: null,
       diskChars: null,
+      diskEncoding: null,
+      binaryWarned: false,
+      draftSig: null,
     };
     runtimes.set(id, rt);
   }
@@ -127,6 +136,13 @@ function enqueue<T>(rt: TabRuntime, op: () => Promise<T>): Promise<T> {
 
 /** The bytes after loadedOffset are only trustworthy while the file is unchanged. */
 const tailUsable = (tab: TabMeta, rt: TabRuntime) => !tab.externalChange && rt.dismissed === null;
+
+/** The stored unsaved text of a tab exists but could not be read. */
+export class DraftUnreadableError extends Error {
+  constructor(detail: string) {
+    super(`The unsaved changes of this tab could not be read. They are kept, and Notepadly tries again when you switch to the tab.\n${detail}`);
+  }
+}
 
 export class LoadBlockedError extends Error {
   constructor() {
@@ -249,6 +265,7 @@ function loadStep(id: string, maxBytes: number): Promise<void> {
     }
     if (chunk.nextOffset <= offset && !chunk.eof) throw new Error("The file could not be read any further.");
     if (chunk.text) engine.appendText(id, chunk.text);
+    if (chunk.binary) warnBinary(id);
     if (rt.diskChars !== null) rt.diskChars += chunk.text.length;
     patchTab(id, {
       loadedOffset: chunk.nextOffset,
@@ -256,6 +273,7 @@ function loadStep(id: string, maxBytes: number): Promise<void> {
       stamp: chunk.stamp,
       tailChars:
         chunk.eof || current.tailChars === null ? null : Math.max(0, current.tailChars - chunk.text.length),
+      ...(chunk.mixedEol ? { mixedEol: true } : {}),
     });
     if (current.dirty) markDraftChanged(id);
     if (!chunk.eof) startScan(id);
@@ -314,6 +332,9 @@ interface DiskRead {
   eof: boolean;
   encoding: Encoding;
   eol: Eol;
+  mixedEol: boolean;
+  readOnly: boolean;
+  binary: boolean;
 }
 
 /** Reads from byte 0 to about `target`. Restarts if the file changes part way. */
@@ -326,7 +347,9 @@ async function readUpTo(
   for (let attempt = 0; attempt < 3; attempt++) {
     const parts: string[] = [];
     let offset = 0;
-    let first: { stamp: FileStamp; encoding: Encoding; eol: Eol } | null = null;
+    let first: { stamp: FileStamp; encoding: Encoding; eol: Eol; readOnly: boolean } | null = null;
+    let mixedEol = false;
+    let binary = false;
     for (;;) {
       const wanted = Math.min(RELOAD_CHUNK, Math.max(MIN_READ, target - offset));
       const size = offset === 0 ? Math.max(FIRST_CHUNK, wanted) : wanted;
@@ -336,12 +359,14 @@ async function readUpTo(
         first = null;
         break;
       }
-      first ??= { stamp: chunk.stamp, encoding: chunk.encoding, eol: chunk.eol };
+      first ??= { stamp: chunk.stamp, encoding: chunk.encoding, eol: chunk.eol, readOnly: !!chunk.readOnly };
       if (chunk.nextOffset <= offset && !chunk.eof) throw new Error("The file could not be read.");
       parts.push(chunk.text);
+      mixedEol ||= !!chunk.mixedEol;
+      binary ||= !!chunk.binary;
       offset = chunk.nextOffset;
       if (chunk.eof || target <= FIRST_CHUNK || offset >= target) {
-        return { ...first, text: parts.join(""), nextOffset: offset, eof: chunk.eof };
+        return { ...first, mixedEol, binary, text: parts.join(""), nextOffset: offset, eof: chunk.eof };
       }
     }
   }
@@ -400,13 +425,19 @@ async function applyFromDisk(
     dirty: false,
     externalChange: null,
     hibernated: false,
+    mixedEol: read.mixedEol,
+    readOnly: read.readOnly,
   });
   rt.forceDirty = false;
+  // The editor matches the file again: a line ending picked before is gone with the edits.
+  rt.eolChosen = false;
   rt.cleanDelete = null;
   rt.unreadable = false;
   rt.dismissed = null;
   rt.scanStarted = false;
   rt.diskChars = read.text.length;
+  rt.diskEncoding = read.encoding;
+  if (read.binary) warnBinary(id);
   rt.ioSeq++;
   rt.snap = null;
   markDraftChanged(id);
@@ -414,6 +445,18 @@ async function applyFromDisk(
     startScan(id);
     scheduleIdleLoad(id);
   }
+}
+
+/** Once per tab: a file with NUL characters is probably not text, and a save can damage it (M15). */
+function warnBinary(id: string): void {
+  const rt = rtOf(id);
+  const tab = getTab(id);
+  if (rt.binaryWarned || !tab) return;
+  rt.binaryWarned = true;
+  showMessage(
+    "File looks binary",
+    `${tab.title} contains NUL characters, so it is probably not a text file. Saving it from Notepadly can damage it.`,
+  );
 }
 
 function reloadTarget(tab: TabMeta): number {
@@ -447,7 +490,14 @@ export function materialise(id: string): Promise<void> {
     const tab = getTab(id);
     if (!tab) return;
     if (tab.dirty && rt.hasDraft) {
-      const draft = await ipc.draftRead(id).catch(() => null);
+      let draft: string | null;
+      try {
+        draft = await ipc.draftRead(id);
+      } catch (error) {
+        // Not missing but unreadable (locked, access denied): the draft is kept,
+        // and the tab stays without editor state until it can be read (L16).
+        throw new DraftUnreadableError(String(error));
+      }
       if (!getTab(id) || engine.hasDoc(id)) return;
       if (draft !== null) {
         engine.createDoc(id, draft, tab.mode);
@@ -484,6 +534,12 @@ export async function materialiseOrFlag(id: string): Promise<void> {
   } catch (error) {
     const tab = getTab(id);
     if (!tab || engine.hasDoc(id)) return;
+    if (error instanceof DraftUnreadableError) {
+      // No editor state: nothing can be typed over it, and drafts are never
+      // written or deleted for it, so the stored text stays as it is.
+      showMessage("Could not restore unsaved changes", `${tab.title}: ${error.message}`);
+      return;
+    }
     const disk = tab.path ? await ipc.stat(tab.path).catch(() => undefined) : undefined;
     if (!getTab(id) || engine.hasDoc(id)) return;
     engine.createDoc(id, "", tab.mode);
@@ -576,6 +632,7 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
       allowLossy: !!options.allowLossy,
       // Mixed line endings are only kept when rewriting the same file.
       normalizeEol: rt.eolChosen || !samePath,
+      ...(samePath && rt.diskEncoding ? { originalEncoding: rt.diskEncoding } : {}),
     });
   } catch (error) {
     rt.ioSeq++;
@@ -592,13 +649,18 @@ async function doWrite(id: string, rt: TabRuntime, targetPath: string, options: 
   }
   rt.cleanDelete = null;
   rt.dismissed = null;
+  const normalized = rt.eolChosen || !samePath;
   rt.eolChosen = false;
+  rt.diskEncoding = tab.encoding;
   const shared = {
     path: targetPath,
     title: fileNameOf(targetPath),
     stamp,
     dirty: !unchanged,
     externalChange: null,
+    // Written just now, so writable; every line got one ending unless kept.
+    readOnly: false,
+    ...(normalized ? { mixedEol: false } : {}),
   };
   if (tailOffset === null) {
     patchTab(id, { ...shared, loadedOffset: stamp.size, fullyLoaded: true, tailChars: null });
@@ -686,6 +748,20 @@ export interface TabHandoff {
   hasDraft: boolean;
   draftMeta: DraftMeta | null;
   forceDirty: boolean;
+  // The runtime state below must move too (STATE-6). Optional for a transfer
+  // from a window that runs an older build.
+  /** A change on disk the user chose to ignore ("Keep mine"). */
+  dismissed?: DismissedChange;
+  /** A line ending was picked, so the next save writes it on every line. */
+  eolChosen?: boolean;
+  /** A clean tab flagged deleted and not edited since: clean again if the file comes back (H7). */
+  cleanDelete?: boolean;
+  /** The file could not be read, so the text is not the file's: never save over it (M22). */
+  unreadable?: boolean;
+  /** The file state a hibernated tab's undo history belongs to. */
+  sleep?: { stamp: FileStamp | null; encoding: Encoding } | null;
+  /** Characters read from the file into the editor (L5). */
+  diskChars?: number | null;
 }
 
 /** Read together with the tab's TabMeta, in the same tick, so offsets match the text. */
@@ -698,45 +774,62 @@ export function handOff(id: string): TabHandoff {
     hasDraft: rt.hasDraft,
     draftMeta: rt.draftMeta,
     forceDirty: rt.forceDirty,
+    dismissed: rt.dismissed,
+    eolChosen: rt.eolChosen,
+    cleanDelete: rt.cleanDelete !== null && rt.cleanDelete === rt.editSeq,
+    unreadable: rt.unreadable,
+    sleep: rt.sleep,
+    diskChars: rt.diskChars,
   };
 }
 
 /**
- * Takes over a tab handed off by another window. `tab` is already in the store.
- * Nothing is read from disk or saved: the text arrives as it was, unsaved edits
- * stay unsaved, and the draft (keyed by the tab id) now belongs to this window.
+ * Takes over a tab handed off by another window. `tab` is already in the store,
+ * under a new id (STATE-5): `fromId` is the id it had there. Nothing is read
+ * from the file or saved: the text arrives as it was and unsaved edits stay
+ * unsaved. A tab with no editor state gets a copy of its draft under the new id,
+ * so the two windows never share one draft. Rejects when that copy fails; the
+ * tab must then not be kept here.
  */
-export function takeOver(tab: TabMeta, handoff: TabHandoff): void {
+export async function takeOver(tab: TabMeta, handoff: TabHandoff, fromId: string = tab.id): Promise<void> {
   const rt = rtOf(tab.id);
   rt.snap = handoff.snap;
-  rt.hasDraft = handoff.hasDraft;
-  rt.draftMeta = handoff.draftMeta;
+  rt.dismissed = handoff.dismissed ?? null;
+  rt.eolChosen = !!handoff.eolChosen;
+  rt.unreadable = !!handoff.unreadable;
+  rt.sleep = handoff.sleep ?? null;
+  rt.diskChars = handoff.diskChars ?? null;
   if (handoff.text !== null) {
     engine.createDoc(tab.id, handoff.text, tab.mode);
     restoreView(tab.id, handoff.snap);
     rt.snap = null;
     // The new editor state starts clean; the tab is not.
     rt.forceDirty = handoff.forceDirty || tab.dirty;
+    rt.cleanDelete = handoff.cleanDelete ? rt.editSeq : null;
     if (!tab.fullyLoaded) {
       startScan(tab.id);
       scheduleIdleLoad(tab.id);
     }
+    // The draft is written under the new id by the next flush.
+    if (tab.dirty) markDraftChanged(tab.id);
+  } else if (handoff.hasDraft && tab.dirty) {
+    if (fromId !== tab.id) {
+      const draft = await ipc.draftRead(fromId);
+      if (draft === null) throw new Error("The unsaved text of this tab could not be found.");
+      await ipc.draftWrite(tab.id, draft);
+    }
+    rt.hasDraft = true;
+    rt.draftMeta = handoff.draftMeta;
   }
-  if (tab.dirty) markDraftChanged(tab.id);
   scheduleSessionWrite();
 }
 
-/** Drops a tab that moved to another window, keeping its draft for that window. */
-export function releaseTab(id: string): void {
-  const rt = runtimes.get(id);
-  if (rt) rt.hasDraft = false;
-  disposeTab(id);
-}
 
 export function registerRestored(session: SessionTab): void {
   const rt = rtOf(session.id);
   rt.snap = session.snap;
   rt.hasDraft = session.hasDraft;
+  rt.eolChosen = !!session.eolChosen;
   if (session.hasDraft) {
     rt.draftMeta = { stamp: session.stamp, loadedOffset: session.loadedOffset, fullyLoaded: session.fullyLoaded };
   }
@@ -944,12 +1037,18 @@ export function buildSession(): SessionFile {
         fullyLoaded: position.fullyLoaded,
         hasDraft: rt.hasDraft,
         snap: engine.hasDoc(tab.id) ? engine.snapshot(tab.id) : rt.snap,
+        ...(rt.eolChosen ? { eolChosen: true } : {}),
+        ...(tab.mixedEol ? { mixedEol: true } : {}),
       };
     }),
   };
 }
 
+/** Bumped when the session is cleared, so a flush still running then does not store it again. */
+let discards = 0;
+
 async function doFlush(): Promise<void> {
+  const discardsAtStart = discards;
   const ids = [...changedDrafts];
   changedDrafts.clear();
   pendingSince = null;
@@ -962,19 +1061,25 @@ async function doFlush(): Promise<void> {
       if (tab.dirty) {
         if (!engine.hasDoc(id)) continue;
         const meta = { stamp: tab.stamp, loadedOffset: tab.loadedOffset, fullyLoaded: tab.fullyLoaded };
+        // The whole text crosses IPC for each draft: not again when nothing changed (H8).
+        const sig = `${rt.editSeq}:${engine.length(id)}:${tab.loadedOffset}:${tab.stamp?.size}:${tab.stamp?.mtimeMs}`;
+        if (rt.hasDraft && rt.draftSig === sig) continue;
         await ipc.draftWrite(id, engine.getText(id));
         rt.hasDraft = true;
         rt.draftMeta = meta;
+        rt.draftSig = sig;
       } else if (rt.hasDraft) {
         await ipc.draftDelete(id);
         rt.hasDraft = false;
         rt.draftMeta = null;
+        rt.draftSig = null;
       }
     } catch (error) {
       failure = error;
       changedDrafts.add(id);
     }
   }
+  if (discards !== discardsAtStart) return;
   await writeSession(JSON.stringify(buildSession()));
   if (failure) throw failure;
 }
@@ -1010,15 +1115,24 @@ export async function discardSession(session: SessionFile | null): Promise<void>
   await ipc.sessionWrite(JSON.stringify({ v: 1, activeId: "", tabs: [] }));
 }
 
+/** How long a close waits for a draft write already running before it clears the session anyway. */
+const DISCARD_WAIT_MS = 5000;
+
 /** Clears what this run stored, once every dirty tab has been answered for. */
 export function discardCurrentSession(): Promise<void> {
   if (flushTimer !== null) clearTimeout(flushTimer);
   flushTimer = null;
   pendingSince = null;
   changedDrafts.clear();
+  discards++;
   // On the flush chain: a flush already writing would otherwise store the
   // session and drafts again after they were deleted (STATE-2).
-  const run = flushChain.catch(noop).then(async () => {
+  // A draft write that never returns must not keep the window open for good.
+  const running = Promise.race([
+    flushChain.catch(noop),
+    new Promise<void>((resolve) => setTimeout(resolve, DISCARD_WAIT_MS)),
+  ]);
+  const run = running.then(async () => {
     const ids = useApp.getState().tabs.filter((t) => rtOf(t.id).hasDraft).map((t) => t.id);
     await Promise.all(ids.map((id) => ipc.draftDelete(id).catch(noop)));
     if (sessionKey === null) await ipc.sessionWrite(JSON.stringify({ v: 1, activeId: "", tabs: [] }));
