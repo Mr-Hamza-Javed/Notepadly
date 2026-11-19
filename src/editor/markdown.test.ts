@@ -134,6 +134,44 @@ describe("markdown extensions: edge cases", () => {
     expect(texts("$$\na\n\n# Heading\n\ntext", "ATXHeading1")).toEqual(["# Heading"]);
   });
 
+  // BUGS.md L11 (rest): an unclosed %% restyled up to 5,000 lines, unclosed front matter 1,000.
+  it("L11: an unclosed %% ends at the first blank line; a closed one may hold blank lines", () => {
+    expect(texts("%%\nhidden\n\n# Heading\n\ntext", "CommentBlock")).toEqual(["%%\nhidden"]);
+    expect(texts("%%\nhidden\n\n# Heading\n\ntext", "ATXHeading1")).toEqual(["# Heading"]);
+    expect(texts("%%\na\n\nb\n%%\nafter", "CommentBlock")).toEqual(["%%\na\n\nb\n%%"]);
+    expect(texts("> %%\n> a\n>\n> b", "CommentBlock")).toEqual(["%%\n> a"]);
+  });
+
+  it("L11: front matter without a closing line is a rule and text", () => {
+    const doc = "---\ntitle: x\nmore: y\n\n# Heading";
+    expect(texts(doc, "Frontmatter")).toEqual([]);
+    expect(texts(doc, "ATXHeading1")).toEqual(["# Heading"]);
+    expect(texts("---\ntitle: x\n...\nbody", "Frontmatter")).toEqual(["---\ntitle: x\n..."]);
+  });
+
+  it("L11: adding or removing a far closer reparses the block that looked for it", () => {
+    const filler = "para\n\n".repeat(30);
+    const cases: [string, number, number, string][] = [];
+    const comment = `intro\n\n%%\nhidden\n\n${filler}`;
+    // Close the comment at the end, then open it again.
+    cases.push([comment, comment.length, comment.length, "%%\n"]);
+    const closed = `${comment}%%\n`;
+    cases.push([closed, closed.length - 3, closed.length, ""]);
+    const front = `---\ntitle: x\n\n${filler}`;
+    cases.push([front, front.length, front.length, "---\n"]);
+    cases.push([`${front}---\n`, front.length, front.length + 4, ""]);
+    for (const [text, from, to, insert] of cases) {
+      const tree = notepadlyParser.parse(text);
+      const fragments = TreeFragment.applyChanges(TreeFragment.addTree(tree), [
+        { fromA: from, toA: to, fromB: from, toB: from + insert.length },
+      ]);
+      const next = text.slice(0, from) + insert + text.slice(to);
+      expect(notepadlyParser.parse(next, fragments).toString(), JSON.stringify(insert)).toBe(
+        plainMarkdownParser.parse(next).toString(),
+      );
+    }
+  });
+
   // BUGS.md EDIT-9: a paragraph line starting with $$ turned the rest of the paragraph into maths.
   it("EDIT-9: a paragraph line that only starts with $$ stays text", () => {
     expect(texts("Cost:\n$$5 total\nmore text", "BlockMath")).toEqual([]);

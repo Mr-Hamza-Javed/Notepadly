@@ -17,10 +17,10 @@ import { ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import {
   Parser,
   Tree,
+  TreeFragment,
   type Input,
   type PartialParse,
   type TreeBuffer,
-  type TreeFragment,
 } from "@lezer/common";
 import { tags as t } from "@lezer/highlight";
 import {
@@ -228,15 +228,76 @@ function continuesBlock(cx: BlockContext, line: Line): boolean {
 /** Indentation counted from the enclosing list item's content, not the line start. */
 const ownIndent = (line: Line) => line.indent - line.baseIndent;
 
+// ---------- Look-ahead ----------
+//
+// An unclosed `%%` or front matter must not restyle hundreds of lines (BUGS.md L11), and only
+// reading ahead tells whether a closer exists. A block parsed that way depends on text past
+// its own end, which the incremental parser knows nothing about: it would reuse the block
+// after an edit that adds or removes the closer. So every such read is logged against the
+// tree it produced, and fragments are cut before the block when an edit lands in what it read.
+
+/** Text read ahead for a closer: `from` is where the block starts, `to` where the read ended. */
+interface LookAhead {
+  from: number;
+  to: number;
+}
+
+/** Characters read ahead at most for a closer. */
+const MAX_LOOKAHEAD = 100_000;
+
+let lookAheadLog: LookAhead[] | null = null;
+const lookAheads = new WeakMap<Tree, LookAhead[]>();
+
+/**
+ * Up to `MAX_LOOKAHEAD` characters of the document from `from`; `complete` when that reaches
+ * its end. The caller logs what it used with `logRead`.
+ */
+function readAhead(cx: BlockContext, from: number): { text: string; complete: boolean } {
+  // `input` is public at runtime but not in the typings. The parser always gets one range,
+  // so block positions are document positions.
+  const input = (cx as BlockContext & { input: Input }).input;
+  const to = Math.min(input.length, from + MAX_LOOKAHEAD);
+  return { text: from < to ? input.read(from, to) : "", complete: to === input.length };
+}
+
+function logRead(from: number, to: number): void {
+  lookAheadLog?.push({ from, to });
+}
+
+/** The end of the first of the first `maxLines` lines of `text` that matches `pattern`, or -1. */
+function findLine(text: string, complete: boolean, pattern: RegExp, maxLines: number): number {
+  let start = 0;
+  for (let n = 0; n < maxLines && start <= text.length; n++) {
+    let end = text.indexOf("\n", start);
+    if (end < 0) {
+      // A line cut off by the read limit could go on past what was read.
+      if (!complete) return -1;
+      end = text.length;
+    }
+    if (pattern.test(text.slice(start, end))) return end;
+    start = end + 1;
+  }
+  return -1;
+}
+
+const FRONTMATTER_CLOSE = /^(---|\.\.\.)\s*$/;
+const MAX_FRONTMATTER_LINES = 1000;
+
 function parseFrontmatter(cx: BlockContext, line: Line): boolean {
   if (cx.lineStart !== 0 || line.text.trimEnd() !== "---") return false;
   // The parser cannot backtrack, so require the next line to look like YAML.
   if (!/^[\w"'.-]+\s*:|^#|^---\s*$/.test(cx.peekLine())) return false;
+  // Without a closing line it is a rule and text, not front matter for the next 1,000 lines.
+  const aheadFrom = line.text.length + 1;
+  const ahead = readAhead(cx, aheadFrom);
+  const close = findLine(ahead.text, ahead.complete, FRONTMATTER_CLOSE, MAX_FRONTMATTER_LINES);
+  logRead(0, aheadFrom + (close >= 0 ? close : ahead.text.length));
+  if (close < 0) return false;
   const marks = [cx.elt("FrontmatterMark", 0, 3)];
   let lines = 0;
   let next = cx.nextLine();
-  while (next && lines++ < 1000) {
-    if (/^(---|\.\.\.)\s*$/.test(line.text)) {
+  while (next && lines++ < MAX_FRONTMATTER_LINES) {
+    if (FRONTMATTER_CLOSE.test(line.text)) {
       marks.push(cx.elt("FrontmatterMark", cx.lineStart, cx.lineStart + 3));
       next = cx.nextLine();
       break;
@@ -251,7 +312,8 @@ function parseFrontmatter(cx: BlockContext, line: Line): boolean {
  * Shared by `$$` math and `%%` comments, which delimit multi-line blocks the same way.
  * They work inside lists, quotes and callouts too, ending with their container.
  * `stopAtBlank`: display maths cannot contain a blank line, so an unclosed `$$` ends
- * at the first one instead of restyling the rest of the document.
+ * at the first one instead of restyling the rest of the document. A comment can hold blank
+ * lines, but only when it is closed: an unclosed `%%` also ends at the first blank line.
  */
 function parseDelimitedBlock(
   cx: BlockContext,
@@ -276,10 +338,17 @@ function parseDelimitedBlock(
   }
   const marks = [cx.elt(markName, from, from + 2)];
   let to = cx.lineStart + line.text.length;
+  let stopsAtBlank = stopAtBlank;
+  if (!stopAtBlank) {
+    const ahead = readAhead(cx, to).text;
+    const close = ahead.indexOf(delim);
+    logRead(from, to + (close >= 0 ? close + delim.length : ahead.length));
+    stopsAtBlank = close < 0;
+  }
   let lines = 0;
   while (cx.nextLine() && continuesBlock(cx, line) && lines++ < 5000) {
     // The blank line is left for the next block.
-    if (stopAtBlank && line.pos >= line.text.length) break;
+    if (stopsAtBlank && line.pos >= line.text.length) break;
     marks.push(...line.markers);
     to = cx.lineStart + line.text.length;
     const close = line.text.indexOf(delim, line.pos);
@@ -525,6 +594,47 @@ function planReuse(
   return null;
 }
 
+/**
+ * Cuts each fragment before any block that read ahead into the edit at the fragment's end,
+ * so the parser parses that block again. Also returns the reads of the blocks that may be
+ * reused, which carry over to the new tree.
+ */
+function cutLookAheads(
+  fragments: readonly TreeFragment[],
+  docLength: number,
+): { fragments: readonly TreeFragment[]; kept: LookAhead[] } {
+  const kept: LookAhead[] = [];
+  let changed = false;
+  const out: TreeFragment[] = [];
+  for (const fragment of fragments) {
+    const reads = lookAheads.get(fragment.tree);
+    if (!reads) {
+      out.push(fragment);
+      continue;
+    }
+    let to = fragment.to;
+    // A fragment that reaches the end of the document has no edit after it: a read that ran
+    // to the old end saw everything (text deleted at the end held no closer it found).
+    if (fragment.to < docLength) {
+      for (const read of reads) {
+        const from = read.from - fragment.offset;
+        if (from < to && read.to - fragment.offset >= fragment.to) to = Math.max(fragment.from, from);
+      }
+    }
+    for (const read of reads) {
+      const from = read.from - fragment.offset;
+      if (from >= fragment.from && from < to) kept.push({ from, to: read.to - fragment.offset });
+    }
+    if (to === fragment.to) {
+      out.push(fragment);
+    } else {
+      changed = true;
+      if (to > fragment.from) out.push(new TreeFragment(fragment.from, to, fragment.tree, fragment.offset, fragment.openStart, true));
+    }
+  }
+  return { fragments: changed ? out : fragments, kept };
+}
+
 class PrefixReuseParser extends Parser {
   constructor(private readonly inner: Parser) {
     super();
@@ -532,22 +642,38 @@ class PrefixReuseParser extends Parser {
 
   createParse(
     input: Input,
-    fragments: readonly TreeFragment[],
+    rawFragments: readonly TreeFragment[],
     ranges: readonly { from: number; to: number }[],
   ): PartialParse {
+    const { fragments, kept } = cutLookAheads(rawFragments, input.length);
     const plan = planReuse(input, fragments, ranges);
-    if (!plan) return this.inner.startParse(input, fragments, ranges);
-    const parse = this.inner.startParse(input, fragments, [{ from: plan.cut, to: ranges[0].to }]);
+    const parse = plan
+      ? this.inner.startParse(input, fragments, [{ from: plan.cut, to: ranges[0].to }])
+      : this.inner.startParse(input, fragments, ranges);
+    const log: LookAhead[] = [];
     return {
       advance() {
-        const done = parse.advance();
+        const outer = lookAheadLog;
+        lookAheadLog = log;
+        let done: Tree | null;
+        try {
+          done = parse.advance();
+        } finally {
+          lookAheadLog = outer;
+        }
         if (!done) return null;
-        return new Tree(
-          done.type,
-          [...plan.children, ...done.children],
-          [...plan.positions, ...done.positions.map((pos) => pos + plan.cut)],
-          plan.cut + done.length,
-        );
+        const tree = plan
+          ? new Tree(
+              done.type,
+              [...plan.children, ...done.children],
+              [...plan.positions, ...done.positions.map((pos) => pos + plan.cut)],
+              plan.cut + done.length,
+            )
+          : done;
+        const fresh = new Set(log.map((read) => read.from));
+        const reads = [...log, ...kept.filter((read) => !fresh.has(read.from) && read.from < tree.length)];
+        if (reads.length) lookAheads.set(tree, reads);
+        return tree;
       },
       get parsedPos() {
         return parse.parsedPos;
