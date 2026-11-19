@@ -334,9 +334,36 @@ function dedupePaths(paths: string[]): string[] {
   return paths.filter((path, index) => paths.findIndex((other) => pathsEqual(other, path)) === index);
 }
 
+/**
+ * Drops the paths another window already has open: Rust brings that window to
+ * the front with the tab shown, so one file is never open in two windows (WIN-3).
+ */
+async function notOpenElsewhere(paths: string[]): Promise<string[]> {
+  const owners = await Promise.all(
+    paths.map((p) => (findOpen(p) ? Promise.resolve(null) : ipc.pathOpenElsewhere(p).catch(() => null))),
+  );
+  return paths.filter((_, index) => !owners[index]);
+}
+
+/** Tells Rust which files this window has open, whenever that changes (WIN-3). */
+function publishOpenPaths(): void {
+  let last = "";
+  const send = () => {
+    const paths = state().tabs.flatMap((t) => (t.path ? [t.path] : []));
+    const joined = paths.join("\n");
+    if (joined === last) return;
+    last = joined;
+    ipc.openPathsSet(paths).catch(() => {});
+  };
+  useApp.subscribe((s, previous) => {
+    if (s.tabs !== previous.tabs) send();
+  });
+  send();
+}
+
 /** Opens in this window. Only the last file is read now; the others load on first activate. */
 async function openHere(input: string[]): Promise<void> {
-  const paths = dedupePaths(input);
+  const paths = await notOpenElsewhere(dedupePaths(input));
   if (paths.length === 0) return;
   const pristine = getActiveTab();
   const stats = await Promise.all(paths.map((p) => ipc.stat(p).catch(() => null)));
@@ -415,7 +442,7 @@ async function openPaths(paths: string[]): Promise<void> {
   if (paths.length === 0) return;
   // An empty window takes the file instead of leaving itself behind (M10).
   if (state().settings.openFilesIn !== "window" || windowIsPristine()) return openHere(paths);
-  const fresh = dedupePaths(paths).filter((p) => !findOpen(p));
+  const fresh = await notOpenElsewhere(dedupePaths(paths).filter((p) => !findOpen(p)));
   const open = paths.map(findOpen).filter((t): t is TabMeta => !!t);
   if (open.length > 0) {
     await activate(open[open.length - 1].id);
@@ -1280,6 +1307,7 @@ async function runInit(): Promise<void> {
     engine.focus();
   }
   loader.setPersistence(keepsSession());
+  publishOpenPaths();
   initFinished = true;
 
   if (merged.length > 0) {

@@ -524,6 +524,33 @@ describe("STATE-8: closing two windows at once", () => {
   });
 });
 
+describe("WIN-3: a file open in another window", () => {
+  it("is shown in that window instead of opening a second copy", async () => {
+    const { a, b } = await twoWindows();
+    backend.write(A, "a text");
+    backend.write(B, "b text");
+    await a.actions.openPaths([A, B]);
+    expect(a.tab().path).toBe(B);
+    await settle(10);
+    const focused = a.win.focused;
+    await b.actions.openPaths([A]);
+    expect(b.state().tabs.map((t) => t.path)).toEqual([null]);
+    await waitFor(() => a.tab().path === A);
+    expect(a.win.focused).toBeGreaterThan(focused);
+  });
+
+  it("is opened normally once that window closed its tab", async () => {
+    const { a, b } = await twoWindows();
+    backend.write(A, "a text");
+    await a.actions.openPaths([A]);
+    await a.actions.newTab();
+    await a.actions.closeTab(a.state().tabs[0].id);
+    await settle(10);
+    await b.actions.openPaths([A]);
+    expect(b.tab().path).toBe(A);
+  });
+});
+
 describe("STATE-6: a moved tab keeps its runtime state", () => {
   it("a clean tab flagged deleted is clean again in the new window when the file comes back (H7)", async () => {
     const { a, b } = await twoWindows();

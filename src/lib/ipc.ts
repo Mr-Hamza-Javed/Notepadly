@@ -109,6 +109,14 @@ export const ipc = {
   systemFonts: () => invoke<string[]>("system_fonts"),
   revealInExplorer: (path: string) => invoke<void>("reveal_in_explorer", { path }),
 
+  /** Replaces the list of paths this window has open, for path_open_elsewhere (WIN-3). */
+  openPathsSet: (paths: string[]) => invoke<void>("open_paths_set", { paths }),
+  /**
+   * The label of another window that has `path` open, or null. Rust then focuses
+   * that window and sends it OPEN_PATHS_HERE_EVENT with [path], so it shows the
+   * tab: the file must not be opened here too (WIN-3).
+   */
+  pathOpenElsewhere: (path: string) => invoke<string | null>("path_open_elsewhere", { path }),
   /** True when no other app window is on screen. */
   isLastWindow: () => invoke<boolean>("is_last_window"),
   /**

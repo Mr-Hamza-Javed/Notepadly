@@ -315,9 +315,17 @@ export class FakeBackend {
         this.openPaths.set(caller, [...(args.paths as string[])]);
         return null;
       case "path_open_elsewhere": {
+        // Rust focuses the window that has the file and asks it to show it.
         const wanted = key(args.path as string);
         for (const [label, paths] of this.openPaths) {
-          if (label !== caller && this.windows.has(label) && paths.some((p) => key(p) === wanted)) return label;
+          if (label === caller || !this.windows.has(label) || !paths.some((p) => key(p) === wanted)) continue;
+          const win = fakeWindows.get(label);
+          if (win) {
+            win.focused++;
+            const listener = win.listeners.get("open-paths-here");
+            if (listener) setTimeout(() => listener({ payload: [args.path] }), 0);
+          }
+          return label;
         }
         return null;
       }
