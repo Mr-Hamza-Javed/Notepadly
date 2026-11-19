@@ -21,6 +21,8 @@ declare global {
       /** The editor's CodeMirror view. */
       view: () => import("@codemirror/view").EditorView | null;
       state: () => import("../src/state/types").AppState;
+      /** Delivers an event to this window, as Rust or another window would. */
+      emit: (event: string, payload: unknown) => Promise<void>;
     };
   }
 }
@@ -78,14 +80,23 @@ mockConvertFileSrc("windows");
 mockIPC(
   (cmd, payload) => {
     const args = (payload ?? {}) as Record<string, unknown>;
-    ipcLog.push({ cmd, args });
     if (cmd.startsWith("plugin:")) return plugin(cmd, args);
     return backend.invoke(cmd, args, "main");
   },
   { shouldMockEvents: true },
 );
+// Logs every call, event plugin commands too (the mock answers those without the callback;
+// `emit_to` goes nowhere, since there is no other window in this page).
+const internals = (window as unknown as { __TAURI_INTERNALS__: { invoke: (...a: unknown[]) => Promise<unknown> } })
+  .__TAURI_INTERNALS__;
+const mockedInvoke = internals.invoke;
+internals.invoke = (cmd: unknown, args: unknown, options: unknown) => {
+  ipcLog.push({ cmd: String(cmd), args: (args ?? {}) as Record<string, unknown> });
+  return mockedInvoke(cmd, args, options);
+};
 
 const { EditorView } = await import("@codemirror/view");
+const { emit } = await import("@tauri-apps/api/event");
 const { useApp } = await import("../src/state/store");
 
 window.e2e = {
@@ -97,6 +108,7 @@ window.e2e = {
     return dom ? EditorView.findFromDOM(dom) : null;
   },
   state: () => useApp.getState(),
+  emit: (event, payload) => emit(event, payload),
 };
 
 await import("../src/main");
