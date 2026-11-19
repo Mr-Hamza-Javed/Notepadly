@@ -6,9 +6,10 @@
 // BOM, tail saves, STALE rejections, missing folders and draft id validation.
 //
 // Known differences from Rust, none of which the frontend tests rely on:
-// - UTF-8 (with or without BOM) and ANSI are modelled; ANSI is always
-//   windows-1252. Like Rust, the first 256 KiB decide between UTF-8 and ANSI,
-//   and an encoding passed at offset 0 forces it. UTF-16 is not modelled.
+// - UTF-8 (with or without BOM), UTF-16 LE/BE (with or without BOM), ANSI and
+//   OEM are modelled; ANSI and OEM are both always windows-1252. Like Rust, the
+//   first 256 KiB decide the encoding, and an encoding passed at offset 0 forces
+//   it (a UTF-16 or UTF-8 choice then follows whether the file has a BOM).
 // - Writes are not atomic and there is no ReplaceFileW / in-place fallback.
 // - Mixed line endings are kept on save like files.rs `kept_line_endings`, but
 //   without its 64 MiB limit.
@@ -55,6 +56,88 @@ function encodeAnsi(text: string, lossy: boolean): Uint8Array {
     else throw `UNMAPPABLE: ${ch}`;
   }
   return new Uint8Array(out);
+}
+
+const BOM_UTF16LE = [0xff, 0xfe];
+const BOM_UTF16BE = [0xfe, 0xff];
+const isUtf16 = (encoding: string) => encoding.startsWith("utf-16");
+const bigEndian = (encoding: string) => encoding.startsWith("utf-16be");
+const singleByte = (encoding: string) => encoding === "ansi" || encoding === "oem";
+const startsWith = (bytes: Uint8Array, prefix: number[]) => prefix.every((b, i) => bytes[i] === b);
+
+/** The length of the BOM `bytes` start with, for files read in `encoding`. */
+function bomLength(bytes: Uint8Array, encoding: string): number {
+  if (singleByte(encoding)) return 0;
+  if (isUtf16(encoding)) return startsWith(bytes, bigEndian(encoding) ? BOM_UTF16BE : BOM_UTF16LE) ? 2 : 0;
+  return startsWith(bytes, BOM) ? 3 : 0;
+}
+
+/** files.rs `forced_encoding`: UTF-8 and UTF-16 follow whether the file has a BOM. */
+function followBom(encoding: string, hasBom: boolean): string {
+  if (encoding === "utf-8" && hasBom) return "utf-8-bom";
+  if (!isUtf16(encoding)) return encoding;
+  const order = bigEndian(encoding) ? "utf-16be" : "utf-16le";
+  return hasBom ? order : `${order}-nobom`;
+}
+
+function decodeAs(bytes: Uint8Array, encoding: string): string {
+  if (singleByte(encoding)) return ansiDecoder.decode(bytes);
+  if (isUtf16(encoding)) {
+    return new TextDecoder(bigEndian(encoding) ? "utf-16be" : "utf-16le", { ignoreBOM: true }).decode(bytes);
+  }
+  return decoder.decode(bytes);
+}
+
+/** files.rs `encode_str` plus the BOM of the encoding. */
+function encodeAs(text: string, encoding: string, lossy: boolean): Uint8Array {
+  if (singleByte(encoding)) return encodeAnsi(text, lossy);
+  if (isUtf16(encoding)) {
+    const bom = encoding.endsWith("-nobom") ? 0 : 2;
+    const out = new Uint8Array(bom + text.length * 2);
+    if (bom) out.set(bigEndian(encoding) ? BOM_UTF16BE : BOM_UTF16LE);
+    const view = new DataView(out.buffer);
+    for (let i = 0; i < text.length; i++) view.setUint16(bom + i * 2, text.charCodeAt(i), !bigEndian(encoding));
+    return out;
+  }
+  const body = encoder.encode(text);
+  return encoding === "utf-8-bom" ? concat(new Uint8Array(BOM), body) : body;
+}
+
+/** files.rs `guess_utf16`: mostly-Latin UTF-16 has a zero in every other byte. */
+function guessUtf16(head: Uint8Array, complete: boolean): string | null {
+  if (head.length < 2 || (complete && head.length % 2 === 1)) return null;
+  const pairs = Math.floor(head.length / 2);
+  let even = 0;
+  let odd = 0;
+  for (let i = 0; i < pairs; i++) {
+    if (head[i * 2] === 0) even++;
+    if (head[i * 2 + 1] === 0) odd++;
+  }
+  if (odd * 2 >= pairs && even * 8 < odd) return "utf-16le-nobom";
+  if (even * 2 >= pairs && odd * 8 < even) return "utf-16be-nobom";
+  return null;
+}
+
+/** files.rs `cut_utf16`: after the last line break, never inside a CRLF or a surrogate pair. */
+function cutUtf16(body: Uint8Array, big: boolean): number {
+  const units = Math.floor(body.length / 2);
+  const view = new DataView(body.buffer, body.byteOffset, units * 2);
+  const unit = (i: number) => view.getUint16(i * 2, !big);
+  for (let i = units - 1; i >= 0; i--) {
+    if (unit(i) === 10 || (unit(i) === 13 && i + 1 < units)) return (i + 1) * 2;
+  }
+  if (units === 0) return 0;
+  const last = unit(units - 1);
+  return last === 13 || (last >= 0xd800 && last <= 0xdbff) ? (units - 1) * 2 : units * 2;
+}
+
+/** `firstEol` on decoded text: a CR at the end of an incomplete window may be half a CRLF. */
+function firstEolText(text: string, complete: boolean): "CRLF" | "LF" | "CR" | null {
+  const at = text.search(/[\r\n]/);
+  if (at < 0) return null;
+  if (text[at] === "\n") return "LF";
+  if (at + 1 < text.length) return text[at + 1] === "\n" ? "CRLF" : "CR";
+  return complete ? "CR" : "CRLF";
 }
 
 const key = (path: string) => path.replace(/\//g, "\\").toLowerCase();
@@ -151,6 +234,8 @@ export class FakeBackend {
   closingWindows = new Set<string>();
   /** The paths each window has open (`open_paths_set`). */
   openPaths = new Map<string, string[]>();
+  /** Paths that are another name of a file (an 8.3 name, a mapped drive): alias → real path. */
+  aliases = new Map<string, string>();
   private clock = 1_000;
 
   reset(): void {
@@ -172,6 +257,7 @@ export class FakeBackend {
     this.windows.clear();
     this.closingWindows.clear();
     this.openPaths.clear();
+    this.aliases.clear();
     this.locale = "";
   }
 
@@ -241,11 +327,20 @@ export class FakeBackend {
         return this.stampOf(args.path as string);
       case "file_save":
         return this.save(args.req as SaveArgs);
+      case "path_identity": {
+        // files.rs `path_identity`: the same value for every name of one file.
+        const path = args.path as string;
+        const real = [...this.aliases].find(([alias]) => key(alias) === key(path))?.[1] ?? path;
+        return this.files.has(key(real)) ? `id:${key(real)}` : null;
+      }
       case "file_scan": {
-        const raw = this.stripBom(this.bytes(args.path as string));
-        const ansi = args.encoding === "ansi";
-        const text = normalize((ansi ? ansiDecoder : decoder).decode(raw));
-        return { chars: text.length, lines: text.split("\n").length, invalid: !ansi && !isUtf8(raw) };
+        const encoding = args.encoding as string;
+        const all = this.bytes(args.path as string);
+        const raw = all.subarray(encoding === "utf-8" ? 0 : bomLength(all, encoding));
+        const text = normalize(decodeAs(raw, encoding));
+        const utf8 = !singleByte(encoding) && !isUtf16(encoding);
+        // Code points, like files.rs `scan` (BUGS.md L5).
+        return { chars: [...text].length, lines: text.split("\n").length, invalid: utf8 && !isUtf8(raw) };
       }
       case "session_read":
         return this.session;
@@ -357,6 +452,10 @@ export class FakeBackend {
   /** files.rs `detect_encoding` over the first 256 KiB (a cut-off sequence at the end is fine). */
   private detect(all: Uint8Array): string {
     if (this.stripBom(all) !== all) return "utf-8-bom";
+    if (startsWith(all, BOM_UTF16LE)) return "utf-16le";
+    if (startsWith(all, BOM_UTF16BE)) return "utf-16be";
+    const utf16 = guessUtf16(all.subarray(0, 256 * 1024), all.length <= 256 * 1024);
+    if (utf16) return utf16;
     try {
       new TextDecoder("utf-8", { fatal: true }).decode(all.subarray(0, 256 * 1024), {
         stream: all.length > 256 * 1024,
@@ -377,24 +476,32 @@ export class FakeBackend {
     const want = Math.min(Math.max(maxBytes, 8), size - start);
     const window = all.subarray(start, start + want);
     const eof = start + window.length >= size;
-    const encoding = hint ?? this.detect(all);
-    const bom = start === 0 && encoding !== "ansi" && this.stripBom(window) !== window ? 3 : 0;
+    const detected = hint ?? this.detect(all);
+    const bom = start === 0 ? bomLength(window, detected) : 0;
+    const encoding = start === 0 ? followBom(detected, bom > 0) : detected;
     const body = window.subarray(bom);
-    const ansi = encoding === "ansi";
-    const cut = eof ? body.length : cutChunk(body, ansi);
+    const cut = eof
+      ? body.length
+      : isUtf16(encoding)
+        ? cutUtf16(body, bigEndian(encoding))
+        : cutChunk(body, singleByte(encoding));
     // The first chunk detects the line ending from its own window; later chunks
     // repeat what the first 256 KiB of the file says (files.rs `known_format`).
-    const eol =
-      start === 0
+    const head = all.subarray(0, 256 * 1024);
+    const eol = isUtf16(encoding)
+      ? start === 0
+        ? firstEolText(decodeAs(body, encoding), eof)
+        : firstEolText(decodeAs(head.subarray(bomLength(head, encoding)), encoding), size <= 256 * 1024)
+      : start === 0
         ? firstEol(body, eof)
-        : firstEol(this.stripBom(all.subarray(0, 256 * 1024)), size <= 256 * 1024);
-    const raw = (ansi ? ansiDecoder : decoder).decode(body.subarray(0, cut));
+        : firstEol(this.stripBom(head), size <= 256 * 1024);
+    const raw = decodeAs(body.subarray(0, cut), encoding);
     const known = eol ?? "CRLF";
     return {
       text: normalize(raw),
       nextOffset: start + bom + cut,
       eof,
-      encoding: encoding === "utf-8" && bom ? "utf-8-bom" : encoding,
+      encoding,
       eol: known,
       stamp: { size, mtimeMs: file.mtimeMs },
       // This chunk holds a line ending other than the file's `eol` (FILES-1).
@@ -413,8 +520,7 @@ export class FakeBackend {
     if (existing && this.isReadOnly(req.path)) throw "Access is denied. (os error 5)";
     const eol = req.eol === "CRLF" ? "\r\n" : req.eol === "CR" ? "\r" : "\n";
     const final = (existing && this.keptLineEndings(existing.bytes, req)) ?? normalize(req.text).replace(/\n/g, eol);
-    const body = req.encoding === "ansi" ? encodeAnsi(final, !!req.allowLossy) : encoder.encode(final);
-    const parts: Uint8Array[] = [req.encoding === "utf-8-bom" ? new Uint8Array(BOM) : new Uint8Array(), body];
+    const parts: Uint8Array[] = [encodeAs(final, req.encoding, !!req.allowLossy)];
     const parent = parentKey(req.path);
     if (parent && !this.dirs.has(parent)) throw "The system cannot find the path specified. (os error 3)";
     if (req.tailOffset !== null) {
@@ -431,10 +537,9 @@ export class FakeBackend {
   private keptLineEndings(bytes: Uint8Array, req: SaveArgs): string | null {
     if (req.normalizeEol) return null;
     const end = Math.min(req.tailOffset ?? bytes.length, bytes.length);
-    let raw = bytes.subarray(0, end);
-    if ((req.originalEncoding ?? req.encoding) === "utf-8-bom") raw = this.stripBom(raw);
     const original = req.originalEncoding ?? req.encoding;
-    const old = splitLines((original === "ansi" ? ansiDecoder : decoder).decode(raw));
+    const raw = bytes.subarray(0, end);
+    const old = splitLines(decodeAs(raw.subarray(original === "utf-8" ? 0 : bomLength(raw, original)), original));
     const first = old.find((l) => l[1] !== null)?.[1];
     if (first === undefined || old.every((l) => l[1] === null || l[1] === first)) return null;
     const next = normalize(req.text).split("\n");

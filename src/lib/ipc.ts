@@ -3,7 +3,19 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type Eol = "CRLF" | "LF" | "CR";
-export type Encoding = "utf-8" | "utf-8-bom" | "utf-16le" | "utf-16be" | "ansi";
+/**
+ * "utf-16le"/"utf-16be" are written with a BOM, the "-nobom" forms without one
+ * (FILES-2). "ansi" is the system ANSI code page, "oem" the DOS one (437, 850...).
+ */
+export type Encoding =
+  | "utf-8"
+  | "utf-8-bom"
+  | "utf-16le"
+  | "utf-16le-nobom"
+  | "utf-16be"
+  | "utf-16be-nobom"
+  | "ansi"
+  | "oem";
 
 export interface FileStamp {
   size: number;
@@ -60,6 +72,7 @@ export interface SaveRequest {
 }
 
 export interface FileScan {
+  /** Characters in code points (an emoji is 1), after CRLF counts as one. */
   chars: number;
   lines: number;
   /** Some bytes are not valid in the encoding scanned with (they show as U+FFFD). */
@@ -80,6 +93,12 @@ export const ipc = {
   save: (req: SaveRequest) => invoke<FileStamp>("file_save", { req }),
   /** Streams the file on a background thread with constant memory. */
   scan: (path: string, encoding: Encoding) => invoke<FileScan>("file_scan", { path, encoding }),
+  /**
+   * The file's identity (volume serial and file index on Windows), equal for every
+   * path that reaches the same file: 8.3 short names, mapped drive vs UNC, links.
+   * Null when the file cannot be opened. A save can change it: compare fresh values only.
+   */
+  pathIdentity: (path: string) => invoke<string | null>("path_identity", { path }),
 
   sessionRead: () => invoke<string | null>("session_read"),
   sessionWrite: (json: string) => invoke<void>("session_write", { json }),

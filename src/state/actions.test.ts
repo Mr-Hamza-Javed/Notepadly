@@ -76,6 +76,23 @@ describe("opening files", () => {
     expect(app.tab().path).toBe(A);
   });
 
+  // BUGS.md "Smaller open points": an 8.3 short name or a mapped drive vs its UNC
+  // path reached the same file under a name pathsEqual cannot match.
+  it("switches to an open file reached by another name (8.3 name, UNC path)", async () => {
+    backend.aliases.set("C:\\NOTES~1\\a.md", A);
+    backend.aliases.set("\\\\server\\c$\\notes\\a.md", A);
+    await app.actions.openPaths([A]);
+    await app.actions.newTab();
+    await app.actions.openPaths(["C:\\NOTES~1\\a.md"]);
+    await app.actions.openPaths(["\\\\server\\c$\\notes\\a.md"]);
+    expect(app.state().tabs.filter((t) => t.path !== null)).toHaveLength(1);
+    expect(app.tab().path).toBe(A);
+    expect(dialogs.messages).toEqual([]);
+    // A different file is still opened.
+    await app.actions.openPaths([B]);
+    expect(app.state().tabs.filter((t) => t.path !== null)).toHaveLength(2);
+  });
+
   it("opens several files at once, activating the last", async () => {
     await app.actions.openPaths([A, B]);
     expect(app.state().tabs.map((t) => t.title)).toEqual(["a.md", "b.txt"]);
@@ -1154,6 +1171,34 @@ describe("encodings and line endings", () => {
     expect(app.text()).toBe("caf\uFFFD");
     await app.actions.reopenWithEncoding("ansi");
     expect(app.text()).toBe("café");
+  });
+
+  // BUGS.md M15: DOS files (code pages 437, 850...) can be reopened as OEM.
+  it("M15: reopens as OEM and names OEM when a character does not fit", async () => {
+    backend.write(C, cafeAnsi);
+    await app.actions.openPaths([C]);
+    await app.actions.reopenWithEncoding("oem");
+    expect(app.tab()).toMatchObject({ encoding: "oem", dirty: false });
+    app.type(" ш");
+    dialogs.messageAnswers.push("Save as OEM");
+    expect(await app.actions.save()).toBe(true);
+    expect(dialogs.messages[0].body).toContain("is saved in OEM");
+    expect(backend.bytes(C)).toEqual(new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x20, 0x3f]));
+  });
+
+  // BUGS.md FILES-2: a UTF-16 file without a BOM got one on the first save.
+  it("FILES-2: a UTF-16 file without a BOM is saved without one", async () => {
+    const utf16 = (text: string) => new Uint8Array([...text].flatMap((c) => [c.charCodeAt(0), 0]));
+    backend.write(C, utf16("one\r\ntwo"));
+    await app.actions.openPaths([C]);
+    expect(app.tab()).toMatchObject({ encoding: "utf-16le-nobom", eol: "CRLF" });
+    expect(app.text()).toBe("one\ntwo");
+    app.type("!");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.bytes(C)).toEqual(utf16("one\r\ntwo!"));
+    // Reopening as UTF-16 LE follows the file: still without a BOM.
+    await app.actions.reopenWithEncoding("utf-16le");
+    expect(app.tab().encoding).toBe("utf-16le-nobom");
   });
 
   it("M15: asks before reopening throws away unsaved changes", async () => {

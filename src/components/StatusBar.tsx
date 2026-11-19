@@ -14,8 +14,11 @@ const ENC_LABEL: Record<Encoding, string> = {
   "utf-8": "UTF-8",
   "utf-8-bom": "UTF-8 with BOM",
   "utf-16le": "UTF-16 LE",
+  "utf-16le-nobom": "UTF-16 LE without BOM",
   "utf-16be": "UTF-16 BE",
+  "utf-16be-nobom": "UTF-16 BE without BOM",
   ansi: "ANSI",
+  oem: "OEM (DOS)",
 };
 
 const fmt = (n: number) => n.toLocaleString("en-US");

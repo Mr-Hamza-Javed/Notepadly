@@ -32,6 +32,18 @@ export const DEFAULT_PAGE_SETUP: PageSetup = {
 export const MAX_RECENT = 10;
 export const UNTITLED = "Untitled";
 
+/** Every encoding a stored session may name (the ipc.ts `Encoding` type). */
+const ENCODINGS: readonly Encoding[] = [
+  "utf-8",
+  "utf-8-bom",
+  "utf-16le",
+  "utf-16le-nobom",
+  "utf-16be",
+  "utf-16be-nobom",
+  "ansi",
+  "oem",
+];
+
 const oneOf = <T>(value: unknown, allowed: readonly T[], fallback: T): T =>
   allowed.includes(value as T) ? (value as T) : fallback;
 const bool = (value: unknown, fallback: boolean) => (typeof value === "boolean" ? value : fallback);
@@ -536,7 +548,7 @@ export function parseSession(raw: string | null): SessionFile | null {
       dirty: bool(item.dirty, false),
       mode: oneOf(item.mode, ["formatted", "syntax", "plain"] as const, "plain"),
       eol: oneOf(item.eol, ["CRLF", "LF", "CR"] as const, "CRLF"),
-      encoding: oneOf(item.encoding, ["utf-8", "utf-8-bom", "utf-16le", "utf-16be", "ansi"] as const, "utf-8"),
+      encoding: oneOf(item.encoding, ENCODINGS, "utf-8"),
       stamp: parseStamp(item.stamp),
       loadedOffset: Math.max(0, num(item.loadedOffset, 0)),
       fullyLoaded: bool(item.fullyLoaded, false),

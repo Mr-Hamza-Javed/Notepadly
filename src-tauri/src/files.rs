@@ -1,6 +1,7 @@
 //! Lock-free file I/O. Every call opens, works, and closes: no handle outlives
 //! a command, and every open allows other programs to read, write and delete.
 
+use crate::oem::{self, OemPage};
 use encoding_rs::CoderResult;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -14,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use windows_sys::Win32::Globalization::GetACP;
+use windows_sys::Win32::Globalization::{GetACP, GetOEMCP};
 use windows_sys::Win32::Storage::FileSystem::{
     ReplaceFileW, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     REPLACEFILE_IGNORE_ACL_ERRORS, REPLACEFILE_IGNORE_MERGE_ERRORS,
@@ -55,8 +56,17 @@ pub enum Encoding {
     Utf16Le,
     #[serde(rename = "utf-16be")]
     Utf16Be,
+    /// UTF-16 read from a file that had no BOM, saved without one (FILES-2).
+    #[serde(rename = "utf-16le-nobom")]
+    Utf16LeNoBom,
+    #[serde(rename = "utf-16be-nobom")]
+    Utf16BeNoBom,
+    /// The system ANSI code page.
     #[serde(rename = "ansi")]
     Ansi,
+    /// The system OEM (DOS) code page, such as 437 or 850 (M15).
+    #[serde(rename = "oem")]
+    Oem,
 }
 
 impl Encoding {
@@ -65,16 +75,84 @@ impl Encoding {
             Encoding::Utf8Bom => BOM_UTF8,
             Encoding::Utf16Le => BOM_UTF16LE,
             Encoding::Utf16Be => BOM_UTF16BE,
-            Encoding::Utf8 | Encoding::Ansi => &[],
+            Encoding::Utf8
+            | Encoding::Utf16LeNoBom
+            | Encoding::Utf16BeNoBom
+            | Encoding::Ansi
+            | Encoding::Oem => &[],
         }
     }
 
-    fn codec(self) -> &'static encoding_rs::Encoding {
+    /// Some(true) for UTF-16 BE, Some(false) for UTF-16 LE, with or without BOM.
+    fn utf16_big_endian(self) -> Option<bool> {
         match self {
-            Encoding::Utf8 | Encoding::Utf8Bom => encoding_rs::UTF_8,
-            Encoding::Utf16Le => encoding_rs::UTF_16LE,
-            Encoding::Utf16Be => encoding_rs::UTF_16BE,
+            Encoding::Utf16Le | Encoding::Utf16LeNoBom => Some(false),
+            Encoding::Utf16Be | Encoding::Utf16BeNoBom => Some(true),
+            _ => None,
+        }
+    }
+
+    /// The same UTF-16 byte order, with or without the BOM; other encodings as they are.
+    fn with_bom(self, bom: bool) -> Encoding {
+        match (self.utf16_big_endian(), bom) {
+            (Some(false), true) => Encoding::Utf16Le,
+            (Some(false), false) => Encoding::Utf16LeNoBom,
+            (Some(true), true) => Encoding::Utf16Be,
+            (Some(true), false) => Encoding::Utf16BeNoBom,
+            (None, _) => self,
+        }
+    }
+
+    fn codec(self) -> Codec {
+        match self {
+            Encoding::Utf8 | Encoding::Utf8Bom => Codec::Rs(encoding_rs::UTF_8),
+            Encoding::Utf16Le | Encoding::Utf16LeNoBom => Codec::Rs(encoding_rs::UTF_16LE),
+            Encoding::Utf16Be | Encoding::Utf16BeNoBom => Codec::Rs(encoding_rs::UTF_16BE),
             Encoding::Ansi => ansi_codec(),
+            Encoding::Oem => oem_codec(),
+        }
+    }
+}
+
+/// How a code page is decoded and encoded: by encoding_rs, or by one of the DOS
+/// tables in `oem.rs` for the pages encoding_rs lacks (437, 850, 852...).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Codec {
+    Rs(&'static encoding_rs::Encoding),
+    Table(&'static OemPage),
+}
+
+impl Codec {
+    fn decode(self, bytes: &[u8]) -> (String, bool) {
+        match self {
+            Codec::Rs(codec) => {
+                let (text, replaced) = codec.decode_without_bom_handling(bytes);
+                (text.into_owned(), replaced)
+            }
+            Codec::Table(page) => page.decode(bytes),
+        }
+    }
+
+    /// With `lossy`, characters the code page cannot represent become `?`, as
+    /// Notepad does; without it the first one is returned as the error.
+    fn encode(self, text: &str, lossy: bool) -> Result<Vec<u8>, char> {
+        let codec = match self {
+            Codec::Table(page) => return page.encode(text, lossy),
+            Codec::Rs(codec) => codec,
+        };
+        let mut encoder = codec.new_encoder();
+        let mut out = Vec::with_capacity(text.len());
+        let mut rest = text;
+        loop {
+            let (status, read) =
+                encoder.encode_from_utf8_to_vec_without_replacement(rest, &mut out, true);
+            rest = &rest[read..];
+            match status {
+                encoding_rs::EncoderResult::InputEmpty => return Ok(out),
+                encoding_rs::EncoderResult::OutputFull => out.reserve(rest.len().max(16)),
+                encoding_rs::EncoderResult::Unmappable(c) if !lossy => return Err(c),
+                encoding_rs::EncoderResult::Unmappable(_) => out.push(b'?'),
+            }
         }
     }
 }
@@ -184,21 +262,38 @@ pub fn stat(path: &Path) -> Result<Option<FileStamp>, String> {
     }
 }
 
-/// The system ANSI code page, or windows-1252 when it is one encoding_rs lacks
+/// The system ANSI code page, or windows-1252 when it is one with no codec here
 /// (including the UTF-8 "ACP", since this path only runs for non-UTF-8 data).
-fn ansi_codec() -> &'static encoding_rs::Encoding {
-    static CODEC: OnceLock<&'static encoding_rs::Encoding> = OnceLock::new();
-    CODEC.get_or_init(|| {
+fn ansi_codec() -> Codec {
+    static CODEC: OnceLock<Codec> = OnceLock::new();
+    *CODEC.get_or_init(|| {
         // SAFETY: plain Win32 query without arguments.
         let cp = unsafe { GetACP() };
-        codec_for_code_page(cp).unwrap_or(encoding_rs::WINDOWS_1252)
+        codec_for_code_page(cp).unwrap_or(Codec::Rs(encoding_rs::WINDOWS_1252))
     })
 }
 
-/// The encoding_rs codec for a Windows code page, when it has one. The OEM
-/// pages 437 and 850 (and a few others) are not in the WHATWG set encoding_rs
-/// implements, so they have none.
-fn codec_for_code_page(cp: u32) -> Option<&'static encoding_rs::Encoding> {
+/// The system OEM (DOS) code page, or 437 when it is one with no codec here.
+fn oem_codec() -> Codec {
+    static CODEC: OnceLock<Codec> = OnceLock::new();
+    *CODEC.get_or_init(|| {
+        // SAFETY: plain Win32 query without arguments.
+        let cp = unsafe { GetOEMCP() };
+        codec_for_code_page(cp)
+            .unwrap_or_else(|| codec_for_code_page(437).expect("437 has a table"))
+    })
+}
+
+/// The codec for a Windows code page, when there is one: encoding_rs for the
+/// WHATWG set, and the tables in `oem.rs` for the DOS pages it lacks.
+fn codec_for_code_page(cp: u32) -> Option<Codec> {
+    if let Some(page) = oem::for_code_page(cp) {
+        return Some(Codec::Table(page));
+    }
+    rs_codec_for_code_page(cp).map(Codec::Rs)
+}
+
+fn rs_codec_for_code_page(cp: u32) -> Option<&'static encoding_rs::Encoding> {
     use encoding_rs as e;
     Some(match cp {
         866 => e::IBM866,
@@ -260,11 +355,15 @@ fn detect_encoding(head: &[u8], complete: bool) -> (Encoding, usize) {
 }
 
 /// The encoding the user chose, and the length of its BOM if the file has one.
-/// A UTF-8 BOM is skipped for plain UTF-8 too, and then kept on save.
+/// A UTF-8 BOM is skipped for plain UTF-8 too, and then kept on save. UTF-16
+/// follows the file: with or without BOM as found, so a save keeps it (FILES-2).
 fn forced_encoding(head: &[u8], forced: Encoding) -> (Encoding, usize) {
-    let forced = match forced {
-        Encoding::Utf8 if head.starts_with(BOM_UTF8) => Encoding::Utf8Bom,
-        other => other,
+    let forced = match (forced, forced.utf16_big_endian()) {
+        (Encoding::Utf8, _) if head.starts_with(BOM_UTF8) => Encoding::Utf8Bom,
+        (utf16, Some(big)) => {
+            utf16.with_bom(head.starts_with(if big { BOM_UTF16BE } else { BOM_UTF16LE }))
+        }
+        (other, None) => other,
     };
     let bom = forced.bom();
     (forced, if head.starts_with(bom) { bom.len() } else { 0 })
@@ -280,9 +379,9 @@ fn guess_utf16(head: &[u8], complete: bool) -> Option<Encoding> {
     let zeros = |parity: usize| (0..pairs).filter(|i| head[i * 2 + parity] == 0).count();
     let (even, odd) = (zeros(0), zeros(1));
     if odd * 2 >= pairs && even * 8 < odd {
-        Some(Encoding::Utf16Le)
+        Some(Encoding::Utf16LeNoBom)
     } else if even * 2 >= pairs && odd * 8 < even {
-        Some(Encoding::Utf16Be)
+        Some(Encoding::Utf16BeNoBom)
     } else {
         None
     }
@@ -298,13 +397,13 @@ fn first_eol(bytes: &[u8], encoding: Encoding, complete: bool) -> Option<Eol> {
         (0x0D, None) => Some(if complete { Eol::Cr } else { Eol::Crlf }),
         _ => None,
     };
-    match encoding {
-        Encoding::Utf16Le | Encoding::Utf16Be => {
+    match encoding.utf16_big_endian() {
+        Some(big_endian) => {
             let units = whole_units(bytes);
-            let unit = |i: usize| utf16_unit(bytes, i, encoding == Encoding::Utf16Be);
+            let unit = |i: usize| utf16_unit(bytes, i, big_endian);
             (0..units).find_map(|i| classify(unit(i), (i + 1 < units).then(|| unit(i + 1))))
         }
-        _ => (0..bytes.len())
+        None => (0..bytes.len())
             .find_map(|i| classify(bytes[i] as u16, bytes.get(i + 1).map(|&b| b as u16))),
     }
 }
@@ -325,11 +424,13 @@ fn utf16_unit(bytes: &[u8], index: usize, big_endian: bool) -> u16 {
 /// Where to end a chunk that does not reach end of file. `body` is at least
 /// a few characters long, so the result is never 0.
 fn find_cut(body: &[u8], encoding: Encoding) -> usize {
-    match encoding {
-        Encoding::Utf16Le => cut_utf16(body, false),
-        Encoding::Utf16Be => cut_utf16(body, true),
-        Encoding::Utf8 | Encoding::Utf8Bom => cut_bytes(body, utf8_char_cut),
-        Encoding::Ansi => cut_ansi(body, ansi_codec()),
+    if let Some(big_endian) = encoding.utf16_big_endian() {
+        return cut_utf16(body, big_endian);
+    }
+    match encoding.codec() {
+        Codec::Rs(codec) if codec == encoding_rs::UTF_8 => cut_bytes(body, utf8_char_cut),
+        Codec::Rs(codec) => cut_ansi(body, codec),
+        Codec::Table(_) => cut_bytes(body, <[u8]>::len),
     }
 }
 
@@ -429,11 +530,7 @@ fn cut_utf16(body: &[u8], big_endian: bool) -> usize {
 fn decode(bytes: &[u8], encoding: Encoding) -> String {
     match encoding {
         Encoding::Utf8 | Encoding::Utf8Bom => String::from_utf8_lossy(bytes).into_owned(),
-        _ => encoding
-            .codec()
-            .decode_without_bom_handling(bytes)
-            .0
-            .into_owned(),
+        _ => encoding.codec().decode(bytes).0,
     }
 }
 
@@ -577,8 +674,8 @@ fn is_read_only(path: &Path, meta: &fs::Metadata) -> bool {
     matches!(opened, Err(e) if e.kind() == io::ErrorKind::PermissionDenied)
 }
 
-/// Counts characters (UTF-16 code units, matching JS string length) and lines
-/// after newline normalisation, with a fixed-size buffer.
+/// Counts characters (code points, so an emoji counts once: BUGS.md L5) and
+/// lines after newline normalisation, with a fixed-size buffer.
 pub fn scan(path: &Path, encoding: Encoding) -> Result<FileScan, String> {
     let mut file = open_shared(path).map_err(err)?;
     let bom = encoding.bom();
@@ -587,41 +684,78 @@ pub fn scan(path: &Path, encoding: Encoding) -> Result<FileScan, String> {
     file.seek(SeekFrom::Start(if has_bom { bom.len() as u64 } else { 0 }))
         .map_err(err)?;
 
-    let mut decoder = encoding.codec().new_decoder_without_bom_handling();
+    let mut decoder = match encoding.codec() {
+        Codec::Rs(codec) => Some(codec.new_decoder_without_bom_handling()),
+        Codec::Table(_) => None,
+    };
     let mut input = vec![0u8; STREAM_BUFFER];
     let mut output = vec![0u16; STREAM_BUFFER];
-    let mut result = FileScan {
-        chars: 0,
-        lines: 1,
-        invalid: false,
-    };
-    let mut after_cr = false;
+    let mut counter = ScanCounter::default();
     loop {
         let read = file.read(&mut input).map_err(err)?;
         let last = read == 0;
+        let Some(decoder) = decoder.as_mut() else {
+            if let Codec::Table(page) = encoding.codec() {
+                for &byte in &input[..read] {
+                    let c = page.char_of(byte);
+                    counter.invalid |= c == '\u{FFFD}';
+                    // Every table character is in the Basic Multilingual Plane.
+                    counter.unit(c as u16);
+                }
+            }
+            if last {
+                return Ok(counter.result());
+            }
+            continue;
+        };
         let mut consumed = 0;
         loop {
             let (status, used, written, replaced) =
                 decoder.decode_to_utf16(&input[consumed..read], &mut output, last);
             consumed += used;
-            result.invalid |= replaced;
-            for &unit in &output[..written] {
-                let crlf_tail = after_cr && unit == 0x0A;
-                after_cr = unit == 0x0D;
-                if crlf_tail {
-                    continue;
-                }
-                result.chars += 1;
-                if unit == 0x0A || unit == 0x0D {
-                    result.lines += 1;
-                }
-            }
+            counter.invalid |= replaced;
+            output[..written]
+                .iter()
+                .for_each(|&unit| counter.unit(unit));
             if status == CoderResult::InputEmpty {
                 break;
             }
         }
         if last {
-            return Ok(result);
+            return Ok(counter.result());
+        }
+    }
+}
+
+/// The running totals of `scan`, fed one UTF-16 unit at a time.
+#[derive(Default)]
+struct ScanCounter {
+    chars: u64,
+    breaks: u64,
+    invalid: bool,
+    after_cr: bool,
+}
+
+impl ScanCounter {
+    fn unit(&mut self, unit: u16) {
+        let crlf_tail = self.after_cr && unit == 0x0A;
+        self.after_cr = unit == 0x0D;
+        // The second half of a surrogate pair: its character is already counted.
+        // The decoders turn unpaired halves into U+FFFD, so pairs are whole.
+        if crlf_tail || (0xDC00..=0xDFFF).contains(&unit) {
+            return;
+        }
+        self.chars += 1;
+        if unit == 0x0A || unit == 0x0D {
+            self.breaks += 1;
+        }
+    }
+
+    fn result(&self) -> FileScan {
+        FileScan {
+            chars: self.chars,
+            lines: self.breaks + 1,
+            invalid: self.invalid,
         }
     }
 }
@@ -644,38 +778,23 @@ fn with_eol(text: &str, eol: Eol) -> Cow<'_, str> {
 }
 
 /// Encodes text whose line endings are final. Fails with the first character
-/// the ANSI code page cannot hold, unless `lossy` turns those into `?`.
+/// the ANSI or OEM code page cannot hold, unless `lossy` turns those into `?`.
 fn encode_str(text: &str, encoding: Encoding, lossy: bool) -> Result<Vec<u8>, char> {
     Ok(match encoding {
         Encoding::Utf8 | Encoding::Utf8Bom => text.as_bytes().to_vec(),
-        Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
-        Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
-        Encoding::Ansi => encode_ansi(text, lossy)?,
+        Encoding::Utf16Le | Encoding::Utf16LeNoBom => {
+            text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+        }
+        Encoding::Utf16Be | Encoding::Utf16BeNoBom => {
+            text.encode_utf16().flat_map(u16::to_be_bytes).collect()
+        }
+        Encoding::Ansi | Encoding::Oem => encoding.codec().encode(text, lossy)?,
     })
 }
 
 #[cfg(test)]
 fn encode_text(text: &str, eol: Eol, encoding: Encoding) -> Vec<u8> {
     encode_str(&with_eol(text, eol), encoding, true).expect("a lossy encode cannot fail")
-}
-
-/// With `lossy`, characters the code page cannot represent become `?`, as
-/// Notepad does; without it the first one is returned as the error.
-fn encode_ansi(text: &str, lossy: bool) -> Result<Vec<u8>, char> {
-    let mut encoder = ansi_codec().new_encoder();
-    let mut out = Vec::with_capacity(text.len());
-    let mut rest = text;
-    loop {
-        let (status, read) =
-            encoder.encode_from_utf8_to_vec_without_replacement(rest, &mut out, true);
-        rest = &rest[read..];
-        match status {
-            encoding_rs::EncoderResult::InputEmpty => return Ok(out),
-            encoding_rs::EncoderResult::OutputFull => out.reserve(rest.len().max(16)),
-            encoding_rs::EncoderResult::Unmappable(c) if !lossy => return Err(c),
-            encoding_rs::EncoderResult::Unmappable(_) => out.push(b'?'),
-        }
-    }
 }
 
 /// Splits text into lines, each with the line ending that follows it (none
@@ -776,7 +895,7 @@ fn old_encoding(raw: &[u8], req: &SaveRequest) -> Encoding {
     if let Some(encoding) = req.original_encoding {
         return encoding;
     }
-    let is_utf16 = |e: Encoding| matches!(e, Encoding::Utf16Le | Encoding::Utf16Be);
+    let is_utf16 = |e: Encoding| e.utf16_big_endian().is_some();
     let (detected, bom_len) = detect_encoding(raw, true);
     if bom_len > 0 || is_utf16(detected) != is_utf16(req.encoding) {
         detected
@@ -1048,32 +1167,134 @@ fn append_tail(target: &Path, offset: u64, output: &mut impl Write) -> Result<()
 
 /// For a folder where the file can be written but no new file can be created
 /// (some ACLs, drive roots, some network shares), so no temp file is possible.
-/// Not atomic. The tail is read into memory first, because writing over the
-/// file destroys the bytes it would be copied from.
 fn write_in_place(target: &Path, req: &SaveRequest, bytes: &[u8]) -> Result<FileStamp, String> {
-    let mut tail = Vec::new();
-    if let Some(offset) = req.tail_offset {
-        append_tail(target, offset, &mut tail)?;
+    overwrite_in_place(target, req, &backup_dir(), |dest, tail| {
+        dest.write_all(req.encoding.bom())?;
+        dest.write_all(bytes)?;
+        io::copy(tail, dest)?;
+        Ok(())
+    })
+}
+
+/// Where the copy of a file being overwritten in place is kept while it is
+/// written: the user's temp folder, since the file's own folder takes no new
+/// files.
+fn backup_dir() -> PathBuf {
+    std::env::temp_dir().join("Notepadly").join("backup")
+}
+
+/// A copy of a file taken before it is overwritten in place (FILES-3). Removed
+/// on drop unless `keep` is set.
+struct Backup {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Backup {
+    fn create(target: &Path, dir: &Path) -> io::Result<Self> {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        fs::create_dir_all(dir)?;
+        let name = target
+            .file_name()
+            .map_or_else(|| "file".to_owned(), |n| n.to_string_lossy().into_owned());
+        loop {
+            let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!("{}-{seq}-{name}", std::process::id()));
+            let mut file = match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .share_mode(SHARE_ALL)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            };
+            let backup = Self { path, keep: false };
+            io::copy(&mut open_shared(target)?, &mut file)?;
+            file.sync_all()?;
+            return Ok(backup);
+        }
     }
+}
+
+impl Drop for Backup {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Writes `target` in place through `write`, which gets the file at offset 0
+/// and a reader (empty unless this is a tail save) over the original bytes from `tail_offset`.
+/// The file is cut to what `write` wrote. Not atomic by nature, so the original
+/// is first copied to `backup_dir` (FILES-3): a write that fails part way
+/// (disk full, network drop) puts the original back, and if even that fails
+/// the copy is kept and named in the error. When no copy can be made, the save
+/// still goes ahead with the tail held in memory, as before.
+fn overwrite_in_place(
+    target: &Path,
+    req: &SaveRequest,
+    backup_dir: &Path,
+    write: impl FnOnce(&mut File, &mut dyn Read) -> io::Result<()>,
+) -> Result<FileStamp, String> {
     let _serial = save_lock();
     ensure_fresh(target, req.expected_stamp)?;
+    let mut backup = Backup::create(target, backup_dir).ok();
+    // The tail is read from the copy, or from memory: writing over the file
+    // destroys the bytes it would be copied from.
+    let mut tail: Box<dyn Read> = match (req.tail_offset, &backup) {
+        (None, _) => Box::new(io::empty()),
+        (Some(offset), Some(backup)) => {
+            let mut source = open_shared(&backup.path).map_err(err)?;
+            if offset > source.metadata().map_err(err)?.len() {
+                return Err(STALE.to_owned());
+            }
+            source.seek(SeekFrom::Start(offset)).map_err(err)?;
+            Box::new(source)
+        }
+        (Some(offset), None) => {
+            let mut bytes = Vec::new();
+            append_tail(target, offset, &mut bytes)?;
+            Box::new(io::Cursor::new(bytes))
+        }
+    };
     let mut dest = OpenOptions::new()
         .write(true)
         .truncate(false)
         .share_mode(SHARE_ALL)
         .open(target)
         .map_err(err)?;
-    let bom = req.encoding.bom();
-    let len = (bom.len() + bytes.len() + tail.len()) as u64;
-    let mut write = || -> io::Result<()> {
-        dest.write_all(bom)?;
-        dest.write_all(bytes)?;
-        dest.write_all(&tail)?;
+    let written = write(&mut dest, &mut *tail).and_then(|()| {
+        let len = dest.stream_position()?;
         dest.set_len(len)?;
         dest.sync_all()
-    };
-    write().map_err(err)?;
+    });
+    drop(tail);
+    if let Err(e) = written {
+        let Some(backup) = backup.as_mut() else {
+            return Err(err(e));
+        };
+        let restored = open_shared(&backup.path).and_then(|mut source| {
+            dest.seek(SeekFrom::Start(0))?;
+            let len = io::copy(&mut source, &mut dest)?;
+            dest.set_len(len)?;
+            dest.sync_all()
+        });
+        return Err(match restored {
+            Ok(()) => format!("{e}; the file was left as it was"),
+            Err(_) => {
+                backup.keep = true;
+                format!(
+                    "{e}; a copy of the file as it was is in {}",
+                    backup.path.display()
+                )
+            }
+        });
+    }
     drop(dest);
+    drop(backup);
     stat(target)?.ok_or_else(|| "file disappeared after saving".to_owned())
 }
 
@@ -1141,6 +1362,42 @@ fn link_count(path: &Path) -> Option<u32> {
 /// place in both cases.
 fn must_write_in_place(target: &Path) -> bool {
     is_stream_path(target) || link_count(target).is_some_and(|n| n > 1)
+}
+
+/// One file's identity, the same for every path that reaches it: an 8.3 short
+/// name, a mapped drive and its UNC path, `..` segments, links. On Windows the
+/// volume serial number and the file index; elsewhere the canonical path. None
+/// when the file cannot be opened. A save through ReplaceFileW gives the file a
+/// new index, so compare identities taken at the same time, never stored ones.
+#[cfg(windows)]
+pub fn path_identity(path: &Path) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let file = open_shared(path).ok()?;
+    // SAFETY: the struct is plain data that the call fills in; the handle stays
+    // open (owned by `file`) for the duration of the call.
+    let info = unsafe {
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        let ok = GetFileInformationByHandle(file.as_raw_handle() as _, &mut info);
+        (ok != 0).then_some(info)?
+    };
+    Some(identity_key(
+        info.dwVolumeSerialNumber,
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
+}
+
+#[cfg(not(windows))]
+pub fn path_identity(path: &Path) -> Option<String> {
+    let real = fs::canonicalize(path).ok()?;
+    real.is_file().then(|| real.to_string_lossy().into_owned())
+}
+
+#[cfg(windows)]
+fn identity_key(volume: u32, index: u64) -> String {
+    format!("{volume:08x}:{index:016x}")
 }
 
 pub fn save(req: &SaveRequest) -> Result<FileStamp, String> {
@@ -1495,7 +1752,7 @@ mod tests {
         let mut cafe = request(&path, "caf\u{e9}", Eol::Lf, Encoding::Ansi);
         cafe.allow_lossy = true;
         save(&cafe).unwrap();
-        if ansi_codec().is_single_byte() && ansi_codec() == encoding_rs::WINDOWS_1252 {
+        if ansi_codec() == Codec::Rs(encoding_rs::WINDOWS_1252) {
             assert_eq!(fs::read(&path).unwrap(), b"caf\xE9");
             let chunk = read_chunk(&path, 0, 1024, None).unwrap();
             assert_eq!(
@@ -1518,11 +1775,14 @@ mod tests {
 
     #[test]
     fn unmappable_ansi_text_is_reported_with_its_first_character() {
-        let all_ascii = encode_ansi("plain text", false).unwrap();
+        let all_ascii = ansi_codec().encode("plain text", false).unwrap();
         assert_eq!(all_ascii, b"plain text");
         // No ANSI code page holds both Urdu and CJK, and none holds emoji.
-        assert_eq!(encode_ansi("ok 😀 \u{4E2D}", false).unwrap_err(), '😀');
-        assert_eq!(encode_ansi("ok 😀", true).unwrap(), b"ok ?");
+        assert_eq!(
+            ansi_codec().encode("ok 😀 \u{4E2D}", false).unwrap_err(),
+            '😀'
+        );
+        assert_eq!(ansi_codec().encode("ok 😀", true).unwrap(), b"ok ?");
     }
 
     #[test]
@@ -1731,7 +1991,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_counts_like_a_js_string_across_buffer_boundaries() {
+    fn scan_counts_code_points_across_buffer_boundaries() {
         let dir = TestDir::new();
         // The CRLF pairs and surrogate pairs land on every alignment of the buffer.
         let pad = "x".repeat(STREAM_BUFFER - 1);
@@ -1739,7 +1999,8 @@ mod tests {
         let path = dir.file(text.as_bytes());
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         let expected = FileScan {
-            chars: normalized.encode_utf16().count() as u64,
+            // BUGS.md L5: characters are code points, so an emoji counts once.
+            chars: normalized.chars().count() as u64,
             lines: normalized.matches('\n').count() as u64 + 1,
             invalid: false,
         };
@@ -1779,6 +2040,9 @@ mod tests {
             (r#""utf-16le""#, LE),
             (r#""utf-16be""#, BE),
             (r#""ansi""#, Encoding::Ansi),
+            (r#""utf-16le-nobom""#, Encoding::Utf16LeNoBom),
+            (r#""utf-16be-nobom""#, Encoding::Utf16BeNoBom),
+            (r#""oem""#, Encoding::Oem),
         ] {
             assert_eq!(serde_json::from_str::<Encoding>(name).unwrap(), value);
             assert_eq!(serde_json::to_string(&value).unwrap(), name);
@@ -2048,7 +2312,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (chunk.text.as_str(), chunk.encoding, chunk.eol),
-            ("hi\nthere", BE, Eol::Crlf)
+            ("hi\nthere", Encoding::Utf16BeNoBom, Eol::Crlf)
         );
         // Ordinary text has no zero bytes and stays UTF-8.
         assert_eq!(
@@ -2096,7 +2360,7 @@ mod tests {
             Encoding::Utf8
         );
         assert!(scan(&path, Encoding::Utf8).unwrap().invalid);
-        if ansi_codec() == encoding_rs::WINDOWS_1252 {
+        if ansi_codec() == Codec::Rs(encoding_rs::WINDOWS_1252) {
             assert!(!scan(&path, Encoding::Ansi).unwrap().invalid);
         }
         assert!(!scan(&dir.file(b"plain"), Encoding::Utf8).unwrap().invalid);
@@ -2128,6 +2392,74 @@ mod tests {
         assert_eq!(write_in_place(&path, &stale, b"x").unwrap_err(), STALE);
         assert_eq!(fs::read(&path).unwrap(), b"\xEF\xBB\xBFh-tail");
         assert_eq!(dir.entries(), 1);
+    }
+
+    // BUGS.md "Smaller open points": one file reached by two spellings of its
+    // path opened in two tabs.
+    #[test]
+    fn path_identity_is_the_same_for_every_path_to_a_file() {
+        let dir = TestDir::new();
+        let path = dir.file(b"x");
+        fs::create_dir_all(dir.0.join("sub")).unwrap();
+        let roundabout = dir.0.join("sub").join("..").join("doc.txt");
+        let id = path_identity(&path).unwrap();
+        assert_eq!(path_identity(&roundabout).as_deref(), Some(id.as_str()));
+        let other = dir.0.join("other.txt");
+        fs::write(&other, b"x").unwrap();
+        assert_ne!(path_identity(&other).unwrap(), id);
+        assert_eq!(path_identity(&dir.0.join("missing.txt")), None);
+        assert_eq!(path_identity(&dir.0), None);
+    }
+
+    // BUGS.md FILES-3: a failed in-place write left the file damaged.
+    #[test]
+    fn a_failed_in_place_write_puts_the_original_back() {
+        let dir = TestDir::new();
+        let backups = dir.0.join("backups");
+        let path = dir.file(b"original text");
+        let mut req = request(&path, "", Eol::Lf, Encoding::Utf8);
+        req.tail_offset = Some(9);
+        let error = overwrite_in_place(&path, &req, &backups, |dest, tail| {
+            let mut rest = String::new();
+            tail.read_to_string(&mut rest)?;
+            assert_eq!(rest, "text");
+            dest.write_all(b"PART")?;
+            Err(io::Error::other("disk full"))
+        })
+        .unwrap_err();
+        assert_eq!(error, "disk full; the file was left as it was");
+        assert_eq!(fs::read(&path).unwrap(), b"original text");
+        assert_eq!(fs::read_dir(&backups).unwrap().count(), 0);
+
+        // A successful write leaves no copy behind, and the tail comes from it.
+        let stamp = overwrite_in_place(&path, &req, &backups, |dest, tail| {
+            dest.write_all(b"new ")?;
+            io::copy(tail, dest).map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new text");
+        assert_eq!(stat(&path).unwrap(), Some(stamp));
+        assert_eq!(fs::read_dir(&backups).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn an_in_place_write_works_when_no_copy_can_be_made() {
+        let dir = TestDir::new();
+        let path = dir.file(b"HEAD-tail");
+        // A folder under a file cannot be created.
+        let backups = path.join("backups");
+        let mut req = request(&path, "", Eol::Lf, Encoding::Utf8);
+        req.tail_offset = Some(5);
+        overwrite_in_place(&path, &req, &backups, |dest, tail| {
+            dest.write_all(b"h-")?;
+            io::copy(tail, dest).map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"h-tail");
+        req.tail_offset = Some(99);
+        let stale = overwrite_in_place(&path, &req, &dir.0.join("b"), |_, _| Ok(()));
+        assert_eq!(stale.unwrap_err(), STALE);
+        assert_eq!(fs::read(&path).unwrap(), b"h-tail");
     }
 
     // BUGS.md W8: ReplaceFileW gets no long-path handling from std.
@@ -2249,26 +2581,102 @@ mod tests {
         // The zero bytes of UTF-16 text are not NUL characters.
         let wide = dir.file(&encode_text("hello world", Eol::Lf, LE));
         let chunk = read_chunk(&wide, 0, 1024, None).unwrap();
-        assert_eq!((chunk.encoding, chunk.binary), (LE, false));
+        assert_eq!(
+            (chunk.encoding, chunk.binary),
+            (Encoding::Utf16LeNoBom, false)
+        );
     }
 
     // BUGS.md M15: code pages other than a few were read as windows-1252.
     #[test]
     fn more_code_pages_have_a_codec() {
-        let name = |cp| codec_for_code_page(cp).map(|c| c.name());
-        assert_eq!(name(866), Some("IBM866"));
-        assert_eq!(name(20866), Some("KOI8-R"));
-        assert_eq!(name(21866), Some("KOI8-U"));
-        assert_eq!(name(1251), Some("windows-1251"));
-        assert_eq!(name(1258), Some("windows-1258"));
-        assert_eq!(name(28595), Some("ISO-8859-5"));
-        assert_eq!(name(54936), Some("gb18030"));
-        assert_eq!(name(936), Some("GBK"));
-        assert_eq!(name(10000), Some("macintosh"));
-        // Not in encoding_rs: the caller falls back to windows-1252.
-        assert_eq!(name(437), None);
-        assert_eq!(name(850), None);
-        assert_eq!(name(65001), None);
+        let name = |cp| {
+            codec_for_code_page(cp).map(|c| match c {
+                Codec::Rs(codec) => codec.name().to_owned(),
+                Codec::Table(page) => format!("table {}", page.code_page),
+            })
+        };
+        assert_eq!(name(866).as_deref(), Some("IBM866"));
+        assert_eq!(name(20866).as_deref(), Some("KOI8-R"));
+        assert_eq!(name(21866).as_deref(), Some("KOI8-U"));
+        assert_eq!(name(1251).as_deref(), Some("windows-1251"));
+        assert_eq!(name(1258).as_deref(), Some("windows-1258"));
+        assert_eq!(name(28595).as_deref(), Some("ISO-8859-5"));
+        assert_eq!(name(54936).as_deref(), Some("gb18030"));
+        assert_eq!(name(936).as_deref(), Some("GBK"));
+        assert_eq!(name(10000).as_deref(), Some("macintosh"));
+        // Not in encoding_rs: the DOS pages have their own tables.
+        assert_eq!(name(437).as_deref(), Some("table 437"));
+        assert_eq!(name(850).as_deref(), Some("table 850"));
+        assert_eq!(name(852).as_deref(), Some("table 852"));
+        // UTF-8 as the "ANSI" code page: the caller falls back to windows-1252.
+        assert_eq!(name(65001).as_deref(), None);
+    }
+
+    // BUGS.md M15: DOS files (code pages 437, 850...) read and save through the
+    // OEM tables, whatever the machine's OEM code page is.
+    #[test]
+    fn oem_files_round_trip_through_the_dos_tables() {
+        let dir = TestDir::new();
+        let bytes = b"\xC9\xCD\xBB caf\x82\r\n\x9C \xE1\r\n";
+        let path = dir.file(bytes);
+        let chunk = read_chunk(&path, 0, 1024, Some(Encoding::Oem)).unwrap();
+        assert_eq!(chunk.encoding, Encoding::Oem);
+        let expected = normalize_newlines(&oem_codec().decode(bytes).0).into_owned();
+        assert_eq!(chunk.text, expected);
+        let scanned = scan(&path, Encoding::Oem).unwrap();
+        assert_eq!((scanned.chars, scanned.lines), (13, 3));
+        save(&request(&path, &chunk.text, chunk.eol, Encoding::Oem)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        // The tables themselves, independent of the machine.
+        let Some(Codec::Table(cp437)) = codec_for_code_page(437) else {
+            panic!("437 has a table")
+        };
+        assert_eq!(Codec::Table(cp437).decode(bytes).0, "╔═╗ café\r\n£ ß\r\n");
+        assert_eq!(Codec::Table(cp437).encode("x€", false), Err('€'));
+        // A table page cuts chunks on any byte.
+        assert_eq!(cut_bytes(b"abc", <[u8]>::len), 3);
+    }
+
+    // BUGS.md FILES-2: a UTF-16 file without a BOM got one on the first save.
+    #[test]
+    fn utf16_without_bom_is_saved_without_one() {
+        let dir = TestDir::new();
+        for (encoding, plain) in [(LE, Encoding::Utf16LeNoBom), (BE, Encoding::Utf16BeNoBom)] {
+            let bytes = encode_text("one\r\ntwo", Eol::Crlf, encoding);
+            let path = dir.file(&bytes);
+            let chunk = read_chunk(&path, 0, 1024, None).unwrap();
+            assert_eq!(chunk.encoding, plain);
+            save(&request(
+                &path,
+                &format!("{} more", chunk.text),
+                chunk.eol,
+                chunk.encoding,
+            ))
+            .unwrap();
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                encode_text("one\r\ntwo more", Eol::Crlf, encoding)
+            );
+
+            // Reopening with either UTF-16 choice follows whether the file has a BOM.
+            let forced = read_chunk(&path, 0, 1024, Some(encoding)).unwrap();
+            assert_eq!(
+                (forced.encoding, forced.text.as_str()),
+                (plain, "one\ntwo more")
+            );
+            assert_eq!(
+                scan(&path, plain).unwrap().chars,
+                "one\ntwo more".len() as u64
+            );
+            // A later chunk of a BOM-less file needs no BOM skipped.
+            let later = read_chunk(&path, 6, 1024, Some(plain)).unwrap();
+            assert_eq!(later.text, "\ntwo more");
+            let with_bom = dir.file(&utf16("hi", encoding));
+            let forced = read_chunk(&with_bom, 0, 1024, Some(plain)).unwrap();
+            assert_eq!((forced.encoding, forced.text.as_str()), (encoding, "hi"));
+        }
     }
 
     #[test]

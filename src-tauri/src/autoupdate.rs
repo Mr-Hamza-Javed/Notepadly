@@ -17,6 +17,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+pub use crate::update_plan::Phase;
+use crate::update_plan::{self, InstallPlan};
+
 /// First check this long after launch, so startup never competes with it.
 const FIRST_CHECK: Duration = Duration::from_secs(45);
 /// Then again at this interval while the app keeps running (also in the background).
@@ -26,20 +29,6 @@ const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 const RESUME_MARKER: &str = "resume-in-background";
 /// A marker older than this is stale (for example the install failed).
 const MARKER_MAX_AGE: Duration = Duration::from_secs(10 * 60);
-
-#[derive(Clone, Serialize, PartialEq, Eq, Debug)]
-#[serde(rename_all = "camelCase")]
-pub enum Phase {
-    Idle,
-    Checking,
-    UpToDate,
-    Downloading,
-    /// Downloaded and verified; installs when Notepadly closes.
-    Ready,
-    /// A newer version exists but this copy cannot update itself (portable exe).
-    Available,
-    Error,
-}
 
 #[derive(Clone, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -167,21 +156,21 @@ fn consume_marker(path: &Path, now: SystemTime, args: &[String]) -> bool {
 
 /// Starts the background checker thread.
 pub fn start(app: AppHandle) {
-    let first = std::env::var("NOTEPADLY_UPDATE_FIRST_CHECK_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(FIRST_CHECK);
+    let (settle, rest) = update_plan::first_check_delays(
+        std::env::var("NOTEPADLY_UPDATE_FIRST_CHECK_SECS")
+            .ok()
+            .as_deref(),
+        FIRST_CHECK,
+    );
     let spawned = std::thread::Builder::new()
         .name("notepadly-updater".into())
         .stack_size(256 * 1024)
         .spawn(move || {
             // Small registry job, shared with this thread so it costs no extra one; it
             // waits a little so it never competes with the window opening.
-            let settle = Duration::from_secs(5).min(first);
             std::thread::sleep(settle);
             crate::fileicon::sync();
-            std::thread::sleep(first - settle);
+            std::thread::sleep(rest);
             loop {
                 if app.state::<AutoUpdate>().enabled.load(Ordering::Relaxed) {
                     let _ = tauri::async_runtime::block_on(check(&app));
@@ -197,7 +186,10 @@ pub fn start(app: AppHandle) {
 /// Checks the release feed and, when there is a newer version, downloads it.
 async fn check(app: &AppHandle) -> Status {
     let state = app.state::<AutoUpdate>();
-    if state.ready.lock().unwrap().is_some() || state.checking.swap(true, Ordering::AcqRel) {
+    let waiting = state.ready.lock().unwrap().is_some();
+    // The flag is only taken when no update waits, so a refused check never clears it.
+    let checking = !waiting && state.checking.swap(true, Ordering::AcqRel);
+    if !update_plan::may_start_check(waiting, checking) {
         return status_of(app);
     }
     state.set(Phase::Checking, None, None);
@@ -209,7 +201,7 @@ async fn check(app: &AppHandle) -> Status {
     }
     // Already waiting in the background: nothing is open, so update right away.
     let ready = state.ready.lock().unwrap().is_some();
-    if ready && !crate::any_window_on_screen(app) {
+    if update_plan::install_after_check(ready, crate::any_window_on_screen(app)) {
         install_if_ready(app, true);
     }
     status_of(app)
@@ -218,23 +210,37 @@ async fn check(app: &AppHandle) -> Status {
 async fn check_and_download(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AutoUpdate>();
     let updater = app.updater().map_err(|e| e.to_string())?;
-    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
-        state.set(Phase::UpToDate, None, None);
-        return Ok(());
-    };
-    let version = update.version.clone();
-    if !is_installed() {
-        state.set(Phase::Available, Some(version), None);
-        return Ok(());
-    }
-    state.set(Phase::Downloading, Some(version.clone()), None);
-    // `download` verifies the signature before returning the bytes.
-    let bytes = update
-        .download(|_, _| {}, || {})
+    let found = updater
+        .check()
         .await
-        .map_err(|e| e.to_string())?;
-    *state.ready.lock().unwrap() = Some((update, bytes));
-    state.set(Phase::Ready, Some(version), None);
+        .map(|update| update.map(|u| (u.version.clone(), u)))
+        .map_err(|e| e.to_string());
+    let mut ready_version = None;
+    let downloaded = update_plan::check_and_download(
+        found,
+        is_installed(),
+        // `download` verifies the signature before returning the bytes.
+        |update: &Update| {
+            let update = update.clone();
+            async move {
+                update
+                    .download(|_, _| {}, || {})
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        },
+        // Ready is shown only once the download is stored below, so the status
+        // never says Ready while there is nothing to install.
+        &mut |phase, version| match phase {
+            Phase::Ready => ready_version = version,
+            _ => state.set(phase, version, None),
+        },
+    )
+    .await?;
+    if let Some(ready) = downloaded {
+        *state.ready.lock().unwrap() = Some(ready);
+        state.set(Phase::Ready, ready_version, None);
+    }
     Ok(())
 }
 
@@ -243,15 +249,23 @@ async fn check_and_download(app: &AppHandle) -> Result<(), String> {
 /// process exits. `relaunch_hidden` starts the new version back up in the background.
 pub fn install_if_ready(app: &AppHandle, relaunch_hidden: bool) {
     let state = app.state::<AutoUpdate>();
-    // Turned off after the download: keep the bytes (turning it back on installs
-    // them) but do not install.
-    if !state.may_install() {
-        return;
-    }
-    let Some((update, bytes)) = state.ready.lock().unwrap().take() else {
+    let mut ready = state.ready.lock().unwrap();
+    let marker_path = marker_path(app);
+    let plan = update_plan::install_plan(
+        state.may_install(),
+        ready.is_some(),
+        relaunch_hidden,
+        marker_path.is_some(),
+    );
+    // Keep: turned off after the download; the bytes stay for when it is turned back on.
+    let InstallPlan::Install { marker } = plan else {
         return;
     };
-    let marker = marker_path(app).filter(|_| relaunch_hidden);
+    let Some((update, bytes)) = ready.take() else {
+        return;
+    };
+    drop(ready);
+    let marker = marker_path.filter(|_| marker);
     if let Some(path) = &marker {
         // The installer restarts the app with this process's own arguments.
         write_marker(path, &crate::lossy_args(std::env::args_os().skip(1)));
