@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The tab strip against the real app: the tab context menu.
+// The tab strip against the real app: the tab context menu and the tab drag gesture.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { bootApp, settle, type App } from "../test/appHarness";
@@ -40,6 +40,13 @@ afterEach(async () => {
 
 const tabEl = (el: HTMLElement, id: string) => el.querySelector<HTMLElement>(`[data-tab-id="${id}"]`)!;
 const ids = () => app.state().tabs.map((t) => t.id);
+
+/** jsdom has no PointerEvent: a MouseEvent with the pointer fields is enough for the strip. */
+function pointer(type: string, init: MouseEventInit & { pointerId?: number } = {}): MouseEvent {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init });
+  Object.defineProperty(event, "pointerId", { value: init.pointerId ?? 1 });
+  return event;
+}
 
 async function threeTabs(): Promise<string[]> {
   await app.actions.newTab();
@@ -91,5 +98,89 @@ describe("tab context menu", () => {
     expect(app.state().tabs).toHaveLength(3);
     // The WebView default is still blocked.
     expect(event.defaultPrevented).toBe(true);
+  });
+});
+
+describe("tab drag", () => {
+  beforeEach(async () => {
+    app = await bootApp();
+  });
+
+  // In jsdom every box is 0x0 at (0, 0): 32 px below the strip is "pulled out".
+  const OUT = { clientX: 10, clientY: 300 };
+
+  // BUGS.md UI-3
+  it("Escape cancels a tab pulled out of the strip", async () => {
+    const el = await renderTitleBar();
+    const [a] = await threeTabs();
+    const moveOut = vi.spyOn(app.actions, "moveTabOut").mockResolvedValue();
+    await act(async () => {
+      tabEl(el, a).dispatchEvent(pointer("pointerdown", { clientX: 10, clientY: 10, buttons: 1 }));
+    });
+    window.dispatchEvent(pointer("pointermove", { ...OUT, buttons: 1 }));
+    expect(tabEl(el, a).classList.contains("detaching")).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(tabEl(el, a).classList.contains("detaching")).toBe(false);
+    window.dispatchEvent(pointer("pointerup", OUT));
+    await settle();
+    expect(moveOut).not.toHaveBeenCalled();
+  });
+
+  it("Escape cancels a reorder", async () => {
+    const el = await renderTitleBar();
+    const before = await threeTabs();
+    await act(async () => {
+      tabEl(el, before[0]).dispatchEvent(pointer("pointerdown", { clientX: 10, clientY: 10, buttons: 1 }));
+    });
+    window.dispatchEvent(pointer("pointermove", { clientX: 60, clientY: 10, buttons: 1 }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    window.dispatchEvent(pointer("pointerup", { clientX: 60, clientY: 10 }));
+    await settle();
+    expect(ids()).toEqual(before);
+  });
+
+  it("a button released where the window did not see it ends the drag without moving the tab", async () => {
+    const el = await renderTitleBar();
+    const [a] = await threeTabs();
+    const moveOut = vi.spyOn(app.actions, "moveTabOut").mockResolvedValue();
+    await act(async () => {
+      tabEl(el, a).dispatchEvent(pointer("pointerdown", { clientX: 10, clientY: 10, buttons: 1 }));
+    });
+    window.dispatchEvent(pointer("pointermove", { ...OUT, buttons: 1 }));
+    // The release happened outside (capture lost): the next move has no button down.
+    window.dispatchEvent(pointer("pointermove", { ...OUT, buttons: 0 }));
+    expect(tabEl(el, a).classList.contains("dragging")).toBe(false);
+    // A later, unrelated click in the editor must not move the tab out.
+    window.dispatchEvent(pointer("pointerdown", { ...OUT, buttons: 1 }));
+    window.dispatchEvent(pointer("pointerup", OUT));
+    await settle();
+    expect(moveOut).not.toHaveBeenCalled();
+  });
+
+  it("a tab closed during the drag does not reorder the others on release", async () => {
+    const el = await renderTitleBar();
+    const [a, b, c] = await threeTabs();
+    await act(async () => {
+      tabEl(el, a).dispatchEvent(pointer("pointerdown", { clientX: 10, clientY: 10, buttons: 1 }));
+    });
+    window.dispatchEvent(pointer("pointermove", { clientX: 60, clientY: 10, buttons: 1 }));
+    await act(async () => {
+      await app.actions.closeTab(a); // Ctrl+W with the mouse still down
+    });
+    window.dispatchEvent(pointer("pointerup", { clientX: 60, clientY: 10 }));
+    await settle();
+    expect(ids()).toEqual([b, c]);
+  });
+
+  it("a normal drag still reorders", async () => {
+    const el = await renderTitleBar();
+    const [a, b, c] = await threeTabs();
+    await act(async () => {
+      tabEl(el, a).dispatchEvent(pointer("pointerdown", { clientX: 10, clientY: 10, buttons: 1 }));
+    });
+    window.dispatchEvent(pointer("pointermove", { clientX: 60, clientY: 10, buttons: 1 }));
+    window.dispatchEvent(pointer("pointerup", { clientX: 60, clientY: 10 }));
+    await settle();
+    expect(ids()).toEqual([b, c, a]);
   });
 });

@@ -193,6 +193,12 @@ const TabStrip = memo(function TabStrip() {
       });
 
     const move = (ev: globalThis.PointerEvent) => {
+      // The button went up where this window did not see it (capture lost, another
+      // window took the mouse): end the drag here, or the next click would drop the tab.
+      if ((ev.buttons & 1) === 0) {
+        end();
+        return;
+      }
       const raw = ev.clientX - startX + (sc.scrollLeft - startScroll);
       if (!dragging) {
         if (Math.abs(raw) < 5 && Math.abs(ev.clientY - e.clientY) < 5) return;
@@ -223,24 +229,48 @@ const TabStrip = memo(function TabStrip() {
       });
     };
 
-    const finish = (ev: globalThis.PointerEvent) => {
+    /** Stops listening and puts every tab back; true when a drag was under way. */
+    const end = (): boolean => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", finish);
-      if (!dragging) return;
+      window.removeEventListener("keydown", onKey, true);
+      if (!dragging) return false;
+      dragging = false;
       ls.classList.add("no-anim");
       el.classList.remove("dragging", "detaching");
       nodes.forEach((n) => {
         n.style.transform = "";
       });
+      requestAnimationFrame(() => requestAnimationFrame(() => ls.classList.remove("no-anim")));
+      return true;
+    };
+
+    const finish = (ev: globalThis.PointerEvent) => {
+      if (!end()) return;
+      // A tab closed or added during the drag (Ctrl+W with the mouse down) makes the
+      // indexes taken at the start wrong: drop nothing rather than move the wrong tab.
+      if (useApp.getState().tabs[index]?.id !== id) return;
       if (pulledOut && ev.type === "pointerup") void actions.moveTabOut(id);
       else if (target !== index) actions.moveTab(index, target);
-      requestAnimationFrame(() => requestAnimationFrame(() => ls.classList.remove("no-anim")));
+    };
+
+    // Escape cancels the drag, as in Windows (BUGS.md UI-3).
+    const onKey = (ev: globalThis.KeyboardEvent) => {
+      if (ev.key !== "Escape" || !dragging) return;
+      ev.preventDefault();
+      end();
+      try {
+        el.releasePointerCapture?.(e.pointerId);
+      } catch {
+        // Not captured.
+      }
     };
 
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", finish);
+    window.addEventListener("keydown", onKey, true);
   }, []);
 
   return (
