@@ -15,12 +15,14 @@ export function setTabDragging(dragging: boolean): void {
 
 /**
  * What the tab strip hears about tabs dragged between windows (F2):
- * - `hover`: a tab dragged in another window is over this strip at (x, y), CSS px;
+ * - `hover`: a tab dragged in another window has snapped into this strip: the mouse
+ *   is at (x, y), CSS px, and holds the tab `grabX` px right of its own window's
+ *   first tab, so the strip can show it there (`title`, `dirty`);
  * - `leave`: it left, or was dropped here (`dropping`), so the gap waits for it;
  * - `arrived`: a moved tab was added here; `stay`: a tab torn out of here could not go.
  */
 export type TabStripNews =
-  | { kind: "hover"; x: number; y: number }
+  | { kind: "hover"; x: number; y: number; title?: string; dirty?: boolean; grabX?: number }
   | { kind: "leave"; dropping: boolean }
   | { kind: "arrived"; id: string }
   | { kind: "stay"; id: string };

@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { actions } from "../state/actions";
+import { ipc } from "../lib/ipc";
 import { useApp } from "../state/store";
 import type { TabMeta } from "../state/types";
 import { AppIcon, G, Glyph } from "./icons";
@@ -139,6 +140,20 @@ const TAB_WIDTH = 233;
 /** .tab-list side padding, room for the active tab's flare without overflowing. */
 const TAB_LIST_PADDING = 8;
 
+/** Where the first tab starts, in viewport px, with the strip scrolled to the start. */
+function stripOrigin(sc: HTMLElement, ls: HTMLElement): number {
+  return sc.getBoundingClientRect().left + (Number.parseFloat(getComputedStyle(ls).paddingLeft) || 0);
+}
+
+/** A tab from another window, snapped into this strip under the mouse (F2). */
+interface Phantom {
+  left: number;
+  top: number;
+  width: number;
+  title: string;
+  dirty: boolean;
+}
+
 const TabStrip = memo(function TabStrip() {
   const tabs = useApp((s) => s.tabs);
   const activeId = useApp((s) => s.activeId);
@@ -146,6 +161,7 @@ const TabStrip = memo(function TabStrip() {
   const list = useRef<HTMLDivElement | null>(null);
   const [overflow, setOverflow] = useState(false);
   const [menu, setMenu] = useState<{ id: string; anchor: AnchorRect } | null>(null);
+  const [phantom, setPhantom] = useState<Phantom | null>(null);
 
   // Arrows appear only once tabs have shrunk to their minimum and still spill.
   useLayoutEffect(() => {
@@ -176,7 +192,13 @@ const TabStrip = memo(function TabStrip() {
   // a tab torn out of here closes up (or opens again if it could not go).
   useEffect(() => {
     let keepGap: ReturnType<typeof setTimeout> | null = null;
+    /** Where the snapped-in tab was last shown, for it to slide from into its place. */
+    let shownAt: Phantom | null = null;
     const nodes = () => Array.from(list.current?.children ?? []) as HTMLElement[];
+    const showPhantom = (p: Phantom | null) => {
+      shownAt = p;
+      setPhantom(p);
+    };
     const showGap = (index: number | null) => {
       if (keepGap) clearTimeout(keepGap);
       keepGap = null;
@@ -199,26 +221,52 @@ const TabStrip = memo(function TabStrip() {
       );
     const stop = onTabStripNews((news) => {
       switch (news.kind) {
-        case "hover":
-          showGap(gapAt(news.x));
+        case "hover": {
+          const sc = scroller.current;
+          const ls = list.current;
+          if (!sc || !ls) break;
+          // The tab sits under the mouse where it was grabbed, as wide as the tabs here.
+          const shown = nodes().filter((n) => !n.classList.contains("tab-detached"));
+          const width = shown[0]?.offsetWidth || TAB_WIDTH;
+          const grab = news.grabX === undefined ? width / 2 : news.grabX - stripOrigin(sc, ls);
+          const left = news.x - clamp(grab, 12, width - 12);
+          const top = shown[0] ? shown[0].getBoundingClientRect().top : ls.getBoundingClientRect().top;
+          showGap(gapAt(left + width / 2));
+          showPhantom({ left, top, width, title: news.title ?? "", dirty: !!news.dirty });
           break;
+        }
         case "leave":
-          // Dropped here: hold the gap until the tab arrives in it.
-          if (news.dropping && hoverGapIndex() !== null) keepGap = setTimeout(() => showGap(null), 1500);
-          else showGap(null);
+          // Dropped here: hold the gap (and the tab in it) until the tab arrives.
+          if (news.dropping && hoverGapIndex() !== null) {
+            keepGap = setTimeout(() => {
+              showGap(null);
+              showPhantom(null);
+            }, 1500);
+          } else {
+            showGap(null);
+            showPhantom(null);
+          }
           break;
         case "arrived": {
           const ls = list.current;
+          const from = shownAt;
           // The tab takes the gap's place: drop the shifts without sliding them back.
           ls?.classList.add("no-anim");
           showGap(null);
+          showPhantom(null);
           requestAnimationFrame(() => {
             const el = ls?.querySelector<HTMLElement>(`[data-tab-id="${news.id}"]`);
-            if (el) {
+            if (el && from) {
+              // Snapped in under the mouse: it settles from there into its place.
+              el.style.transform = `translateX(${from.left - el.getBoundingClientRect().left}px)`;
+            } else if (el) {
               el.classList.add("tab-arriving");
               el.addEventListener("animationend", () => el.classList.remove("tab-arriving"), { once: true });
             }
-            requestAnimationFrame(() => ls?.classList.remove("no-anim"));
+            requestAnimationFrame(() => {
+              ls?.classList.remove("no-anim");
+              if (el && from) el.style.transform = "";
+            });
           });
           break;
         }
@@ -248,6 +296,8 @@ const TabStrip = memo(function TabStrip() {
     if (e.button !== 0) return;
     actions.activate(id);
     focusEditorSoon();
+    // A torn-out tab gets a window booted ahead of time, so it never blinks (F2).
+    if (useApp.getState().tabs.length > 1) ipc.spareEnsure().catch(() => {});
 
     const el = e.currentTarget;
     const ls = list.current;
@@ -258,6 +308,8 @@ const TabStrip = memo(function TabStrip() {
     const widths = nodes.map((n) => n.offsetWidth);
     const w = el.offsetWidth;
     const startX = e.clientX;
+    /** Where the mouse holds the tab, from its left edge. */
+    const grabInTab = e.clientX - el.getBoundingClientRect().left;
     const startScroll = sc.scrollLeft;
     const minDx = -lefts[index];
     const maxDx = lefts[nodes.length - 1] - lefts[index];
@@ -298,7 +350,9 @@ const TabStrip = memo(function TabStrip() {
         // A tab closed or added meanwhile (Ctrl+W with the mouse down): tear nothing.
         if (tabs[index]?.id !== id) return;
         if (tabs.length > 1) el.classList.add("tab-detached");
-        void actions.detachTab(id);
+        // The new window shows the tab where this one shows its first, still under the mouse.
+        const grab = { x: stripOrigin(sc, ls) + clamp(grabInTab, 12, TAB_WIDTH - 12), y: e.clientY };
+        void actions.detachTab(id, grab);
         return;
       }
       const dx = clamp(raw, minDx, maxDx);
@@ -397,6 +451,21 @@ const TabStrip = memo(function TabStrip() {
       >
         <Glyph cp={G.plus} size={12} />
       </button>
+      {phantom && (
+        <div
+          className="tab tab-phantom"
+          aria-hidden="true"
+          data-active="true"
+          data-dirty={phantom.dirty}
+          style={{ left: phantom.left, top: phantom.top, width: phantom.width }}
+        >
+          <span className="tab-title">{phantom.title}</span>
+          <span className="tab-close">
+            <span className="dot" />
+            <Glyph cp={G.closeSmall} size={10} className="x" />
+          </span>
+        </div>
+      )}
       {menu && !menuGone && (
         <Menu
           entries={tabMenu(menu.id)}

@@ -1605,6 +1605,44 @@ describe("moving tabs between windows (F2)", () => {
       expect(app.state().tabs.map((t) => t.id)).not.toContain(moved);
     });
 
+    it("a torn-out tab moves the grab point and its look to the new window", async () => {
+      app = await bootApp();
+      await app.actions.newTab();
+      const moved = app.state().tabs[0].id;
+      void app.actions.detachTab(moved, { x: 52, y: 18 });
+      await waitFor(() => backend.calls.some((c) => c.cmd === "window_new"));
+      const call = backend.calls.find((c) => c.cmd === "window_new")!;
+      expect(call.args).toMatchObject({ follow: true, grabX: 52, grabY: 18, dragTitle: app.state().tabs[0].title, dragDirty: false });
+    });
+
+    it("the spare window waits hidden with no session, then shows a torn-out tab at once", async () => {
+      const { moving, moved, transfer } = await sendDirtyTab(null);
+      fakeWindow.deliver("tab-received", { id: moved });
+      await moving;
+
+      backend.spares.add("window-3");
+      const writes = () => backend.calls.filter((c) => c.cmd === "window_session_write" && c.caller === "window-3").length;
+      app = await bootApp({ keepDisk: true, label: "window-3" });
+      app.type("typed into the hidden window");
+      await settle();
+      // Not a window of the app yet: it stores nothing and asks for no files.
+      expect(writes()).toBe(0);
+      expect(backend.calls.some((c) => c.caller === "window-3" && c.cmd === "take_pending_paths")).toBe(false);
+
+      fakeWindow.deliver("spare-claim", JSON.stringify(transfer));
+      await waitFor(() => fakeWindow.emitted.some((e) => e.event === "tab-received"));
+      expect(app.state().tabs).toHaveLength(1);
+      expect(app.tab().title).toBe("a.md");
+      expect(app.tab().dirty).toBe(true);
+      await waitFor(() => writes() > 0);
+      // Escape now still sends it back where it came from.
+      backend.windowDragEnd = { target: null, cancelled: true };
+      fakeWindow.deliver("window-drag-end", null);
+      await waitFor(() => fakeWindow.emitted.some((e) => e.event === "tab-incoming"));
+      const sent = fakeWindow.emitted.find((e) => e.event === "tab-incoming")!;
+      expect(sent.payload).toMatchObject({ index: 0 });
+    });
+
     it("the only tab torn out drags its own window, with no new window and no flash", async () => {
       app = await bootApp();
       app.type("only tab");

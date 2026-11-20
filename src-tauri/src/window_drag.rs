@@ -103,9 +103,125 @@ impl WindowDrags {
 }
 
 /// The cursor, in CSS pixels of the window under it, is over that window's tab
-/// strip (or just below it), where a dropped tab joins its tabs.
+/// strip (or just below it): the dragged tab snaps into those tabs there.
 pub fn over_strip(x: f64, y: f64, width: f64) -> bool {
     (0.0..width).contains(&x) && (0.0..STRIP_HEIGHT + ATTACH_SLACK).contains(&y)
+}
+
+/// How far a tab snapped into a strip may wander before it tears off again, in
+/// CSS pixels: a little wider than where it snaps in, so it does not flicker
+/// between the two at the edge.
+pub const KEEP_MARGIN: f64 = 28.0;
+
+/// A tab snapped into a strip stays there while the cursor (CSS pixels of that
+/// window, which may be outside it) is this close to the strip.
+pub fn keeps_attached(x: f64, y: f64, width: f64) -> bool {
+    (-KEEP_MARGIN..width + KEEP_MARGIN).contains(&x)
+        && (-KEEP_MARGIN..STRIP_HEIGHT + ATTACH_SLACK + KEEP_MARGIN).contains(&y)
+}
+
+/// The tab being dragged, for the strip it snaps into to show it under the mouse.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DragTab {
+    pub title: String,
+    pub dirty: bool,
+    /// Where the mouse holds the tab, in CSS pixels from the dragged window's left
+    /// edge (the strip works out the point inside the tab from its own layout).
+    pub grab_x: f64,
+}
+
+/// Sent with HOVER_EVENT: where the snapped-in tab is, and what it shows.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DragHover {
+    pub x: f64,
+    pub y: f64,
+    pub title: String,
+    pub dirty: bool,
+    pub grab_x: f64,
+}
+
+/// A hidden window booted ahead of time, so a torn-out tab has a window at once
+/// instead of waiting for a new WebView to start (F2, as smooth as Chrome). It
+/// is not a window of the app until it is claimed: no session, not counted as
+/// on screen, never sent files.
+#[derive(Default)]
+pub struct Spares {
+    inner: Mutex<SpareInner>,
+}
+
+#[derive(Default)]
+struct SpareInner {
+    /// Being built; it reports in once it has painted.
+    booting: Option<String>,
+    /// Ready to be claimed.
+    ready: Option<String>,
+}
+
+impl Spares {
+    fn lock(&self) -> std::sync::MutexGuard<'_, SpareInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// True for the spare window, booting or ready.
+    pub fn is_spare(&self, label: &str) -> bool {
+        let inner = self.lock();
+        inner.booting.as_deref() == Some(label) || inner.ready.as_deref() == Some(label)
+    }
+
+    /// Records that `label` is being built as the spare. False when there is one already.
+    pub fn start(&self, label: &str) -> bool {
+        let mut inner = self.lock();
+        if inner.booting.is_some() || inner.ready.is_some() {
+            return false;
+        }
+        inner.booting = Some(label.to_owned());
+        true
+    }
+
+    /// True when no spare exists or is being built.
+    pub fn wanted(&self) -> bool {
+        let inner = self.lock();
+        inner.booting.is_none() && inner.ready.is_none()
+    }
+
+    /// The spare `label` has painted and can be claimed.
+    pub fn mark_ready(&self, label: &str) -> bool {
+        let mut inner = self.lock();
+        if inner.booting.as_deref() != Some(label) {
+            return false;
+        }
+        inner.booting = None;
+        inner.ready = Some(label.to_owned());
+        true
+    }
+
+    /// Takes the ready spare; from now on it is an ordinary window.
+    pub fn claim(&self) -> Option<String> {
+        self.lock().ready.take()
+    }
+
+    /// Takes every spare, booting or ready (to close them).
+    pub fn drain(&self) -> Vec<String> {
+        let mut inner = self.lock();
+        inner
+            .booting
+            .take()
+            .into_iter()
+            .chain(inner.ready.take())
+            .collect()
+    }
+
+    pub fn forget(&self, label: &str) {
+        let mut inner = self.lock();
+        if inner.booting.as_deref() == Some(label) {
+            inner.booting = None;
+        }
+        if inner.ready.as_deref() == Some(label) {
+            inner.ready = None;
+        }
+    }
 }
 
 /// Top-left corner for the dragged window so the grabbed point stays under the cursor.
@@ -185,6 +301,58 @@ mod tests {
         );
         assert!(!over_strip(-1.0, 10.0, 800.0));
         assert!(!over_strip(800.0, 10.0, 800.0));
+    }
+
+    #[test]
+    fn a_snapped_tab_stays_until_pulled_clearly_away() {
+        // Snaps in only over the strip, stays a little further out.
+        assert!(!over_strip(5.0, -5.0, 800.0));
+        assert!(keeps_attached(5.0, -5.0, 800.0));
+        assert!(keeps_attached(-20.0, 30.0, 800.0));
+        assert!(keeps_attached(
+            5.0,
+            STRIP_HEIGHT + ATTACH_SLACK + KEEP_MARGIN - 1.0,
+            800.0
+        ));
+        assert!(!keeps_attached(
+            5.0,
+            STRIP_HEIGHT + ATTACH_SLACK + KEEP_MARGIN,
+            800.0
+        ));
+        assert!(!keeps_attached(5.0, 200.0, 800.0));
+        assert!(!keeps_attached(800.0 + KEEP_MARGIN, 10.0, 800.0));
+    }
+
+    #[test]
+    fn one_spare_window_at_a_time_ready_once_painted_and_claimed_once() {
+        let spares = Spares::default();
+        assert!(spares.wanted());
+        assert!(spares.start("window-5"));
+        assert!(!spares.wanted());
+        assert!(!spares.start("window-6"), "only one spare");
+        assert!(spares.is_spare("window-5"));
+        assert_eq!(spares.claim(), None, "not claimable before it painted");
+        assert!(!spares.mark_ready("window-6"));
+        assert!(spares.mark_ready("window-5"));
+        assert_eq!(spares.claim().as_deref(), Some("window-5"));
+        assert!(
+            !spares.is_spare("window-5"),
+            "claimed: an ordinary window now"
+        );
+        assert_eq!(spares.claim(), None);
+        assert!(spares.wanted());
+    }
+
+    #[test]
+    fn spares_are_dropped_when_closed_or_drained() {
+        let spares = Spares::default();
+        spares.start("window-2");
+        spares.forget("window-2");
+        assert!(spares.wanted());
+        spares.start("window-3");
+        spares.mark_ready("window-3");
+        assert_eq!(spares.drain(), vec!["window-3".to_owned()]);
+        assert!(spares.wanted());
     }
 
     #[test]

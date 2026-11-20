@@ -194,6 +194,17 @@ a { color: var(--link); }
     padding 180ms var(--ease-out),
     opacity 120ms linear;
 }
+/* A tab dragged in another window, snapped into this strip under the mouse (F2). */
+.tab.tab-phantom {
+  position: fixed;
+  z-index: 5;
+  flex: none;
+  min-width: 0;
+  pointer-events: none;
+  transition: none;
+  box-shadow: inset 1px 1px 0 var(--tab-border, transparent), inset -1px 0 0 var(--tab-border, transparent),
+    0 2px 10px rgba(0, 0, 0, 0.12);
+}
 /* Dropped here from another window: it rises into the gap the tabs made for it. */
 .tab.tab-arriving { animation: tab-arrive 220ms var(--ease-out); }
 @keyframes tab-arrive {

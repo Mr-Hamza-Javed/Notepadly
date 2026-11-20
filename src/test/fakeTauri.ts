@@ -212,6 +212,8 @@ export class FakeBackend {
   dropTarget: { label: string; x: number; y: number } | null = null;
   /** Answer of `window_drag_result`, given once (window_drag.rs). */
   windowDragEnd: { target: { label: string; x: number; y: number } | null; cancelled: boolean } | null = null;
+  /** Labels of windows booted as the hidden spare for a torn-out tab (`window_is_spare`). */
+  spares = new Set<string>();
   /** Every command name, in order. */
   calls: { cmd: string; args: Record<string, unknown>; caller?: string }[] = [];
   /** Next error for a command, by name; consumed once. */
@@ -250,6 +252,7 @@ export class FakeBackend {
     this.boot = { restore: null, transfer: null };
     this.dropTarget = null;
     this.windowDragEnd = null;
+    this.spares.clear();
     this.calls = [];
     this.failNext.clear();
     this.unreadable.clear();
@@ -444,6 +447,10 @@ export class FakeBackend {
         this.windowDragEnd = null;
         return end;
       }
+      case "window_is_spare":
+        return this.spares.has(caller);
+      case "spare_ensure":
+      case "spare_ready":
       case "window_drag_start":
       case "window_new":
       case "reveal_in_explorer":

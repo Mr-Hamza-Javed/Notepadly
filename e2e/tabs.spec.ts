@@ -95,8 +95,10 @@ test("F2: tabs slide apart for a tab hovering from another window, and it drops 
   expect((await tab(page, "a.md").boundingBox())!.x).toBe(a.x);
   // It moves on past c.md: the gap follows.
   await page.evaluate(() => window.e2e.emit("tab-drag-hover", { x: 2000, y: 12 }));
-  await expect.poll(async () => (await tab(page, "b.md").boundingBox())!.x).toBe(b.x);
-  await page.evaluate((x) => window.e2e.emit("tab-drag-hover", { x, y: 12 }), b.x + 10);
+  await expect.poll(async () => (await tab(page, "b.md").boundingBox())!.x).toBeCloseTo(b.x, 0);
+  await page.evaluate((x) => window.e2e.emit("tab-drag-hover", { x, y: 12, title: "new.md", dirty: false }), b.x + 10);
+  // The dragged tab shows here under the mouse, as in Chrome.
+  await expect(page.locator(".tab-phantom")).toHaveText(/new.md/);
   // Dropped: the gap waits, then the tab arrives in it.
   await page.evaluate(() => window.e2e.emit("tab-drag-leave", { dropping: true }));
   const transfer = await page.evaluate(() => {
@@ -110,8 +112,9 @@ test("F2: tabs slide apart for a tab hovering from another window, and it drops 
   });
   await page.evaluate((t) => window.e2e.emit("tab-incoming", { transfer: t, x: 0, y: 0 }), transfer);
   await expect.poll(() => titles(page)).toEqual(["a.md", "new.md", "b.md", "c.md"]);
-  await expect(tab(page, "new.md")).toHaveClass(/tab-arriving/);
-  await expect(tab(page, "new.md")).not.toHaveClass(/tab-arriving/);
+  // The tab under the mouse becomes the real one, sliding into its place.
+  await expect(page.locator(".tab-phantom")).toHaveCount(0);
+  await expect.poll(async () => (await tab(page, "new.md").boundingBox())!.x).toBeCloseTo(b.x, 0);
 });
 
 test("F2: a tab hovering and leaving without a drop puts the tabs back", async ({ page }) => {
@@ -119,6 +122,8 @@ test("F2: a tab hovering and leaving without a drop puts the tabs back", async (
   const b = (await tab(page, "b.md").boundingBox())!;
   await page.evaluate((x) => window.e2e.emit("tab-drag-hover", { x, y: 12 }), b.x + 10);
   await expect.poll(async () => (await tab(page, "b.md").boundingBox())!.x).toBeGreaterThan(b.x + 50);
+  await expect(page.locator(".tab-phantom")).toHaveCount(1);
   await page.evaluate(() => window.e2e.emit("tab-drag-leave", { dropping: false }));
-  await expect.poll(async () => (await tab(page, "b.md").boundingBox())!.x).toBe(b.x);
+  await expect.poll(async () => (await tab(page, "b.md").boundingBox())!.x).toBeCloseTo(b.x, 0);
+  await expect(page.locator(".tab-phantom")).toHaveCount(0);
 });

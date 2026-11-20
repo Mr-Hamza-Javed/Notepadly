@@ -76,6 +76,8 @@ const TAB_DRAG_HOVER_EVENT = "tab-drag-hover";
 const TAB_DRAG_LEAVE_EVENT = "tab-drag-leave";
 /** From Rust: the drag of this window (it holds a dragged tab) is over. */
 const WINDOW_DRAG_END_EVENT = "window-drag-end";
+/** From Rust: this hidden spare window gets a torn-out tab (a JSON TabTransfer). */
+const SPARE_CLAIM_EVENT = "spare-claim";
 /** How long a tab being moved waits for the other window to take it. */
 const MOVE_TIMEOUT_MS = 10_000;
 
@@ -889,6 +891,11 @@ async function closeWindow(): Promise<void> {
 
 /** Stores (or asks about) this window's tabs and closes it for good, even in background mode. */
 async function exitThisWindow(): Promise<void> {
+  // A spare window holds nothing: it just goes.
+  if (spareMode) {
+    await getCurrentWindow().destroy();
+    return;
+  }
   if (!(await prepareWindowClose(true))) return;
   await getCurrentWindow().destroy();
 }
@@ -931,6 +938,8 @@ export interface MoveOptions {
   toNewWindow?: boolean;
   /** Torn out of the tab strip: a new window under the mouse that follows it (F2). */
   follow?: boolean;
+  /** With `follow`: where the mouse holds the tab, CSS px from the window's corner. */
+  grab?: { x: number; y: number };
   /** Straight to this window, without asking which window is under the mouse. */
   target?: TabDestination;
 }
@@ -1008,6 +1017,9 @@ async function moveTabOut(id: string, options: MoveOptions | boolean = {}): Prom
         transfer: JSON.stringify(transfer),
         atCursor: !how.toNewWindow,
         follow: !!how.follow,
+        ...(how.follow
+          ? { grabX: how.grab?.x, grabY: how.grab?.y, dragTitle: current.title, dragDirty: current.dirty }
+          : {}),
       });
     }
   } catch (error) {
@@ -1041,13 +1053,14 @@ async function moveTabOut(id: string, options: MoveOptions | boolean = {}): Prom
  * mouse that follows it; as the window's only tab, the window itself follows.
  * Where the button goes up decides the rest (`finishWindowDrag`).
  */
-async function detachTab(id: string): Promise<void> {
-  if (!getTab(id)) return;
+async function detachTab(id: string, grab?: { x: number; y: number }): Promise<void> {
+  const tab = getTab(id);
+  if (!tab) return;
   if (state().tabs.length === 1) {
-    await ipc.windowDragStart().catch((error: unknown) => console.error("Notepadly: could not drag the window", error));
+    await ipc.windowDragStart(tab.title, tab.dirty).catch((error: unknown) => console.error("Notepadly: could not drag the window", error));
     return;
   }
-  await moveTabOut(id, { follow: true });
+  await moveTabOut(id, { follow: true, grab });
 }
 
 /** The window this one was opened from for a torn-out tab, and the tab's place there. */
@@ -1072,6 +1085,42 @@ async function finishWindowDrag(): Promise<void> {
   tornFrom = null;
   if (end.target) await moveTabOut(id, { target: end.target });
   else await bringToFront();
+}
+
+/**
+ * True while this is the hidden spare window booted ahead of a tab drag (F2): it
+ * has no session and is not a window of the app until a torn-out tab claims it.
+ */
+let spareMode = false;
+
+/**
+ * A tab was torn out and this spare window gets it: it becomes an ordinary window,
+ * already at the mouse, and shows the tab at once instead of booting a WebView.
+ */
+async function claimSpare(raw: unknown): Promise<void> {
+  if (!spareMode) return;
+  let transfer: TabTransfer | null = null;
+  try {
+    transfer = parseTransfer(raw);
+  } catch {
+    transfer = null;
+  }
+  if (!transfer) return;
+  spareMode = false;
+  loader.setSessionKey(`w${newTabId()}`);
+  tornFrom = typeof transfer.fromIndex === "number" ? { label: transfer.from, index: transfer.fromIndex } : null;
+  loader.setPersistence(keepsSession());
+  // Whatever the hidden window held (nothing anyone could see) makes way for the tab.
+  const empty = state().tabs.map((t) => t.id);
+  await receiveTab(transfer, null);
+  const got = received.get(transfer.tab.id);
+  if (got) for (const id of empty) if (id !== got) removeFromList(id);
+  publishOpenPaths();
+  const win = getCurrentWindow();
+  await win.show().catch(() => {});
+  await win.setFocus().catch(() => {});
+  loader.startHibernation();
+  void finishWindowDrag();
 }
 
 /** Ids of tabs received from other windows, by the id they had there; for a repeated delivery. */
@@ -1314,15 +1363,19 @@ async function wireWindowEvents(ready: Promise<void>): Promise<void> {
       )
       .catch(warn("tab listener failed")),
     webviewWindow
-      .listen<{ x: number; y: number }>(TAB_DRAG_HOVER_EVENT, (event) =>
-        announceTabStrip({ kind: "hover", x: event.payload.x, y: event.payload.y }),
-      )
+      .listen<{ x: number; y: number; title?: string; dirty?: boolean; grabX?: number }>(TAB_DRAG_HOVER_EVENT, (event) => {
+        const { x, y, title, dirty, grabX } = event.payload;
+        announceTabStrip({ kind: "hover", x, y, title, dirty, grabX });
+      })
       .catch(warn("tab hover listener failed")),
     webviewWindow
       .listen<{ dropping?: boolean }>(TAB_DRAG_LEAVE_EVENT, (event) =>
         announceTabStrip({ kind: "leave", dropping: !!event.payload?.dropping }),
       )
       .catch(warn("tab leave listener failed")),
+    webviewWindow
+      .listen<string>(SPARE_CLAIM_EVENT, (event) => later(() => claimSpare(event.payload)))
+      .catch(warn("spare listener failed")),
     webviewWindow
       .listen(WINDOW_DRAG_END_EVENT, () => later(finishWindowDrag))
       .catch(warn("window drag listener failed")),
@@ -1481,6 +1534,14 @@ async function runInit(): Promise<void> {
     engine.createDoc(first, "", getTab(first)?.mode ?? "plain");
     engine.activate(first);
     engine.focus();
+  }
+
+  spareMode = await ipc.windowIsSpare().catch(() => false);
+  if (spareMode) {
+    // Waits, hidden and empty, for a torn-out tab (claimSpare).
+    initFinished = true;
+    markReady();
+    return;
   }
 
   const [pending, boot] = await Promise.all([

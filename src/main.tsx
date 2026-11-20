@@ -51,6 +51,16 @@ async function boot(): Promise<void> {
   if (mica) html.dataset.mica = "on";
   html.style.removeProperty("background");
 
+  // The spare window for a torn-out tab (F2) stays hidden until a tab claims it,
+  // and then must show that tab at once: no open animation.
+  if (await ipc.windowIsSpare().catch(() => false)) {
+    await init;
+    delete html.dataset.asleep;
+    await nextPaint();
+    await ipc.spareReady().catch(() => {});
+    return;
+  }
+
   // The restart after a background update stays asleep until the user opens Notepadly.
   if (await ipc.launchedHidden().catch(() => false)) {
     await init;

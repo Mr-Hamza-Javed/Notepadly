@@ -19,7 +19,7 @@ use tauri::{
     WindowEvent,
 };
 use tauri_plugin_window_state::StateFlags;
-use window_drag::{DragEnd, StripPoint, WindowDrags};
+use window_drag::{DragEnd, DragHover, DragTab, Spares, StripPoint, WindowDrags};
 use window_state::{SecondLaunch, WindowBoot, WindowPaths, WindowView};
 
 const MAIN_WINDOW: &str = "main";
@@ -169,9 +169,12 @@ fn take_window_boot(window: WebviewWindow, state: State<'_, WindowPaths>) -> Win
 }
 
 /// Every window's label and whether it is visible, for the rules in `window_state`.
+/// The hidden spare window is not one of the app's windows until it is claimed.
 fn window_views(app: &AppHandle) -> Vec<WindowView> {
+    let spares = app.state::<Spares>();
     app.webview_windows()
         .into_iter()
+        .filter(|(label, _)| !spares.is_spare(label))
         .map(|(label, w)| (label, w.is_visible().unwrap_or(false)))
         .collect()
 }
@@ -292,8 +295,12 @@ fn user_locale() -> String {
 /// tab dragged out of `window`, and `at_cursor` puts the new window under the
 /// mouse (for that drag); otherwise it opens a little below and right of `window`.
 /// `follow` (with `at_cursor`) then has the new window follow the mouse until the
-/// button goes up, as a tab torn out of a Chrome window does (F2).
+/// button goes up, as a tab torn out of a Chrome window does (F2): `grab_x` and
+/// `grab_y` say where the mouse holds the tab, in CSS pixels from the new
+/// window's corner, and `drag_title`/`drag_dirty` what the tab shows when it
+/// snaps into another window's strip on the way.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn window_new(
     app: AppHandle,
     window: WebviewWindow,
@@ -302,27 +309,56 @@ async fn window_new(
     transfer: Option<String>,
     at_cursor: Option<bool>,
     follow: Option<bool>,
+    grab_x: Option<f64>,
+    grab_y: Option<f64>,
+    drag_title: Option<String>,
+    drag_dirty: Option<bool>,
 ) -> Result<(), String> {
-    let boot = WindowBoot { restore, transfer };
     let at_cursor = at_cursor.unwrap_or(false);
-    let (label, grab) = open_window(&app, paths, boot, Some(&window), at_cursor)?;
-    if let (true, Some(grab)) = (follow.unwrap_or(false), grab) {
-        start_window_drag(&app, label, grab);
+    let follow = follow.unwrap_or(false) && at_cursor;
+    let grab_css = grab_x.zip(grab_y);
+    let tab = DragTab {
+        title: drag_title.unwrap_or_default(),
+        dirty: drag_dirty.unwrap_or(false),
+        grab_x: grab_css.map_or(DETACHED_TAB_OFFSET.0, |g| g.0),
+    };
+    // A torn-out tab takes the window booted ahead of time, so it shows at once.
+    if let (true, Some(transfer)) = (follow, &transfer) {
+        if let Some((label, grab)) = claim_spare(&app, &window, transfer, grab_css) {
+            start_window_drag(&app, label, grab, tab);
+            return Ok(());
+        }
+    }
+    let boot = WindowBoot { restore, transfer };
+    let (label, grab) = open_window(&app, paths, boot, Some(&window), at_cursor, grab_css)?;
+    if let (true, Some(grab)) = (follow, grab) {
+        start_window_drag(&app, label, grab, tab);
     }
     Ok(())
 }
 
 /// Has the calling window follow the mouse until the button goes up, holding it
 /// where the mouse is now (F2: the only tab of a window dragged out of its strip).
+/// `title` and `dirty` are what that tab shows if it snaps into another strip.
 #[tauri::command]
-fn window_drag_start(window: WebviewWindow) -> Result<(), String> {
+fn window_drag_start(
+    window: WebviewWindow,
+    title: Option<String>,
+    dirty: Option<bool>,
+) -> Result<(), String> {
     let cursor = window.cursor_position().map_err(|e| e.to_string())?;
     let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let grab = (
         cursor.x.round() as i32 - pos.x,
         cursor.y.round() as i32 - pos.y,
     );
-    start_window_drag(window.app_handle(), window.label().to_owned(), grab);
+    let tab = DragTab {
+        title: title.unwrap_or_default(),
+        dirty: dirty.unwrap_or(false),
+        grab_x: f64::from(grab.0) / scale,
+    };
+    start_window_drag(window.app_handle(), window.label().to_owned(), grab, tab);
     Ok(())
 }
 
@@ -332,28 +368,107 @@ fn window_drag_result(window: WebviewWindow, drags: State<'_, WindowDrags>) -> O
     drags.take(window.label())
 }
 
+/// Builds the hidden spare window ahead of time when there is none.
+#[tauri::command]
+async fn spare_ensure(app: AppHandle) {
+    ensure_spare(&app);
+}
+
+/// The spare window has painted: a torn-out tab can now take it.
+#[tauri::command]
+fn spare_ready(window: WebviewWindow, spares: State<'_, Spares>) {
+    spares.mark_ready(window.label());
+}
+
+/// True for the hidden spare window, which boots without a session.
+#[tauri::command]
+fn window_is_spare(window: WebviewWindow, spares: State<'_, Spares>) -> bool {
+    spares.is_spare(window.label())
+}
+
+/// Sent to the spare window with the torn-out tab (a JSON TabTransfer).
+const SPARE_CLAIM_EVENT: &str = "spare-claim";
+
+/// Builds the spare window (window_drag::Spares) when there is none. Must not
+/// run on the main thread, as for any new window.
+fn ensure_spare(app: &AppHandle) {
+    let spares = app.state::<Spares>();
+    if !spares.wanted() {
+        return;
+    }
+    let Some(mut config) = main_window_config(app) else {
+        return;
+    };
+    config.label = app
+        .state::<WindowPaths>()
+        .new_label(|label| app.get_webview_window(label).is_some());
+    config.visible = false;
+    config.focus = false;
+    if !spares.start(&config.label) {
+        return;
+    }
+    match WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build()) {
+        Ok(window) => use_sharp_icon(&window),
+        Err(error) => {
+            spares.forget(&config.label);
+            eprintln!("Notepadly: could not build a spare window: {error}");
+        }
+    }
+}
+
+/// Hands a torn-out tab to the ready spare window: placed and sized like a new
+/// window under the mouse, it takes the tab and shows itself at once. Returns
+/// its label and where the mouse holds it; None without a ready spare.
+fn claim_spare(
+    app: &AppHandle,
+    near: &WebviewWindow,
+    transfer: &str,
+    grab_css: Option<(f64, f64)>,
+) -> Option<(String, (i32, i32))> {
+    let place = placement(near, true, grab_css)?;
+    let label = app.state::<Spares>().claim()?;
+    let spare = app.get_webview_window(&label)?;
+    // From here it is an ordinary window that counts as on screen.
+    app.state::<WindowPaths>()
+        .prepare_window(&label, Vec::new(), WindowBoot::default());
+    if let Some((width, height)) = place.size {
+        let _ = spare.set_size(tauri::LogicalSize::new(width, height));
+    }
+    if let Some((x, y)) = place.physical {
+        let _ = spare.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+    let _ = app.emit_to(
+        EventTarget::webview_window(label.clone()),
+        SPARE_CLAIM_EVENT,
+        transfer.to_owned(),
+    );
+    Some((label, place.grab?))
+}
+
 /// Moves `label` with the mouse on a thread of its own until the button goes up
-/// or Escape is pressed, then records how it ended and tells that window.
-fn start_window_drag(app: &AppHandle, label: String, grab: (i32, i32)) {
+/// or Escape is pressed, then records how it ended and tells that window. A new
+/// spare is built afterwards, for the next tab torn out.
+fn start_window_drag(app: &AppHandle, label: String, grab: (i32, i32), tab: DragTab) {
     if !app.state::<WindowDrags>().begin(&label) {
         return;
     }
     let app = app.clone();
     std::thread::spawn(move || {
-        let end = follow_mouse(&app, &label, grab);
+        let end = follow_mouse(&app, &label, grab, &tab);
         app.state::<WindowDrags>().finish(&label, end);
         let _ = app.emit_to(
             EventTarget::webview_window(label.clone()),
             window_drag::END_EVENT,
             (),
         );
+        ensure_spare(&app);
     });
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DragLeave {
-    /// The tab was dropped here: keep the gap open for it.
+    /// The tab was dropped here: keep its place for it.
     dropping: bool,
 }
 
@@ -375,8 +490,49 @@ fn strip_under(app: &AppHandle, moving: &WebviewWindow, cursor: (f64, f64)) -> O
     })
 }
 
+/// `cursor` in CSS pixels of the window `label` (it may lie outside it), and
+/// that window's width; None once the window is gone or hidden.
+fn point_in(app: &AppHandle, label: &str, cursor: (f64, f64)) -> Option<(f64, f64, f64)> {
+    drop_candidates(app)
+        .into_iter()
+        .find(|c| c.label == label)
+        .map(|c| {
+            (
+                (cursor.0 - c.x) / c.scale,
+                (cursor.1 - c.y) / c.scale,
+                c.width / c.scale,
+            )
+        })
+}
+
+fn hover(app: &AppHandle, point: &StripPoint, tab: &DragTab) {
+    let _ = app.emit_to(
+        EventTarget::webview_window(point.label.clone()),
+        window_drag::HOVER_EVENT,
+        DragHover {
+            x: point.x,
+            y: point.y,
+            title: tab.title.clone(),
+            dirty: tab.dirty,
+            grab_x: tab.grab_x,
+        },
+    );
+}
+
+fn leave(app: &AppHandle, label: &str, dropping: bool) {
+    let _ = app.emit_to(
+        EventTarget::webview_window(label.to_owned()),
+        window_drag::LEAVE_EVENT,
+        DragLeave { dropping },
+    );
+}
+
+/// The drag loop. Like Chrome: over another window's tab strip the tab snaps
+/// into it (that window shows it among its tabs) and this window hides; pulled
+/// clearly away from that strip, it tears off again and this window comes back
+/// under the mouse. The button going up ends it where it is.
 #[cfg(windows)]
-fn follow_mouse(app: &AppHandle, label: &str, grab: (i32, i32)) -> DragEnd {
+fn follow_mouse(app: &AppHandle, label: &str, grab: (i32, i32), tab: &DragTab) -> DragEnd {
     use std::time::Duration;
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -396,7 +552,8 @@ fn follow_mouse(app: &AppHandle, label: &str, grab: (i32, i32)) -> DragEnd {
     let start = app
         .get_webview_window(label)
         .and_then(|w| w.outer_position().ok());
-    let mut hovered: Option<StripPoint> = None;
+    // The other window's strip the tab has snapped into; this window is hidden meanwhile.
+    let mut attached: Option<StripPoint> = None;
     let mut last: Option<(i32, i32)> = None;
     let end = loop {
         let Some(window) = app.get_webview_window(label) else {
@@ -407,9 +564,13 @@ fn follow_mouse(app: &AppHandle, label: &str, grab: (i32, i32)) -> DragEnd {
         };
         if down(VK_ESCAPE) {
             // Back where it was; a window opened for the drag gives its tab back.
+            if let Some(point) = attached.take() {
+                leave(app, &point.label, false);
+            }
             if let Some(pos) = start {
                 let _ = window.set_position(pos);
             }
+            let _ = window.show();
             break DragEnd {
                 target: None,
                 cancelled: true,
@@ -417,7 +578,7 @@ fn follow_mouse(app: &AppHandle, label: &str, grab: (i32, i32)) -> DragEnd {
         }
         if !down(button) {
             break DragEnd {
-                target: hovered.clone(),
+                target: attached.clone(),
                 cancelled: false,
             };
         }
@@ -425,44 +586,47 @@ fn follow_mouse(app: &AppHandle, label: &str, grab: (i32, i32)) -> DragEnd {
         // SAFETY: fills in the point it is given.
         if unsafe { GetCursorPos(&mut point) } != 0 && last != Some((point.x, point.y)) {
             last = Some((point.x, point.y));
+            let cursor = (f64::from(point.x), f64::from(point.y));
             let (x, y) = window_drag::follow_position((point.x, point.y), grab);
-            let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-            let now = strip_under(app, &window, (f64::from(point.x), f64::from(point.y)));
-            if let Some(old) = hovered
-                .as_ref()
-                .filter(|old| now.as_ref().is_none_or(|n| n.label != old.label))
-            {
-                let _ = app.emit_to(
-                    EventTarget::webview_window(old.label.clone()),
-                    window_drag::LEAVE_EVENT,
-                    DragLeave { dropping: false },
-                );
+            if let Some(current) = attached.take() {
+                match point_in(app, &current.label, cursor) {
+                    Some((cx, cy, width)) if window_drag::keeps_attached(cx, cy, width) => {
+                        let moved = StripPoint {
+                            label: current.label,
+                            x: cx,
+                            y: cy,
+                        };
+                        hover(app, &moved, tab);
+                        attached = Some(moved);
+                    }
+                    _ => {
+                        // Torn off again: the window comes back under the mouse.
+                        leave(app, &current.label, false);
+                        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            } else {
+                let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+                if let Some(over) = strip_under(app, &window, cursor) {
+                    // Snapped in: the tab shows in that strip, and this window hides.
+                    hover(app, &over, tab);
+                    let _ = window.hide();
+                    attached = Some(over);
+                }
             }
-            if let Some(point) = &now {
-                let _ = app.emit_to(
-                    EventTarget::webview_window(point.label.clone()),
-                    window_drag::HOVER_EVENT,
-                    point.clone(),
-                );
-            }
-            hovered = now;
         }
         std::thread::sleep(Duration::from_millis(8));
     };
-    if let Some(old) = &hovered {
-        let _ = app.emit_to(
-            EventTarget::webview_window(old.label.clone()),
-            window_drag::LEAVE_EVENT,
-            DragLeave {
-                dropping: end.target.is_some(),
-            },
-        );
+    if let (Some(point), false) = (&attached, end.cancelled) {
+        leave(app, &point.label, true);
     }
     end
 }
 
 #[cfg(not(windows))]
-fn follow_mouse(_app: &AppHandle, _label: &str, _grab: (i32, i32)) -> DragEnd {
+fn follow_mouse(_app: &AppHandle, _label: &str, _grab: (i32, i32), _tab: &DragTab) -> DragEnd {
     DragEnd {
         target: None,
         cancelled: false,
@@ -486,7 +650,13 @@ struct Placement {
 
 /// Position and size for a new window next to `near`, or under the cursor.
 /// Must not run on the main thread: `monitor_from_point` waits for it.
-fn placement(near: &WebviewWindow, at_cursor: bool) -> Option<Placement> {
+/// `grab_css`: where the cursor holds the new window, in its CSS pixels (the
+/// point of the tab that was grabbed); the default puts the first tab under it.
+fn placement(
+    near: &WebviewWindow,
+    at_cursor: bool,
+    grab_css: Option<(f64, f64)>,
+) -> Option<Placement> {
     if !near.is_visible().unwrap_or(false) {
         return None;
     }
@@ -505,7 +675,11 @@ fn placement(near: &WebviewWindow, at_cursor: bool) -> Option<Placement> {
             .ok()
             .flatten()
             .map_or(scale, |m| m.scale_factor());
-        let (x, y) = cursor_placement((cursor.x, cursor.y), cursor_scale);
+        let (x, y) = cursor_placement(
+            (cursor.x, cursor.y),
+            cursor_scale,
+            grab_css.unwrap_or(DETACHED_TAB_OFFSET),
+        );
         let physical = (
             (x * cursor_scale).round() as i32,
             (y * cursor_scale).round() as i32,
@@ -532,12 +706,20 @@ fn placement(near: &WebviewWindow, at_cursor: bool) -> Option<Placement> {
 }
 
 /// Logical top-left of a window for a tab dropped at a physical cursor position
-/// on a monitor with `scale`, so the tab lands under the mouse.
-fn cursor_placement(cursor: (f64, f64), scale: f64) -> (f64, f64) {
-    (
-        cursor.0 / scale - DETACHED_TAB_OFFSET.0,
-        cursor.1 / scale - DETACHED_TAB_OFFSET.1,
-    )
+/// on a monitor with `scale`, so the tab lands under the mouse where it was held
+/// (`grab`, logical pixels from the window's corner).
+fn cursor_placement(cursor: (f64, f64), scale: f64, grab: (f64, f64)) -> (f64, f64) {
+    (cursor.0 / scale - grab.0, cursor.1 / scale - grab.1)
+}
+
+/// The main window's config, which every window is built from.
+fn main_window_config(app: &AppHandle) -> Option<tauri::utils::config::WindowConfig> {
+    app.config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == MAIN_WINDOW)
+        .cloned()
 }
 
 /// Builds a window from the main window's config. Extra windows used to open at
@@ -550,18 +732,12 @@ fn open_window(
     boot: WindowBoot,
     near: Option<&WebviewWindow>,
     at_cursor: bool,
+    grab_css: Option<(f64, f64)>,
 ) -> Result<(String, Option<(i32, i32)>), String> {
     let state = app.state::<WindowPaths>();
-    let mut config = app
-        .config()
-        .app
-        .windows
-        .iter()
-        .find(|w| w.label == MAIN_WINDOW)
-        .cloned()
-        .ok_or("main window config is missing")?;
+    let mut config = main_window_config(app).ok_or("main window config is missing")?;
     config.label = state.new_label(|label| app.get_webview_window(label).is_some());
-    let placed = near.and_then(|w| placement(w, at_cursor));
+    let placed = near.and_then(|w| placement(w, at_cursor, grab_css));
     if let Some(place) = &placed {
         config.x = Some(place.x);
         config.y = Some(place.y);
@@ -854,9 +1030,14 @@ fn on_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
             let app = app.clone();
             // Off the main thread, as window_new is (see there).
             tauri::async_runtime::spawn(async move {
-                if let Err(error) =
-                    open_window(&app, Vec::new(), WindowBoot::default(), Some(&near), false)
-                {
+                if let Err(error) = open_window(
+                    &app,
+                    Vec::new(),
+                    WindowBoot::default(),
+                    Some(&near),
+                    false,
+                    None,
+                ) {
                     eprintln!("Notepadly: could not open a new window: {error}");
                 }
             });
@@ -924,6 +1105,7 @@ pub fn run() {
         )
         .manage(WindowPaths::default())
         .manage(WindowDrags::default())
+        .manage(Spares::default())
         .setup(|app| {
             store::process_start();
             // The restart after a background update comes back hidden, and must not
@@ -952,6 +1134,7 @@ pub fn run() {
             WindowEvent::Destroyed => {
                 window.state::<WindowPaths>().forget(window.label());
                 window.state::<WindowDrags>().forget(window.label());
+                window.state::<Spares>().forget(window.label());
             }
             WindowEvent::Focused(true) => window.state::<WindowPaths>().set_focused(window.label()),
             // Moving to a monitor with another scale needs icons of another size.
@@ -983,6 +1166,9 @@ pub fn run() {
             tab_drop_target,
             window_drag_start,
             window_drag_result,
+            spare_ensure,
+            spare_ready,
+            window_is_spare,
             system_fonts,
             reveal_in_explorer,
             background::is_last_window,
@@ -1130,16 +1316,29 @@ mod tests {
     #[test]
     fn a_dragged_tab_window_uses_the_scale_of_the_monitor_under_the_cursor() {
         // Cursor at physical (3000, 400) on a 150% monitor: logical (2000, 266.67).
-        let (x, y) = cursor_placement((3000.0, 400.0), 1.5);
+        let (x, y) = cursor_placement((3000.0, 400.0), 1.5, DETACHED_TAB_OFFSET);
         assert_eq!(x, 2000.0 - DETACHED_TAB_OFFSET.0);
         assert!((y - (400.0 / 1.5 - DETACHED_TAB_OFFSET.1)).abs() < 1e-9);
         // The same point on a 100% monitor.
         assert_eq!(
-            cursor_placement((3000.0, 400.0), 1.0),
+            cursor_placement((3000.0, 400.0), 1.0, DETACHED_TAB_OFFSET),
             (
                 3000.0 - DETACHED_TAB_OFFSET.0,
                 400.0 - DETACHED_TAB_OFFSET.1
             )
+        );
+    }
+
+    #[test]
+    fn a_torn_out_tab_stays_under_the_mouse_where_it_was_grabbed() {
+        // Grabbed 75 px into a tab that starts 44 px from the window's left edge.
+        assert_eq!(
+            cursor_placement((1000.0, 300.0), 1.0, (119.0, 20.0)),
+            (881.0, 280.0)
+        );
+        assert_eq!(
+            cursor_placement((1500.0, 450.0), 1.5, (119.0, 20.0)),
+            (881.0, 280.0)
         );
     }
 }

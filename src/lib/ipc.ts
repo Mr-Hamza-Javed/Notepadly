@@ -134,7 +134,19 @@ export const ipc = {
    */
   newWindow: (
     paths: string[],
-    options: { restore?: string; transfer?: string; atCursor?: boolean; follow?: boolean } = {},
+    options: {
+      restore?: string;
+      transfer?: string;
+      atCursor?: boolean;
+      /** Follow the mouse until the button goes up (a torn-out tab, F2). */
+      follow?: boolean;
+      /** Where the mouse holds the tab, CSS px from the new window's corner. */
+      grabX?: number;
+      grabY?: number;
+      /** What the tab shows when it snaps into another window's strip on the way. */
+      dragTitle?: string;
+      dragDirty?: boolean;
+    } = {},
   ) => invoke<void>("window_new", { paths, ...options }),
   /** The other window under the mouse, for a tab dropped on it. */
   tabDropTarget: () => invoke<DropTarget | null>("tab_drop_target"),
@@ -142,9 +154,18 @@ export const ipc = {
    * This window follows the mouse until the button goes up (F2, its only tab dragged
    * out); `window-drag-end` then says it is over and `windowDragResult` how.
    */
-  windowDragStart: () => invoke<void>("window_drag_start"),
+  windowDragStart: (title: string, dirty: boolean) => invoke<void>("window_drag_start", { title, dirty }),
   /** How this window's last drag ended, given once; null while it runs. */
   windowDragResult: () => invoke<WindowDragEnd | null>("window_drag_result"),
+  /**
+   * A hidden window booted ahead of time, so a torn-out tab gets a window at once
+   * (F2). Builds it when there is none; cheap otherwise.
+   */
+  spareEnsure: () => invoke<void>("spare_ensure"),
+  /** This spare window has painted and can be claimed. */
+  spareReady: () => invoke<void>("spare_ready"),
+  /** True for the spare window: it boots with no session and stays hidden until claimed. */
+  windowIsSpare: () => invoke<boolean>("window_is_spare"),
   systemFonts: () => invoke<string[]>("system_fonts"),
   revealInExplorer: (path: string) => invoke<void>("reveal_in_explorer", { path }),
 
