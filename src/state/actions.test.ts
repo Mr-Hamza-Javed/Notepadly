@@ -281,13 +281,44 @@ describe("dirty state and saving", () => {
     expect(backend.text(A)).toBe("saved");
   });
 
-  it("refuses to overwrite a file another program changed, and says so", async () => {
+  it("asks before saving over a file another program changed; Cancel writes nothing", async () => {
     app.type(" mine");
     backend.write(A, "theirs");
     expect(await app.actions.save()).toBe(false);
-    expect(app.message()?.title).toBe("File changed on disk");
+    expect(dialogs.messages.at(-1)?.title).toBe("File changed on disk");
     expect(app.tab().externalChange).toBe("modified");
+    expect(app.tab().dirty).toBe(true);
     expect(backend.text(A)).toBe("theirs");
+  });
+
+  it("Save anyway replaces the other program's changes with this text", async () => {
+    app.type(" mine");
+    backend.write(A, "theirs");
+    dialogs.messageAnswers.push("Save anyway");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(A)).toBe("saved mine");
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+  });
+
+  it("Reload instead shows the other program's version", async () => {
+    app.type(" mine");
+    backend.write(A, "theirs");
+    dialogs.messageAnswers.push("Reload");
+    expect(await app.actions.save()).toBe(false);
+    await waitFor(() => app.text() === "theirs");
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+    expect(backend.text(A)).toBe("theirs");
+  });
+
+  it("asks too when the change is already shown in the bar", async () => {
+    app.type(" mine");
+    backend.write(A, "theirs");
+    await app.loader.pollExternalChanges();
+    expect(app.tab().externalChange).toBe("modified");
+    dialogs.messageAnswers.push("Save anyway");
+    expect(await app.actions.save()).toBe(true);
+    expect(dialogs.messages.at(-1)?.title).toBe("File changed on disk");
+    expect(backend.text(A)).toBe("saved mine");
   });
 
   it("can save after choosing Keep mine", async () => {
@@ -427,11 +458,28 @@ describe("files changed by other programs", () => {
     await app.actions.openPaths([A]);
   });
 
-  it("silently reloads a clean tab", async () => {
+  it("tells about a change to a clean tab and shows it only on Reload", async () => {
     backend.write(A, "changed outside");
     await app.loader.pollExternalChanges();
+    await settle(20);
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: "modified" });
+    expect(app.text()).toBe("original");
+    await app.actions.reloadTab(app.tab().id);
     await waitFor(() => app.text() === "changed outside");
     expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+  });
+
+  it("a new date on the same text is no news", async () => {
+    const before = app.tab().stamp;
+    backend.write(A, "original");
+    await app.loader.pollExternalChanges();
+    await settle(20);
+    expect(app.tab().externalChange).toBeNull();
+    expect(app.tab().stamp).not.toEqual(before);
+    // And a save goes through without asking.
+    app.type("!");
+    expect(await app.actions.save()).toBe(true);
+    expect(dialogs.messages).toHaveLength(0);
   });
 
   it("flags a dirty tab instead of throwing away the user's text", async () => {
@@ -493,13 +541,14 @@ describe("files changed by other programs", () => {
     expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
   });
 
-  it("H7: a clean tab whose file comes back with new content reloads it", async () => {
+  it("H7: a clean tab whose file comes back with new content offers to reload it", async () => {
     backend.delete(A);
     await app.loader.pollExternalChanges();
     backend.write(A, "checked out");
     await app.loader.pollExternalChanges();
-    await waitFor(() => app.text() === "checked out");
-    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+    await settle(20);
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: "modified" });
+    expect(app.text()).toBe("original");
   });
 
   it("H7: text typed while the file was gone stays unsaved when it comes back", async () => {
@@ -565,8 +614,8 @@ describe("large files", () => {
     app.engine.insertText("EDIT\n");
     backend.write(A, "replaced by another program");
     expect(await app.actions.save()).toBe(false);
-    expect(app.message()?.title).toBe("File changed on disk");
-    app.actions.closeDialog();
+    expect(dialogs.messages.at(-1)?.title).toBe("File changed on disk");
+    dialogs.messages.length = 0;
     await app.actions.keepMine(app.tab().id);
 
     // Cancelled: nothing is written.

@@ -588,10 +588,45 @@ async function savedFileIsGone(id: string, path: string): Promise<boolean> {
   return true;
 }
 
+type SaveOptions = loader.WriteOptions & { recreating?: boolean; overwriting?: boolean };
+
+/**
+ * The file was changed by another program since it was opened or saved here:
+ * saving now would wipe those changes, so the user picks the version to keep.
+ */
+async function saveOverChange(id: string, path: string, options: SaveOptions = {}): Promise<boolean> {
+  const tab = getTab(id);
+  if (!tab) return false;
+  const reload = "Reload";
+  const overwrite = "Save anyway";
+  const answer = await askUser(
+    "File changed on disk",
+    `${fileNameOf(path)} was changed by another program after you opened it.
+
+Reload shows the new version (your unsaved changes here are lost). Save anyway replaces the other program's changes with your text.`,
+    { yes: reload, no: overwrite, cancel: "Cancel" },
+  );
+  if (answer === reload) {
+    await loader.reloadFromDisk(id).catch(reportError("Could not reload file"));
+    return false;
+  }
+  if (answer !== overwrite) return false;
+  if (!getTab(id)?.fullyLoaded) {
+    showMessage(
+      "File changed on disk",
+      `Only part of ${fileNameOf(path)} is loaded, and the rest of it is now the other program's version, so it cannot be saved over. Reload it, or use Save as to keep your text under another name.`,
+    );
+    return false;
+  }
+  // Takes the file on disk as the one being replaced, then writes.
+  await loader.keepMine(id);
+  return writeAndReport(id, path, { ...options, overwriting: true });
+}
+
 async function writeAndReport(
   id: string,
   path: string,
-  options: loader.WriteOptions & { recreating?: boolean } = {},
+  options: SaveOptions = {},
 ): Promise<boolean> {
   const result = await loader.writeTab(id, path, options);
   if (result.ok) {
@@ -615,6 +650,7 @@ async function writeAndReport(
   }
   if (result.stale) {
     patchTab(id, { externalChange: "modified" });
+    if (!options.overwriting && pathsEqual(getTab(id)?.path ?? null, path)) return saveOverChange(id, path, options);
     showMessage(
       "File changed on disk",
       "This file was changed by another program, so it was not saved. Reload it to see those changes, or use Save as to keep your text under another name.",
@@ -732,6 +768,7 @@ async function save(tabId?: string): Promise<boolean> {
   if (!tab) return false;
   if (!tab.path) return saveAs(id);
   if (!tab.dirty) return true;
+  // A file another program changed answers STALE, and saveOverChange asks.
   return writeAndReport(id, tab.path);
 }
 

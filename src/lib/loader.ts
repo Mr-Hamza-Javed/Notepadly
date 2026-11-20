@@ -75,6 +75,11 @@ interface TabRuntime {
   cleanDelete: number | null;
   /** The file could not be read, so the editor does not hold its text: never save over it. */
   unreadable: boolean;
+  /**
+   * The editor has never shown this file's text (it was gone or locked when the tab
+   * was restored): when the file can be read, it is simply shown, with nothing to ask.
+   */
+  notShown: boolean;
   /** Characters (code points) read from the file into the editor; null when unknown (restored draft). */
   diskChars: number | null;
   /** The file state a hibernated tab's kept undo history belongs to. */
@@ -114,6 +119,7 @@ function rtOf(id: string): TabRuntime {
       eolChosen: false,
       cleanDelete: null,
       unreadable: false,
+      notShown: false,
       sleep: null,
       diskChars: null,
       diskEncoding: null,
@@ -270,8 +276,8 @@ function cancelIdleLoad(rt: TabRuntime): void {
 function onChangedMidLoad(id: string): void {
   const tab = getTab(id);
   if (!tab) return;
-  if (tab.dirty) patchTab(id, { externalChange: "modified" });
-  else silentReload(id).catch(noop);
+  // The bar offers Reload; the rest of the old file is not read any more.
+  patchTab(id, { externalChange: "modified" });
 }
 
 /** Reads one chunk past the loaded end. At most one runs per tab. */
@@ -501,6 +507,7 @@ async function applyFromDisk(
   rt.eolChosen = false;
   rt.cleanDelete = null;
   rt.unreadable = false;
+  rt.notShown = false;
   rt.dismissed = null;
   rt.scanStarted = false;
   rt.diskChars = countCodePoints(read.text);
@@ -531,12 +538,31 @@ function reloadTarget(tab: TabMeta): number {
   return Math.max(FIRST_CHUNK, tab.loadedOffset);
 }
 
-function silentReload(id: string): Promise<void> {
+/** Shows the file in a tab that never showed it (notShown): no one's text is replaced. */
+function showUnseen(id: string): Promise<void> {
   const rt = rtOf(id);
   return enqueue(rt, async () => {
     const tab = getTab(id);
-    if (tab) await applyFromDisk(id, reloadTarget(tab), engine.hasDoc(id) ? engine.snapshot(id) : rt.snap, true);
+    if (tab && rt.notShown) await applyFromDisk(id, reloadTarget(tab), null, true);
   });
+}
+
+/** Files up to this size are read to see whether a changed stamp changed the text. */
+const COMPARE_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * True when the file on disk holds exactly the text a clean, fully loaded tab
+ * shows, so a new stamp (a touch, a save with no change, a restore) is no news.
+ */
+async function diskMatchesTab(id: string, path: string, disk: FileStamp): Promise<boolean> {
+  const tab = getTab(id);
+  if (!tab || tab.dirty || !tab.fullyLoaded || disk.size > COMPARE_MAX_BYTES || !engine.hasDoc(id)) return false;
+  try {
+    const chunk = await ipc.readChunk(path, 0, disk.size + 1, tab.encoding);
+    return chunk.eof && chunk.text === engine.getText(id);
+  } catch {
+    return false;
+  }
 }
 
 /** Explicit reload from the bar or the STALE message: replaces the tab's text. */
@@ -612,6 +638,7 @@ export async function materialiseOrFlag(id: string): Promise<void> {
     if (!getTab(id) || engine.hasDoc(id)) return;
     engine.createDoc(id, "", tab.mode);
     const rt = rtOf(id);
+    rt.notShown = true;
     if (disk === null) {
       // Nothing was loaded, so there is no text to lose: the tab stays clean and
       // the bar says the file is gone. Saving an empty tab must not create an
@@ -948,6 +975,10 @@ async function checkTab(tab: TabMeta): Promise<void> {
   const current = getTab(tab.id);
   if (!current || current.path !== tab.path) return;
   const hasDoc = engine.hasDoc(tab.id);
+  if (disk && hasDoc && rt.notShown && !current.dirty) {
+    showUnseen(tab.id).catch(noop);
+    return;
+  }
   if (disk && current.externalChange === "deleted" && rt.cleanDelete === rt.editSeq) {
     // The file came back (git checkout, OneDrive, save by delete + rename) and the
     // user typed nothing meanwhile: the deletion was the only reason for the dirty mark.
@@ -955,13 +986,19 @@ async function checkTab(tab: TabMeta): Promise<void> {
     rt.forceDirty = false;
     patchTab(tab.id, { dirty: false });
     markDraftChanged(tab.id);
-    if (stampsEqual(disk, current.stamp)) patchTab(tab.id, { externalChange: null });
-    else if (hasDoc) silentReload(tab.id).catch(noop);
+    if (stampsEqual(disk, current.stamp) || (hasDoc && (await diskMatchesTab(tab.id, tab.path, disk))))
+      patchTab(tab.id, { stamp: disk, externalChange: null });
+    else if (hasDoc) patchTab(tab.id, { externalChange: "modified" });
     else patchTab(tab.id, { stamp: disk, externalChange: null });
     return;
   }
   switch (decideExternal(current, disk, rt.dismissed, hasDoc)) {
     case "flag-modified":
+      if (disk && (await diskMatchesTab(tab.id, tab.path, disk))) {
+        // Same text, new stamp: nothing to tell the user.
+        if (rt.ioSeq === seq && getTab(tab.id)?.path === tab.path) patchTab(tab.id, { stamp: disk });
+        break;
+      }
       rt.dismissed = null;
       patchTab(tab.id, { externalChange: "modified" });
       break;
@@ -980,9 +1017,6 @@ async function checkTab(tab: TabMeta): Promise<void> {
     case "clear-flag":
       rt.dismissed = null;
       patchTab(tab.id, { externalChange: null });
-      break;
-    case "reload":
-      silentReload(tab.id).catch(noop);
       break;
     case "adopt-stamp":
       patchTab(tab.id, { stamp: disk });

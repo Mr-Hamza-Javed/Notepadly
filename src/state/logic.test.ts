@@ -216,8 +216,11 @@ describe("file safety", () => {
   const stamp = { size: 10, mtimeMs: 1 };
   const changed = { size: 12, mtimeMs: 2 };
 
-  it("reloads a clean tab when the file changes on disk", () => {
-    expect(decideExternal({ stamp, dirty: false, externalChange: null }, changed, null, true)).toBe("reload");
+  it("offers a reload of a clean tab when the file changes on disk, never doing it unasked", () => {
+    expect(decideExternal({ stamp, dirty: false, externalChange: null }, changed, null, true)).toBe("flag-modified");
+    expect(decideExternal({ stamp, dirty: false, externalChange: "modified" }, changed, null, true)).toBe("none");
+    // Nothing shown yet (not loaded): it simply reads the new file when opened.
+    expect(decideExternal({ stamp, dirty: false, externalChange: null }, changed, null, false)).toBe("adopt-stamp");
   });
 
   it("never overwrites unsaved edits when the file changes on disk", () => {

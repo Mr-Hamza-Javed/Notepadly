@@ -212,19 +212,23 @@ describe("tab drag", () => {
     expect(hoverGapIndex()).toBe(0);
     expect(tabEl(el, a).style.transform).toBe("translateX(233px)");
     expect(el.querySelector(".tab-phantom")).not.toBeNull();
+    const transforms: string[] = [];
+    const watch = new MutationObserver(() => transforms.push(tabEl(el, a).style.transform));
+    watch.observe(tabEl(el, a), { attributes: true, attributeFilter: ["style"] });
     await act(async () => {
       announceTabStrip({ kind: "arrived", id: a });
     });
     expect(hoverGapIndex()).toBeNull();
     expect(el.querySelector(".tab-phantom")).toBeNull();
     await act(async () => {
-      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(null))));
     });
-    // Starts where the snapped-in tab was shown, then glides into its place.
-    expect(tabEl(el, a).style.transform).toBe("translateX(-116.5px)");
     await act(async () => {
       await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
     });
+    watch.disconnect();
+    // Starts where the snapped-in tab was shown, then glides into its place.
+    expect(transforms).toContain("translateX(-116.5px)");
     expect(tabEl(el, a).style.transform).toBe("");
   });
 
