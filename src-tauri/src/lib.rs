@@ -8,6 +8,7 @@ mod fonts;
 mod oem;
 mod store;
 mod update_plan;
+mod window_drag;
 mod window_state;
 
 use files::{Encoding, FileChunk, FileScan, FileStamp, SaveRequest};
@@ -18,6 +19,7 @@ use tauri::{
     WindowEvent,
 };
 use tauri_plugin_window_state::StateFlags;
+use window_drag::{DragEnd, StripPoint, WindowDrags};
 use window_state::{SecondLaunch, WindowBoot, WindowPaths, WindowView};
 
 const MAIN_WINDOW: &str = "main";
@@ -289,6 +291,8 @@ fn user_locale() -> String {
 /// `restore` names a stored window session for it to take over, `transfer` is a
 /// tab dragged out of `window`, and `at_cursor` puts the new window under the
 /// mouse (for that drag); otherwise it opens a little below and right of `window`.
+/// `follow` (with `at_cursor`) then has the new window follow the mouse until the
+/// button goes up, as a tab torn out of a Chrome window does (F2).
 #[tauri::command]
 async fn window_new(
     app: AppHandle,
@@ -297,9 +301,172 @@ async fn window_new(
     restore: Option<String>,
     transfer: Option<String>,
     at_cursor: Option<bool>,
+    follow: Option<bool>,
 ) -> Result<(), String> {
     let boot = WindowBoot { restore, transfer };
-    open_window(&app, paths, boot, Some(&window), at_cursor.unwrap_or(false))
+    let at_cursor = at_cursor.unwrap_or(false);
+    let (label, grab) = open_window(&app, paths, boot, Some(&window), at_cursor)?;
+    if let (true, Some(grab)) = (follow.unwrap_or(false), grab) {
+        start_window_drag(&app, label, grab);
+    }
+    Ok(())
+}
+
+/// Has the calling window follow the mouse until the button goes up, holding it
+/// where the mouse is now (F2: the only tab of a window dragged out of its strip).
+#[tauri::command]
+fn window_drag_start(window: WebviewWindow) -> Result<(), String> {
+    let cursor = window.cursor_position().map_err(|e| e.to_string())?;
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let grab = (
+        cursor.x.round() as i32 - pos.x,
+        cursor.y.round() as i32 - pos.y,
+    );
+    start_window_drag(window.app_handle(), window.label().to_owned(), grab);
+    Ok(())
+}
+
+/// How the calling window's last drag ended, given once; None while it runs.
+#[tauri::command]
+fn window_drag_result(window: WebviewWindow, drags: State<'_, WindowDrags>) -> Option<DragEnd> {
+    drags.take(window.label())
+}
+
+/// Moves `label` with the mouse on a thread of its own until the button goes up
+/// or Escape is pressed, then records how it ended and tells that window.
+fn start_window_drag(app: &AppHandle, label: String, grab: (i32, i32)) {
+    if !app.state::<WindowDrags>().begin(&label) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let end = follow_mouse(&app, &label, grab);
+        app.state::<WindowDrags>().finish(&label, end);
+        let _ = app.emit_to(
+            EventTarget::webview_window(label.clone()),
+            window_drag::END_EVENT,
+            (),
+        );
+    });
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DragLeave {
+    /// The tab was dropped here: keep the gap open for it.
+    dropping: bool,
+}
+
+/// The tab strip of another window under `cursor` (physical screen pixels),
+/// leaving out `moving`, the window being dragged, which is always under it.
+fn strip_under(app: &AppHandle, moving: &WebviewWindow, cursor: (f64, f64)) -> Option<StripPoint> {
+    let candidates = drop_candidates(app);
+    let skip = moving.hwnd().map_or(0, |h| h.0 as isize);
+    let topmost = topmost_window_at_excluding(cursor.0, cursor.1, skip);
+    let target = pick_drop_target(&candidates, moving.label(), cursor, topmost)?;
+    let width = candidates
+        .iter()
+        .find(|c| c.label == target.label)
+        .map(|c| c.width / c.scale)?;
+    window_drag::over_strip(target.x, target.y, width).then_some(StripPoint {
+        label: target.label,
+        x: target.x,
+        y: target.y,
+    })
+}
+
+#[cfg(windows)]
+fn follow_mouse(app: &AppHandle, label: &str, grab: (i32, i32)) -> DragEnd {
+    use std::time::Duration;
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_ESCAPE, VK_LBUTTON, VK_RBUTTON,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, GetSystemMetrics, SM_SWAPBUTTON,
+    };
+
+    // SAFETY: plain Win32 queries of the mouse, the keyboard and a system setting.
+    let button = if unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0 {
+        VK_RBUTTON
+    } else {
+        VK_LBUTTON
+    };
+    let down = |key: u16| unsafe { GetAsyncKeyState(i32::from(key)) } < 0;
+    let start = app
+        .get_webview_window(label)
+        .and_then(|w| w.outer_position().ok());
+    let mut hovered: Option<StripPoint> = None;
+    let mut last: Option<(i32, i32)> = None;
+    let end = loop {
+        let Some(window) = app.get_webview_window(label) else {
+            break DragEnd {
+                target: None,
+                cancelled: false,
+            };
+        };
+        if down(VK_ESCAPE) {
+            // Back where it was; a window opened for the drag gives its tab back.
+            if let Some(pos) = start {
+                let _ = window.set_position(pos);
+            }
+            break DragEnd {
+                target: None,
+                cancelled: true,
+            };
+        }
+        if !down(button) {
+            break DragEnd {
+                target: hovered.clone(),
+                cancelled: false,
+            };
+        }
+        let mut point = POINT { x: 0, y: 0 };
+        // SAFETY: fills in the point it is given.
+        if unsafe { GetCursorPos(&mut point) } != 0 && last != Some((point.x, point.y)) {
+            last = Some((point.x, point.y));
+            let (x, y) = window_drag::follow_position((point.x, point.y), grab);
+            let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+            let now = strip_under(app, &window, (f64::from(point.x), f64::from(point.y)));
+            if let Some(old) = hovered
+                .as_ref()
+                .filter(|old| now.as_ref().is_none_or(|n| n.label != old.label))
+            {
+                let _ = app.emit_to(
+                    EventTarget::webview_window(old.label.clone()),
+                    window_drag::LEAVE_EVENT,
+                    DragLeave { dropping: false },
+                );
+            }
+            if let Some(point) = &now {
+                let _ = app.emit_to(
+                    EventTarget::webview_window(point.label.clone()),
+                    window_drag::HOVER_EVENT,
+                    point.clone(),
+                );
+            }
+            hovered = now;
+        }
+        std::thread::sleep(Duration::from_millis(8));
+    };
+    if let Some(old) = &hovered {
+        let _ = app.emit_to(
+            EventTarget::webview_window(old.label.clone()),
+            window_drag::LEAVE_EVENT,
+            DragLeave {
+                dropping: end.target.is_some(),
+            },
+        );
+    }
+    end
+}
+
+#[cfg(not(windows))]
+fn follow_mouse(_app: &AppHandle, _label: &str, _grab: (i32, i32)) -> DragEnd {
+    DragEnd {
+        target: None,
+        cancelled: false,
+    }
 }
 
 /// Where and how big a new window opens.
@@ -313,6 +480,8 @@ struct Placement {
     /// position is converted with the scale of whatever monitor Windows creates
     /// the window on, which can differ from the monitor under the cursor.
     physical: Option<(i32, i32)>,
+    /// Where the cursor holds the window, in physical pixels from its corner.
+    grab: Option<(i32, i32)>,
 }
 
 /// Position and size for a new window next to `near`, or under the cursor.
@@ -337,13 +506,18 @@ fn placement(near: &WebviewWindow, at_cursor: bool) -> Option<Placement> {
             .flatten()
             .map_or(scale, |m| m.scale_factor());
         let (x, y) = cursor_placement((cursor.x, cursor.y), cursor_scale);
+        let physical = (
+            (x * cursor_scale).round() as i32,
+            (y * cursor_scale).round() as i32,
+        );
         return Some(Placement {
             x,
             y,
             size,
-            physical: Some((
-                (x * cursor_scale).round() as i32,
-                (y * cursor_scale).round() as i32,
+            physical: Some(physical),
+            grab: Some((
+                cursor.x.round() as i32 - physical.0,
+                cursor.y.round() as i32 - physical.1,
             )),
         });
     }
@@ -353,6 +527,7 @@ fn placement(near: &WebviewWindow, at_cursor: bool) -> Option<Placement> {
         y: pos.y as f64 / scale + CASCADE,
         size,
         physical: None,
+        grab: None,
     })
 }
 
@@ -367,14 +542,15 @@ fn cursor_placement(cursor: (f64, f64), scale: f64) -> (f64, f64) {
 
 /// Builds a window from the main window's config. Extra windows used to open at
 /// the config's 1280x800 every time (M18); they now take the size of the window
-/// they were opened from.
+/// they were opened from. Returns its label, and where the cursor holds it when
+/// it was placed under the cursor.
 fn open_window(
     app: &AppHandle,
     paths: Vec<String>,
     boot: WindowBoot,
     near: Option<&WebviewWindow>,
     at_cursor: bool,
-) -> Result<(), String> {
+) -> Result<(String, Option<(i32, i32)>), String> {
     let state = app.state::<WindowPaths>();
     let mut config = app
         .config()
@@ -406,11 +582,11 @@ fn open_window(
     let built = WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build());
     match built {
         Ok(window) => {
-            if let Some((x, y)) = placed.and_then(|p| p.physical) {
+            if let Some((x, y)) = placed.as_ref().and_then(|p| p.physical) {
                 let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
             }
             use_sharp_icon(&window);
-            Ok(())
+            Ok((config.label, placed.and_then(|p| p.grab)))
         }
         Err(e) => {
             state.forget(&config.label);
@@ -493,13 +669,71 @@ fn topmost_window_at(_x: f64, _y: f64) -> Option<isize> {
     None
 }
 
+/// The top-level window under a point on the screen, leaving out `skip` (the
+/// window being dragged, which is always under the mouse). Walks the windows
+/// from front to back as Windows stacks them, past hidden, minimised, cloaked
+/// (other virtual desktops, suspended apps) and click-through windows.
+#[cfg(windows)]
+fn topmost_window_at_excluding(x: f64, y: f64, skip: isize) -> Option<isize> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetTopWindow, GetWindow, GetWindowLongW, GetWindowRect, IsIconic, IsWindowVisible,
+        GWL_EXSTYLE, GW_HWNDNEXT, WS_EX_TRANSPARENT,
+    };
+    let (px, py) = (x.floor() as i32, y.floor() as i32);
+    // SAFETY: plain Win32 queries that only read window state; each out-parameter
+    // is a local of the size the call expects.
+    unsafe {
+        let mut hwnd = GetTopWindow(std::ptr::null_mut());
+        while !hwnd.is_null() {
+            let click_through = (GetWindowLongW(hwnd, GWL_EXSTYLE) as u32) & WS_EX_TRANSPARENT != 0;
+            if hwnd as isize != skip
+                && IsWindowVisible(hwnd) != 0
+                && IsIconic(hwnd) == 0
+                && !click_through
+            {
+                let mut cloaked: u32 = 0;
+                DwmGetWindowAttribute(
+                    hwnd,
+                    DWMWA_CLOAKED as _,
+                    (&mut cloaked as *mut u32).cast(),
+                    std::mem::size_of::<u32>() as u32,
+                );
+                let mut rect: RECT = std::mem::zeroed();
+                if cloaked == 0
+                    && GetWindowRect(hwnd, &mut rect) != 0
+                    && px >= rect.left
+                    && px < rect.right
+                    && py >= rect.top
+                    && py < rect.bottom
+                {
+                    return Some(hwnd as isize);
+                }
+            }
+            hwnd = GetWindow(hwnd, GW_HWNDNEXT);
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn topmost_window_at_excluding(_x: f64, _y: f64, _skip: isize) -> Option<isize> {
+    None
+}
+
 /// The other visible window under the mouse, for a tab dropped there (F2).
 #[tauri::command]
 fn tab_drop_target(window: WebviewWindow) -> Option<DropTarget> {
     let cursor = window.cursor_position().ok()?;
-    let app = window.app_handle();
-    let candidates: Vec<DropCandidate> = app
-        .webview_windows()
+    let candidates = drop_candidates(window.app_handle());
+    let topmost = topmost_window_at(cursor.x, cursor.y);
+    pick_drop_target(&candidates, window.label(), (cursor.x, cursor.y), topmost)
+}
+
+/// Every visible, not minimised window, where a dragged tab could land.
+fn drop_candidates(app: &AppHandle) -> Vec<DropCandidate> {
+    app.webview_windows()
         .into_values()
         .filter(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false))
         .filter_map(|w| {
@@ -515,9 +749,7 @@ fn tab_drop_target(window: WebviewWindow) -> Option<DropTarget> {
                 scale: w.scale_factor().ok()?,
             })
         })
-        .collect();
-    let topmost = topmost_window_at(cursor.x, cursor.y);
-    pick_drop_target(&candidates, window.label(), (cursor.x, cursor.y), topmost)
+        .collect()
 }
 
 /// Tauri gives a window one 256 px icon and Windows shrinks it for the taskbar and
@@ -691,6 +923,7 @@ pub fn run() {
                 .build(),
         )
         .manage(WindowPaths::default())
+        .manage(WindowDrags::default())
         .setup(|app| {
             store::process_start();
             // The restart after a background update comes back hidden, and must not
@@ -716,7 +949,10 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            WindowEvent::Destroyed => window.state::<WindowPaths>().forget(window.label()),
+            WindowEvent::Destroyed => {
+                window.state::<WindowPaths>().forget(window.label());
+                window.state::<WindowDrags>().forget(window.label());
+            }
             WindowEvent::Focused(true) => window.state::<WindowPaths>().set_focused(window.label()),
             // Moving to a monitor with another scale needs icons of another size.
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -745,6 +981,8 @@ pub fn run() {
             window_session_write,
             window_session_delete,
             tab_drop_target,
+            window_drag_start,
+            window_drag_result,
             system_fonts,
             reveal_in_explorer,
             background::is_last_window,

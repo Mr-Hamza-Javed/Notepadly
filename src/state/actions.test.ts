@@ -1581,4 +1581,99 @@ describe("moving tabs between windows (F2)", () => {
     const reads = backend.calls.filter((c) => c.cmd === "file_read_chunk").map((c) => c.args.offset as number);
     expect(Math.min(...reads)).toBe(partial.loadedOffset);
   });
+
+  // Chrome-like tearing (F2): a window follows the mouse from the moment the tab
+  // leaves the strip, and where the button goes up decides the rest.
+  describe("tearing a tab off, as in Chrome", () => {
+    it("a torn-out tab goes at once to a new window that follows the mouse, with its old place", async () => {
+      backend.reset();
+      backend.write(A, "on disk");
+      app = await bootApp({ keepDisk: true });
+      await app.actions.openPaths([A]);
+      await app.actions.newTab();
+      const moved = app.state().tabs[0].id;
+      // A drop target would only matter for a tab dropped by the strip; a torn tab never asks.
+      backend.dropTarget = { label: "window-1", x: 0, y: 0 };
+      const moving = app.actions.detachTab(moved);
+      await waitFor(() => backend.calls.some((c) => c.cmd === "window_new"));
+      expect(backend.calls.some((c) => c.cmd === "tab_drop_target")).toBe(false);
+      const call = backend.calls.find((c) => c.cmd === "window_new")!;
+      expect(call.args).toMatchObject({ paths: [], atCursor: true, follow: true });
+      expect(JSON.parse(call.args.transfer as string)).toMatchObject({ from: "main", fromIndex: 0, tab: { id: moved } });
+      fakeWindow.deliver("tab-received", { id: moved });
+      await moving;
+      expect(app.state().tabs.map((t) => t.id)).not.toContain(moved);
+    });
+
+    it("the only tab torn out drags its own window, with no new window and no flash", async () => {
+      app = await bootApp();
+      app.type("only tab");
+      await app.actions.detachTab(app.tab().id);
+      expect(backend.calls.some((c) => c.cmd === "window_drag_start")).toBe(true);
+      expect(backend.calls.some((c) => c.cmd === "window_new")).toBe(false);
+      expect(app.state().tabs).toHaveLength(1);
+      expect(fakeWindow.destroyed).toBe(false);
+    });
+
+    it("dropped on another window's tab strip, the dragged window's tab joins it there", async () => {
+      backend.reset();
+      app = await bootApp({ keepDisk: true, label: "window-1" });
+      app.type("dragged");
+      const moved = app.tab().id;
+      backend.windowDragEnd = { target: { label: "main", x: 260, y: 12 }, cancelled: false };
+      fakeWindow.deliver("window-drag-end", null);
+      await waitFor(() => fakeWindow.emitted.some((e) => e.event === "tab-incoming"));
+      const sent = fakeWindow.emitted.find((e) => e.event === "tab-incoming")!;
+      expect(sent.target).toBe("main");
+      expect(sent.payload).toMatchObject({ x: 260, y: 12, transfer: { tab: { id: moved } } });
+      fakeWindow.deliver("tab-received", { id: moved });
+      // Its only tab gone, the dragged window closes.
+      await waitFor(() => fakeWindow.destroyed);
+      // The answer is taken once: a repeated end event does nothing more.
+      expect(backend.windowDragEnd).toBeNull();
+    });
+
+    it("dropped anywhere else, the window stays where it was dropped with its tab", async () => {
+      app = await bootApp();
+      app.type("dragged");
+      backend.windowDragEnd = { target: null, cancelled: false };
+      fakeWindow.deliver("window-drag-end", null);
+      await waitFor(() => backend.windowDragEnd === null);
+      await settle();
+      expect(fakeWindow.emitted.some((e) => e.event === "tab-incoming")).toBe(false);
+      expect(app.state().tabs).toHaveLength(1);
+      expect(fakeWindow.destroyed).toBe(false);
+    });
+
+    it("Escape sends a torn-out tab back to its old place in the window it came from", async () => {
+      const { moving, moved, transfer } = await sendDirtyTab(null);
+      fakeWindow.deliver("tab-received", { id: moved });
+      await moving;
+      expect(transfer.fromIndex).toBe(0);
+
+      backend.boot = { restore: null, transfer: JSON.stringify(transfer) };
+      app = await bootApp({ keepDisk: true, label: "window-2" });
+      backend.windowDragEnd = { target: null, cancelled: true };
+      fakeWindow.deliver("window-drag-end", null);
+      await waitFor(() => fakeWindow.emitted.some((e) => e.event === "tab-incoming"));
+      const sent = fakeWindow.emitted.find((e) => e.event === "tab-incoming")!;
+      expect(sent.target).toBe("main");
+      expect(sent.payload).toMatchObject({ index: 0, transfer: { tab: { title: "a.md", dirty: true } } });
+    });
+
+    it("a tab sent back with its place goes exactly there", async () => {
+      backend.reset();
+      backend.write(A, "a text");
+      app = await bootApp({ keepDisk: true });
+      app.type("first");
+      await app.actions.newTab();
+      app.type("second");
+      await waitFor(() => app.state().tabs.map((t) => t.title).join() === "first,second");
+      const handoffTab = { ...app.tab(), id: "elsewhere-1", title: "back.md", path: null };
+      const transfer = { from: "window-3", tab: handoffTab, handoff: { ...app.loader.handOff(app.tab().id) } };
+      fakeWindow.deliver("tab-incoming", { transfer, x: 9999, y: 9999, index: 1 });
+      await waitFor(() => app.state().tabs.length === 3);
+      expect(app.state().tabs.map((t) => t.title)).toEqual(["first", "back.md", "second"]);
+    });
+  });
 });

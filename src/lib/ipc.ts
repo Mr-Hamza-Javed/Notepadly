@@ -132,10 +132,19 @@ export const ipc = {
    * session; `transfer` hands it a tab dragged out of this window (a JSON
    * TabTransfer), placed under the mouse when `atCursor` is set.
    */
-  newWindow: (paths: string[], options: { restore?: string; transfer?: string; atCursor?: boolean } = {}) =>
-    invoke<void>("window_new", { paths, ...options }),
+  newWindow: (
+    paths: string[],
+    options: { restore?: string; transfer?: string; atCursor?: boolean; follow?: boolean } = {},
+  ) => invoke<void>("window_new", { paths, ...options }),
   /** The other window under the mouse, for a tab dropped on it. */
   tabDropTarget: () => invoke<DropTarget | null>("tab_drop_target"),
+  /**
+   * This window follows the mouse until the button goes up (F2, its only tab dragged
+   * out); `window-drag-end` then says it is over and `windowDragResult` how.
+   */
+  windowDragStart: () => invoke<void>("window_drag_start"),
+  /** How this window's last drag ended, given once; null while it runs. */
+  windowDragResult: () => invoke<WindowDragEnd | null>("window_drag_result"),
   systemFonts: () => invoke<string[]>("system_fonts"),
   revealInExplorer: (path: string) => invoke<void>("reveal_in_explorer", { path }),
 
@@ -186,6 +195,14 @@ export interface DropTarget {
   /** Mouse position inside that window, in its CSS pixels. */
   x: number;
   y: number;
+}
+
+/** How a window drag ended (Rust `window_drag::DragEnd`). */
+export interface WindowDragEnd {
+  /** The other window's tab strip it was dropped on, if any. */
+  target: DropTarget | null;
+  /** Escape: the tab goes back where it came from. */
+  cancelled: boolean;
 }
 
 export type UpdatePhase = "idle" | "checking" | "upToDate" | "downloading" | "ready" | "available" | "error";

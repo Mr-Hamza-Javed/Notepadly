@@ -5,7 +5,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { engine } from "../editor";
 import type { CursorInfo, EditorConfig, EditorEngine, EditorHost, FormatContext, FormatMode } from "../editor/api";
 import { ipc, OPEN_PATHS_EVENT, OPEN_PATHS_HERE_EVENT, type Encoding, type Eol, type WindowBoot } from "../lib/ipc";
-import { dropIndexAt } from "../lib/tabDrag";
+import { announceTabStrip, dropIndexAt, hoverGapIndex } from "../lib/tabDrag";
 import * as loader from "../lib/loader";
 import { installShortcuts } from "../lib/shortcuts";
 import {
@@ -71,6 +71,11 @@ const keepsSession = () => state().settings.startup === "continue";
 const EXIT_EVENT = "exit-app";
 const TAB_INCOMING_EVENT = "tab-incoming";
 const TAB_RECEIVED_EVENT = "tab-received";
+/** From Rust (window_drag.rs): a dragged tab is over this window's tab strip, and leaves it. */
+const TAB_DRAG_HOVER_EVENT = "tab-drag-hover";
+const TAB_DRAG_LEAVE_EVENT = "tab-drag-leave";
+/** From Rust: the drag of this window (it holds a dragged tab) is over. */
+const WINDOW_DRAG_END_EVENT = "window-drag-end";
 /** How long a tab being moved waits for the other window to take it. */
 const MOVE_TIMEOUT_MS = 10_000;
 
@@ -907,8 +912,27 @@ async function exit(): Promise<void> {
 export interface TabTransfer {
   /** Label of the window the tab comes from; it waits for TAB_RECEIVED_EVENT. */
   from: string;
+  /** The tab's place in that window, for Escape during the drag to put it back. */
+  fromIndex?: number;
   tab: TabMeta;
   handoff: loader.TabHandoff;
+}
+
+/** Where a moved tab goes: a window, a point in it (CSS px) and, when known, its place there. */
+export interface TabDestination {
+  label: string;
+  x: number;
+  y: number;
+  index?: number;
+}
+
+export interface MoveOptions {
+  /** The tab menu's "Move to new window": a new window placed as usual, not at the mouse. */
+  toNewWindow?: boolean;
+  /** Torn out of the tab strip: a new window under the mouse that follows it (F2). */
+  follow?: boolean;
+  /** Straight to this window, without asking which window is under the mouse. */
+  target?: TabDestination;
 }
 
 const receipts = new Map<string, () => void>();
@@ -931,19 +955,21 @@ function waitForReceipt(id: string): { done: Promise<boolean>; cancel: () => voi
 }
 
 /**
- * Moves a tab dragged out of the tab strip: onto the window under the mouse, or
- * into a new window there. The tab is removed here only once the other window
- * has it, so a failed move leaves it where it was. Nothing is saved or reloaded.
- * `toNewWindow` (the tab menu's "Move to new window", for keyboard and touch):
- * always a new window, placed as usual rather than at the mouse.
+ * Moves a tab to another window: `options.target`, the window under the mouse,
+ * or a new window (see MoveOptions; `true` is the tab menu's "Move to new window").
+ * The tab is removed here only once the other window has it, so a failed move
+ * leaves it where it was. Nothing is saved or reloaded.
  */
-async function moveTabOut(id: string, toNewWindow = false): Promise<void> {
+async function moveTabOut(id: string, options: MoveOptions | boolean = {}): Promise<void> {
+  const how: MoveOptions = typeof options === "boolean" ? { toNewWindow: options } : options;
   if (!getTab(id)) return;
-  const target = toNewWindow ? null : await ipc.tabDropTarget().catch(() => null);
+  const target =
+    how.target ?? (how.toNewWindow || how.follow ? null : await ipc.tabDropTarget().catch(() => null));
   await loader.settleTabIo(id);
   const tab = getTab(id);
   if (!tab) return;
   const { tabs, activeId } = state();
+  const fromIndex = tabs.findIndex((t) => t.id === id);
   // The text is read now; switching away first keeps typing out of a tab in transit.
   if (activeId === id && tabs.length > 1) {
     const next = neighbourAfterClose(tabs.map((t) => t.id), id);
@@ -957,21 +983,32 @@ async function moveTabOut(id: string, toNewWindow = false): Promise<void> {
   }
   const current = getTab(id);
   if (!current) return;
-  const transfer: TabTransfer = { from: windowLabel, tab: current, handoff: loader.handOff(id) };
+  const transfer: TabTransfer = { from: windowLabel, fromIndex, tab: current, handoff: loader.handOff(id) };
   // Its text is on the way: an edit made here now would be lost (STATE-3).
   leaving.add(id);
   if (state().activeId === id) engine.park();
   const stay = (message: string) => {
     leaving.delete(id);
+    announceTabStrip({ kind: "stay", id });
     if (state().activeId === id) void activate(id);
     showMessage("Could not move the tab", message);
   };
   const receipt = waitForReceipt(id);
   try {
     if (target) {
-      await getCurrentWebviewWindow().emitTo(target.label, TAB_INCOMING_EVENT, { transfer, x: target.x, y: target.y });
+      const index = "index" in target && typeof target.index === "number" ? target.index : undefined;
+      await getCurrentWebviewWindow().emitTo(target.label, TAB_INCOMING_EVENT, {
+        transfer,
+        x: target.x,
+        y: target.y,
+        index,
+      });
     } else {
-      await ipc.newWindow([], { transfer: JSON.stringify(transfer), atCursor: !toNewWindow });
+      await ipc.newWindow([], {
+        transfer: JSON.stringify(transfer),
+        atCursor: !how.toNewWindow,
+        follow: !!how.follow,
+      });
     }
   } catch (error) {
     receipt.cancel();
@@ -996,6 +1033,45 @@ async function moveTabOut(id: string, toNewWindow = false): Promise<void> {
   removeFromList(id);
   await loader.discardCurrentSession().catch(() => {});
   await getCurrentWindow().destroy();
+}
+
+/**
+ * A tab was pulled out of the tab strip (F2), as in Chrome: from then on a window
+ * follows the mouse. With other tabs left, the tab goes to a new window under the
+ * mouse that follows it; as the window's only tab, the window itself follows.
+ * Where the button goes up decides the rest (`finishWindowDrag`).
+ */
+async function detachTab(id: string): Promise<void> {
+  if (!getTab(id)) return;
+  if (state().tabs.length === 1) {
+    await ipc.windowDragStart().catch((error: unknown) => console.error("Notepadly: could not drag the window", error));
+    return;
+  }
+  await moveTabOut(id, { follow: true });
+}
+
+/** The window this one was opened from for a torn-out tab, and the tab's place there. */
+let tornFrom: { label: string; index: number } | null = null;
+
+/**
+ * This window was dragged by its only tab and the button went up: over another
+ * window's tab strip the tab joins those tabs (and this window closes); after
+ * Escape a torn-out tab goes back where it came from; anywhere else the window
+ * simply stays where it was dropped.
+ */
+async function finishWindowDrag(): Promise<void> {
+  const end = await ipc.windowDragResult().catch(() => null);
+  if (!end) return;
+  const { tabs } = state();
+  if (tabs.length !== 1) return;
+  const id = tabs[0].id;
+  if (end.cancelled) {
+    if (tornFrom) await moveTabOut(id, { target: { label: tornFrom.label, x: 0, y: 0, index: tornFrom.index } });
+    return;
+  }
+  tornFrom = null;
+  if (end.target) await moveTabOut(id, { target: end.target });
+  else await bringToFront();
 }
 
 /** Ids of tabs received from other windows, by the id they had there; for a repeated delivery. */
@@ -1027,6 +1103,8 @@ async function receiveTab(transfer: TabTransfer, index: number | null): Promise<
     list.splice(Math.max(0, Math.min(index ?? list.length, list.length)), 0, tab);
     return { tabs: list };
   });
+  // The tab strip closes the gap it held open and lets the tab slide in.
+  announceTabStrip({ kind: "arrived", id: tab.id });
   try {
     await loader.takeOver(tab, handoff, fromId);
   } catch (error) {
@@ -1218,16 +1296,36 @@ async function wireWindowEvents(ready: Promise<void>): Promise<void> {
       })
       .catch(warn("exit listener failed")),
     webviewWindow
-      .listen<{ transfer: TabTransfer; x: number; y: number }>(TAB_INCOMING_EVENT, (event) =>
+      .listen<{ transfer: TabTransfer; x: number; y: number; index?: number }>(TAB_INCOMING_EVENT, (event) =>
         later(async () => {
           const transfer = parseTransfer(event.payload?.transfer);
           if (!transfer) return;
-          const index = typeof document === "undefined" ? null : dropIndexAt(event.payload.x, event.payload.y);
+          // A place given by the sender (Escape: back where it was), else the gap the
+          // tab strip opened while the tab hovered, else the drop point.
+          const given = event.payload.index;
+          const index =
+            typeof given === "number"
+              ? given
+              : (hoverGapIndex() ??
+                (typeof document === "undefined" ? null : dropIndexAt(event.payload.x, event.payload.y)));
           await receiveTab(transfer, index);
           await bringToFront();
         }),
       )
       .catch(warn("tab listener failed")),
+    webviewWindow
+      .listen<{ x: number; y: number }>(TAB_DRAG_HOVER_EVENT, (event) =>
+        announceTabStrip({ kind: "hover", x: event.payload.x, y: event.payload.y }),
+      )
+      .catch(warn("tab hover listener failed")),
+    webviewWindow
+      .listen<{ dropping?: boolean }>(TAB_DRAG_LEAVE_EVENT, (event) =>
+        announceTabStrip({ kind: "leave", dropping: !!event.payload?.dropping }),
+      )
+      .catch(warn("tab leave listener failed")),
+    webviewWindow
+      .listen(WINDOW_DRAG_END_EVENT, () => later(finishWindowDrag))
+      .catch(warn("window drag listener failed")),
     webviewWindow
       .listen<{ id: string }>(TAB_RECEIVED_EVENT, (event) => receipts.get(event.payload?.id)?.())
       .catch(warn("tab receipt listener failed")),
@@ -1419,9 +1517,14 @@ async function runInit(): Promise<void> {
       return null;
     }
   })() : null;
-  if (transfer) await receiveTab(transfer, null);
+  if (transfer) {
+    tornFrom = typeof transfer.fromIndex === "number" ? { label: transfer.from, index: transfer.fromIndex } : null;
+    await receiveTab(transfer, null);
+  }
   await openHere(await createMissing(pending));
   markReady();
+  // A quick flick can end the drag that opened this window before it was listening.
+  if (transfer) void finishWindowDrag();
   loader.startHibernation();
   // The checker thread waits for this before it ever contacts GitHub.
   ipc.updateConfigure(state().settings.autoUpdate).catch(() => {});
@@ -1456,6 +1559,7 @@ export const actions = {
   closeWindow,
   exit,
   moveTabOut,
+  detachTab,
 
   activate,
   moveTab: (fromIndex: number, toIndex: number) => {

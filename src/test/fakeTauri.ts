@@ -210,6 +210,8 @@ export class FakeBackend {
   boot: { restore: string | null; transfer: string | null } = { restore: null, transfer: null };
   /** Answer of `tab_drop_target`: the other window under the mouse. */
   dropTarget: { label: string; x: number; y: number } | null = null;
+  /** Answer of `window_drag_result`, given once (window_drag.rs). */
+  windowDragEnd: { target: { label: string; x: number; y: number } | null; cancelled: boolean } | null = null;
   /** Every command name, in order. */
   calls: { cmd: string; args: Record<string, unknown>; caller?: string }[] = [];
   /** Next error for a command, by name; consumed once. */
@@ -247,6 +249,7 @@ export class FakeBackend {
     this.pendingPaths = [];
     this.boot = { restore: null, transfer: null };
     this.dropTarget = null;
+    this.windowDragEnd = null;
     this.calls = [];
     this.failNext.clear();
     this.unreadable.clear();
@@ -436,6 +439,12 @@ export class FakeBackend {
         return this.locale;
       case "launched_hidden":
         return false;
+      case "window_drag_result": {
+        const end = this.windowDragEnd;
+        this.windowDragEnd = null;
+        return end;
+      }
+      case "window_drag_start":
       case "window_new":
       case "reveal_in_explorer":
       case "enter_background":

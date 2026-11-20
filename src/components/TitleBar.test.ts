@@ -109,21 +109,95 @@ describe("tab drag", () => {
   // In jsdom every box is 0x0 at (0, 0): 32 px below the strip is "pulled out".
   const OUT = { clientX: 10, clientY: 300 };
 
-  // BUGS.md UI-3
-  it("Escape cancels a tab pulled out of the strip", async () => {
+  // F2, as in Chrome: the tab is torn off the moment it leaves the strip, and from
+  // then on Rust moves a window with the mouse (Escape there puts it back).
+  it("a tab pulled out of the strip is torn off at once and its place closes up", async () => {
     const el = await renderTitleBar();
-    const [a] = await threeTabs();
-    const moveOut = vi.spyOn(app.actions, "moveTabOut").mockResolvedValue();
+    const [, b] = await threeTabs();
+    const detach = vi.spyOn(app.actions, "detachTab").mockResolvedValue();
     await act(async () => {
-      tabEl(el, a).dispatchEvent(pointer("pointerdown", { clientX: 10, clientY: 10, buttons: 1 }));
+      tabEl(el, b).dispatchEvent(pointer("pointerdown", { clientX: 10, clientY: 10, buttons: 1 }));
     });
     window.dispatchEvent(pointer("pointermove", { ...OUT, buttons: 1 }));
-    expect(tabEl(el, a).classList.contains("detaching")).toBe(true);
+    expect(detach).toHaveBeenCalledWith(b);
+    expect(tabEl(el, b).classList.contains("tab-detached")).toBe(true);
+    // The strip let go of the drag: more moves, Escape and the release do nothing here.
+    window.dispatchEvent(pointer("pointermove", { clientX: 10, clientY: 500, buttons: 1 }));
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    expect(tabEl(el, a).classList.contains("detaching")).toBe(false);
     window.dispatchEvent(pointer("pointerup", OUT));
     await settle();
-    expect(moveOut).not.toHaveBeenCalled();
+    expect(detach).toHaveBeenCalledTimes(1);
+    expect(ids()).toHaveLength(3);
+  });
+
+  it("a torn-out tab that could not go gets its place back", async () => {
+    const el = await renderTitleBar();
+    const [, b] = await threeTabs();
+    vi.spyOn(app.actions, "detachTab").mockResolvedValue();
+    await act(async () => {
+      tabEl(el, b).dispatchEvent(pointer("pointerdown", { clientX: 10, clientY: 10, buttons: 1 }));
+    });
+    window.dispatchEvent(pointer("pointermove", { ...OUT, buttons: 1 }));
+    expect(tabEl(el, b).classList.contains("tab-detached")).toBe(true);
+    const { announceTabStrip } = await import("../lib/tabDrag");
+    announceTabStrip({ kind: "stay", id: b });
+    expect(tabEl(el, b).classList.contains("tab-detached")).toBe(false);
+  });
+
+  it("the only tab is not collapsed: its window itself follows the mouse", async () => {
+    const el = await renderTitleBar();
+    const [only] = ids();
+    const detach = vi.spyOn(app.actions, "detachTab").mockResolvedValue();
+    await act(async () => {
+      tabEl(el, only).dispatchEvent(pointer("pointerdown", { clientX: 10, clientY: 10, buttons: 1 }));
+    });
+    window.dispatchEvent(pointer("pointermove", { ...OUT, buttons: 1 }));
+    expect(detach).toHaveBeenCalledWith(only);
+    expect(tabEl(el, only).classList.contains("tab-detached")).toBe(false);
+  });
+
+  it("tabs slide apart where a tab from another window hovers, and back when it leaves", async () => {
+    const el = await renderTitleBar();
+    const [a, b, c] = await threeTabs();
+    const { announceTabStrip, hoverGapIndex } = await import("../lib/tabDrag");
+    // jsdom puts every tab at x = 0: a tab hovering at x = 0 goes first.
+    announceTabStrip({ kind: "hover", x: 0, y: 10 });
+    expect(hoverGapIndex()).toBe(0);
+    for (const id of [a, b, c]) expect(tabEl(el, id).style.transform).toBe("translateX(233px)");
+    announceTabStrip({ kind: "hover", x: 50, y: 10 });
+    expect(hoverGapIndex()).toBe(3);
+    expect(tabEl(el, c).style.transform).toBe("");
+    announceTabStrip({ kind: "leave", dropping: false });
+    expect(hoverGapIndex()).toBeNull();
+    for (const id of [a, b, c]) expect(tabEl(el, id).style.transform).toBe("");
+  });
+
+  it("a dropped tab keeps its gap until it arrives, then rises into it", async () => {
+    const el = await renderTitleBar();
+    const [a] = await threeTabs();
+    const { announceTabStrip, hoverGapIndex } = await import("../lib/tabDrag");
+    announceTabStrip({ kind: "hover", x: 0, y: 10 });
+    announceTabStrip({ kind: "leave", dropping: true });
+    expect(hoverGapIndex()).toBe(0);
+    expect(tabEl(el, a).style.transform).toBe("translateX(233px)");
+    announceTabStrip({ kind: "arrived", id: a });
+    expect(hoverGapIndex()).toBeNull();
+    expect(tabEl(el, a).style.transform).toBe("");
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+    expect(tabEl(el, a).classList.contains("tab-arriving")).toBe(true);
+  });
+
+  it("a drop that never arrives gives its gap up after a while", async () => {
+    await renderTitleBar();
+    await threeTabs();
+    const { announceTabStrip, hoverGapIndex } = await import("../lib/tabDrag");
+    announceTabStrip({ kind: "hover", x: 0, y: 10 });
+    announceTabStrip({ kind: "leave", dropping: true });
+    expect(hoverGapIndex()).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    expect(hoverGapIndex()).toBeNull();
   });
 
   it("Escape cancels a reorder", async () => {

@@ -178,8 +178,28 @@ a { color: var(--link); }
 .tab[data-active="true"]::before { left: -4px; --fx: 0; }
 .tab[data-active="true"]::after { right: -4px; --fx: 100%; }
 .tab.dragging { z-index: 3; transition: none; opacity: 0.94; }
-.tab.detaching { opacity: 0.5; cursor: grabbing; }
 .tab-list.no-anim .tab { transition: none; }
+/* Torn out into its own window (F2): its place closes up, as in Chrome. */
+.tab.tab-detached,
+.tab-list.no-anim .tab.tab-detached {
+  flex-basis: 0;
+  min-width: 0;
+  padding: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    flex-basis 180ms var(--ease-out),
+    min-width 180ms var(--ease-out),
+    padding 180ms var(--ease-out),
+    opacity 120ms linear;
+}
+/* Dropped here from another window: it rises into the gap the tabs made for it. */
+.tab.tab-arriving { animation: tab-arrive 220ms var(--ease-out); }
+@keyframes tab-arrive {
+  from { opacity: 0; transform: translateY(10px) scale(0.94); }
+  to { opacity: 1; transform: none; }
+}
 
 .tab-title {
   flex: 1 1 0;
@@ -339,7 +359,7 @@ a { color: var(--link); }
 @keyframes popup-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 @keyframes popup-in-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
-  .popup, .dialog, .smoke, .app.entering { animation: none !important; }
+  .popup, .dialog, .smoke, .app.entering, .tab.tab-arriving { animation: none !important; }
   .tab, .toggle-knob, .toggle-track, .radio-mark { transition: none !important; }
 }
 

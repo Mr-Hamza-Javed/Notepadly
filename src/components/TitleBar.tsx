@@ -6,7 +6,15 @@ import { AppIcon, G, Glyph } from "./icons";
 import { Menu, type AnchorRect, type MenuEntry } from "./Menu";
 import { CaptionButtons } from "./CaptionButtons";
 import { focusEditorSoon } from "./focus";
-import { isPulledOut, reorderTarget, setTabDragging } from "../lib/tabDrag";
+import {
+  hoverGapIndex,
+  insertionIndex,
+  isPulledOut,
+  onTabStripNews,
+  reorderTarget,
+  setHoverGapIndex,
+  setTabDragging,
+} from "../lib/tabDrag";
 
 interface TabProps {
   tab: TabMeta;
@@ -163,6 +171,69 @@ const TabStrip = memo(function TabStrip() {
     if (menuGone) setMenu(null);
   }, [menuGone]);
 
+  // Tabs dragged between windows (F2), as in Chrome: the tabs slide apart where a
+  // hovering tab would go, a tab dropped here slides into that gap, and the place of
+  // a tab torn out of here closes up (or opens again if it could not go).
+  useEffect(() => {
+    let keepGap: ReturnType<typeof setTimeout> | null = null;
+    const nodes = () => Array.from(list.current?.children ?? []) as HTMLElement[];
+    const showGap = (index: number | null) => {
+      if (keepGap) clearTimeout(keepGap);
+      keepGap = null;
+      setHoverGapIndex(index);
+      const all = nodes();
+      const width = all.find((n) => !n.classList.contains("tab-detached"))?.offsetWidth || TAB_WIDTH;
+      all.forEach((n, i) => {
+        n.style.transform = index !== null && i >= index ? `translateX(${width}px)` : "";
+      });
+    };
+    // Measured with the gap's shifts: a tab moved right counts where it is shown, so
+    // the gap stays put until the pointer passes the middle of the next tab.
+    const gapAt = (x: number) =>
+      insertionIndex(
+        nodes().map((n) => {
+          const r = n.getBoundingClientRect();
+          return r.left + r.width / 2;
+        }),
+        x,
+      );
+    const stop = onTabStripNews((news) => {
+      switch (news.kind) {
+        case "hover":
+          showGap(gapAt(news.x));
+          break;
+        case "leave":
+          // Dropped here: hold the gap until the tab arrives in it.
+          if (news.dropping && hoverGapIndex() !== null) keepGap = setTimeout(() => showGap(null), 1500);
+          else showGap(null);
+          break;
+        case "arrived": {
+          const ls = list.current;
+          // The tab takes the gap's place: drop the shifts without sliding them back.
+          ls?.classList.add("no-anim");
+          showGap(null);
+          requestAnimationFrame(() => {
+            const el = ls?.querySelector<HTMLElement>(`[data-tab-id="${news.id}"]`);
+            if (el) {
+              el.classList.add("tab-arriving");
+              el.addEventListener("animationend", () => el.classList.remove("tab-arriving"), { once: true });
+            }
+            requestAnimationFrame(() => ls?.classList.remove("no-anim"));
+          });
+          break;
+        }
+        case "stay":
+          list.current?.querySelector(`[data-tab-id="${news.id}"]`)?.classList.remove("tab-detached");
+          break;
+      }
+    });
+    return () => {
+      stop();
+      if (keepGap) clearTimeout(keepGap);
+      setHoverGapIndex(null);
+    };
+  }, []);
+
   const scrollBy = (dx: number) => scroller.current?.scrollBy({ left: dx, behavior: "smooth" });
 
   const onMenu = useCallback((id: string, x: number, y: number) => {
@@ -191,7 +262,6 @@ const TabStrip = memo(function TabStrip() {
     const minDx = -lefts[index];
     const maxDx = lefts[nodes.length - 1] - lefts[index];
     let dragging = false;
-    let pulledOut = false;
     let target = index;
     // Keeps pointer events coming while the mouse is outside the window (F2).
     try {
@@ -199,11 +269,6 @@ const TabStrip = memo(function TabStrip() {
     } catch {
       // Capture is only a help; the window listeners below still work inside.
     }
-
-    const resetOthers = () =>
-      nodes.forEach((n, i) => {
-        if (i !== index) n.style.transform = "";
-      });
 
     const move = (ev: globalThis.PointerEvent) => {
       // The button went up where this window did not see it (capture lost, another
@@ -220,13 +285,20 @@ const TabStrip = memo(function TabStrip() {
         el.classList.add("dragging");
       }
       const strip = sc.getBoundingClientRect();
-      pulledOut = isPulledOut(strip, ev.clientX, ev.clientY, { width: window.innerWidth, height: window.innerHeight });
-      el.classList.toggle("detaching", pulledOut);
-      if (pulledOut) {
-        // Out of the strip: the tab will go to another window, so nothing reorders.
-        el.style.transform = "";
-        resetOthers();
-        target = index;
+      if (isPulledOut(strip, ev.clientX, ev.clientY, { width: window.innerWidth, height: window.innerHeight })) {
+        // Torn out, as in Chrome: from here on a window follows the mouse, and the
+        // tab's place here closes up (F2). Rust follows the mouse from now on.
+        end();
+        try {
+          el.releasePointerCapture?.(e.pointerId);
+        } catch {
+          // Not captured.
+        }
+        const { tabs } = useApp.getState();
+        // A tab closed or added meanwhile (Ctrl+W with the mouse down): tear nothing.
+        if (tabs[index]?.id !== id) return;
+        if (tabs.length > 1) el.classList.add("tab-detached");
+        void actions.detachTab(id);
         return;
       }
       const dx = clamp(raw, minDx, maxDx);
@@ -253,7 +325,7 @@ const TabStrip = memo(function TabStrip() {
       dragging = false;
       setTabDragging(false);
       ls.classList.add("no-anim");
-      el.classList.remove("dragging", "detaching");
+      el.classList.remove("dragging");
       nodes.forEach((n) => {
         n.style.transform = "";
       });
@@ -266,8 +338,7 @@ const TabStrip = memo(function TabStrip() {
       // A tab closed or added during the drag (Ctrl+W with the mouse down) makes the
       // indexes taken at the start wrong: drop nothing rather than move the wrong tab.
       if (useApp.getState().tabs[index]?.id !== id) return;
-      if (pulledOut && ev.type === "pointerup") void actions.moveTabOut(id);
-      else if (target !== index) actions.moveTab(index, target);
+      if (ev.type === "pointerup" && target !== index) actions.moveTab(index, target);
     };
 
     // Escape cancels the drag, as in Windows (BUGS.md UI-3).
