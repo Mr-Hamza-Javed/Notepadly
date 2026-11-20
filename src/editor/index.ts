@@ -387,7 +387,11 @@ class Engine implements EditorEngine {
       depth: 0,
       savedVersion: version,
       dirty: false,
-      scrollEffect: null,
+      // A new document starts at the top. With no position of its own, the view
+      // would keep the scroll position of the tab shown before it. Through the
+      // view, not scrollTop: its scroll anchor would put the old position back.
+      // The wide margin takes the view above the content's top padding: scrollTop 0.
+      scrollEffect: EditorView.scrollIntoView(0, { y: "start", yMargin: 10_000 }),
       scrollTop: null,
       configSerial: this.configSerial,
     };
