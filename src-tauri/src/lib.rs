@@ -568,7 +568,8 @@ fn follow_mouse(app: &AppHandle, label: &str, grab: (i32, i32), tab: &DragTab) -
             if let Some(pos) = start {
                 let _ = window.set_position(pos);
             }
-            let _ = window.show();
+            // It may have been hidden while snapped into a strip (WIN-4).
+            background::show_painted(&window);
             break DragEnd {
                 target: None,
                 cancelled: true,
@@ -601,7 +602,8 @@ fn follow_mouse(app: &AppHandle, label: &str, grab: (i32, i32), tab: &DragTab) -
                         // Torn off again: the window comes back under the mouse.
                         leave(app, &current.label, false);
                         let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-                        let _ = window.show();
+                        // Hidden while it was snapped in: repaint it (WIN-4).
+                        background::show_painted(&window);
                         let _ = window.set_focus();
                     }
                 }

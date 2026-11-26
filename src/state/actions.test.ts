@@ -1692,6 +1692,8 @@ describe("moving tabs between windows (F2)", () => {
       expect(app.state().tabs).toHaveLength(1);
       expect(app.tab().title).toBe("a.md");
       expect(app.tab().dirty).toBe(true);
+      // Shown through Rust, which repaints a webview that waited hidden (WIN-4).
+      await waitFor(() => backend.calls.some((c) => c.caller === "window-3" && c.cmd === "window_reveal"));
       await waitFor(() => writes() > 0);
       // Escape now still sends it back where it came from.
       backend.windowDragEnd = { target: null, cancelled: true };

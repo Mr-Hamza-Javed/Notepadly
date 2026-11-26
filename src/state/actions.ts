@@ -1155,9 +1155,8 @@ async function claimSpare(raw: unknown): Promise<void> {
   const got = received.get(transfer.tab.id);
   if (got) for (const id of empty) if (id !== got) removeFromList(id);
   publishOpenPaths();
-  const win = getCurrentWindow();
-  await win.show().catch(() => {});
-  await win.setFocus().catch(() => {});
+  // The spare window waited hidden: Rust shows it and repaints its webview (WIN-4).
+  await bringToFront();
   loader.startHibernation();
   void finishWindowDrag();
 }

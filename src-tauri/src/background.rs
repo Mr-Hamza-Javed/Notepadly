@@ -57,6 +57,17 @@ pub fn reveal(window: &WebviewWindow) {
     }
 }
 
+/// Shows a window without moving focus or un-minimising it, and repaints its
+/// webview when it was hidden (WIN-4). For the tab drag, which hides and shows
+/// the dragged window as it snaps into a strip and tears off again.
+pub fn show_painted(window: &WebviewWindow) {
+    let was_hidden = !window.is_visible().unwrap_or(false);
+    let _ = window.show();
+    if was_hidden {
+        repaint(window);
+    }
+}
+
 /// Shows the calling window (instead of the frontend's `show()`) so the
 /// WebView2 repaint of `reveal` applies to a window's first show too.
 #[tauri::command]
