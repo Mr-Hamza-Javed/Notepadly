@@ -1,5 +1,6 @@
 # Builds the Windows installer and portable zip on GitHub and publishes them on a
-# Release for an existing tag. Run it by hand from the Actions tab.
+# Release for a tag (created on the run's commit if it does not exist yet).
+# Run it by hand from the Actions tab.
 #
 # Releases are normally built on the developer's PC instead, which is much faster
 # and signs the auto-update feed with the local key:
@@ -18,8 +19,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build, e.g. v0.2.0"
+        description: "Tag to build, e.g. v0.2.0. If it does not exist yet, it is created on the commit this run starts from."
         required: true
+      prerelease:
+        description: "Publish as a pre-release (not the latest release, so the auto-update feed is left alone)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -36,7 +41,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      # An existing tag is built as it is. A new tag is created by the release
+      # step below, on the commit this run started from (github.sha).
+      - name: Use the tag, or tag this commit
+        shell: pwsh
+        run: |
+          git rev-parse -q --verify "refs/tags/$env:TAG" | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            git checkout --detach "refs/tags/$env:TAG"
+          } else {
+            Write-Host "Tag $env:TAG does not exist yet: the release creates it on $env:GITHUB_SHA."
+          }
+          exit 0
 
       - name: Set app version from tag
         shell: pwsh
@@ -109,7 +127,7 @@ jobs:
             - Reopens in about 40 ms and opens a 127 MB file in about a second, up to 28× faster than the built-in Notepad.
             - Never locks files, saves safely and brings back unsaved notes after a restart.
           releaseDraft: false
-          prerelease: ${{ contains(env.TAG, '-') }}
+          prerelease: ${{ contains(env.TAG, '-') || github.event.inputs.prerelease == 'true' }}
 
       - name: Attach the portable zip
         shell: pwsh
