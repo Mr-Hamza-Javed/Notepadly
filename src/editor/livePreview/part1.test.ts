@@ -254,9 +254,28 @@ describe("blocks inside lists, quotes and callouts", () => {
     expect(view.state.doc.line(1).text).toBe("- | aa | b |");
   });
 
-  it("MD-1: a task item's block and blocks in a folded callout stay source", () => {
-    expect(widgets(preview("- [ ] $$\n  x\n  $$\n\nend"))).toEqual([]);
-    expect(widgets(preview("> - $$\n>   x\n>   $$\n\nend"))).toEqual([]);
+  it("MD-1: maths on a task item's line is rendered with its box, ticked or not", () => {
+    const [open] = widgets(preview("- [ ] $$\n  x\n  $$\n\nend")) as MathWidget[];
+    expect(open).toBeInstanceOf(MathWidget);
+    expect(open.source).toBe("x");
+    expect(open.nest.marker).toEqual({ text: "☐", at: 0 });
+    expect(open.nest.indent).toBe(6);
+    const [done] = widgets(preview("- [x] $$\n  y\n  $$\n\nend")) as MathWidget[];
+    expect(done.nest.marker).toEqual({ text: "☑", at: 0 });
+    // A task whose text only starts with `$$` later on stays a task.
+    expect(widgets(preview("- [ ] buy $$ milk\n\nend"))).toEqual([]);
+  });
+
+  it("MD-1: maths on a list marker's line inside a quote is rendered with the bullet and quote bar", () => {
+    const view = preview("> - $$\n>   x\n>   $$\n\nend");
+    const [math] = widgets(view) as MathWidget[];
+    expect(math).toBeInstanceOf(MathWidget);
+    expect(math.source).toBe("x");
+    expect(math.nest.marker).toEqual({ text: "•", at: 0 });
+    expect(math.nest.classes).toContain("cm-md-q1");
+  });
+
+  it("MD-1: blocks in a folded callout stay source", () => {
     const folded = widgets(preview("> [!note]-\n> $$\n> x\n> $$\n\nend", 0));
     expect(folded.some((w) => w instanceof MathWidget)).toBe(false);
   });

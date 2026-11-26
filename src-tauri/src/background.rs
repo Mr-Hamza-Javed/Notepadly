@@ -25,6 +25,13 @@ pub fn enter_background(app: AppHandle, window: WebviewWindow) -> Result<(), Str
     window.hide().map_err(|e| e.to_string())?;
     app.state::<crate::WindowPaths>()
         .entered_background(window.label());
+    // No tab can be torn out with no window on screen: the spare window's memory
+    // is better given back. The next drag builds one again.
+    for spare in app.state::<crate::window_drag::Spares>().drain() {
+        if let Some(spare) = app.get_webview_window(&spare) {
+            let _ = spare.destroy();
+        }
+    }
     set_asleep(&window, true);
     // Every tab is stored now, so this is the safe moment for a downloaded update.
     // The new version comes back up hidden, exactly where this one is going.

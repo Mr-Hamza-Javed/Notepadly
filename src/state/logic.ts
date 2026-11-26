@@ -465,7 +465,6 @@ export type ExternalAction =
   | "flag-modified"
   | "flag-deleted"
   | "clear-flag"
-  | "reload"
   | "adopt-stamp";
 
 export function decideExternal(
@@ -480,8 +479,9 @@ export function decideExternal(
   }
   if (stampsEqual(disk, tab.stamp)) return tab.externalChange || dismissed ? "clear-flag" : "none";
   if (dismissed && dismissed !== "deleted" && stampsEqual(disk, dismissed)) return "none";
-  if (tab.dirty) return tab.externalChange === "modified" ? "none" : "flag-modified";
-  return hasDoc ? "reload" : "adopt-stamp";
+  // Shown text is never replaced behind the user's back: the bar offers Reload.
+  if (tab.dirty || hasDoc) return tab.externalChange === "modified" ? "none" : "flag-modified";
+  return "adopt-stamp";
 }
 
 // ---- Session --------------------------------------------------------------

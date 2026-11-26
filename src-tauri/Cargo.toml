@@ -16,7 +16,7 @@ tauri-build = { version = "~2.7", features = [] }
 [dependencies]
 # Tauri and its plugins are pinned to one minor series each (~x.y), so a plugin
 # release that needs a newer tauri is never picked up alone: update them together.
-tauri ={ version = "~2.12", features = ["protocol-asset"] }
+tauri = { version = "~2.12", features = ["protocol-asset"] }
 tauri-plugin-dialog = "~2.8"
 tauri-plugin-opener = "~2.7"
 tauri-plugin-single-instance = "~2.5"
@@ -27,11 +27,13 @@ winreg = "0.56"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Globalization",
+    "Win32_Graphics_Dwm",
     "Win32_Storage_FileSystem",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

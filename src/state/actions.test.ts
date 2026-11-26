@@ -281,13 +281,44 @@ describe("dirty state and saving", () => {
     expect(backend.text(A)).toBe("saved");
   });
 
-  it("refuses to overwrite a file another program changed, and says so", async () => {
+  it("asks before saving over a file another program changed; Cancel writes nothing", async () => {
     app.type(" mine");
     backend.write(A, "theirs");
     expect(await app.actions.save()).toBe(false);
-    expect(app.message()?.title).toBe("File changed on disk");
+    expect(dialogs.messages.at(-1)?.title).toBe("File changed on disk");
     expect(app.tab().externalChange).toBe("modified");
+    expect(app.tab().dirty).toBe(true);
     expect(backend.text(A)).toBe("theirs");
+  });
+
+  it("Save anyway replaces the other program's changes with this text", async () => {
+    app.type(" mine");
+    backend.write(A, "theirs");
+    dialogs.messageAnswers.push("Save anyway");
+    expect(await app.actions.save()).toBe(true);
+    expect(backend.text(A)).toBe("saved mine");
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+  });
+
+  it("Reload instead shows the other program's version", async () => {
+    app.type(" mine");
+    backend.write(A, "theirs");
+    dialogs.messageAnswers.push("Reload");
+    expect(await app.actions.save()).toBe(false);
+    await waitFor(() => app.text() === "theirs");
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+    expect(backend.text(A)).toBe("theirs");
+  });
+
+  it("asks too when the change is already shown in the bar", async () => {
+    app.type(" mine");
+    backend.write(A, "theirs");
+    await app.loader.pollExternalChanges();
+    expect(app.tab().externalChange).toBe("modified");
+    dialogs.messageAnswers.push("Save anyway");
+    expect(await app.actions.save()).toBe(true);
+    expect(dialogs.messages.at(-1)?.title).toBe("File changed on disk");
+    expect(backend.text(A)).toBe("saved mine");
   });
 
   it("can save after choosing Keep mine", async () => {
@@ -427,11 +458,28 @@ describe("files changed by other programs", () => {
     await app.actions.openPaths([A]);
   });
 
-  it("silently reloads a clean tab", async () => {
+  it("tells about a change to a clean tab and shows it only on Reload", async () => {
     backend.write(A, "changed outside");
     await app.loader.pollExternalChanges();
+    await settle(20);
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: "modified" });
+    expect(app.text()).toBe("original");
+    await app.actions.reloadTab(app.tab().id);
     await waitFor(() => app.text() === "changed outside");
     expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+  });
+
+  it("a new date on the same text is no news", async () => {
+    const before = app.tab().stamp;
+    backend.write(A, "original");
+    await app.loader.pollExternalChanges();
+    await settle(20);
+    expect(app.tab().externalChange).toBeNull();
+    expect(app.tab().stamp).not.toEqual(before);
+    // And a save goes through without asking.
+    app.type("!");
+    expect(await app.actions.save()).toBe(true);
+    expect(dialogs.messages).toHaveLength(0);
   });
 
   it("flags a dirty tab instead of throwing away the user's text", async () => {
@@ -493,13 +541,14 @@ describe("files changed by other programs", () => {
     expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
   });
 
-  it("H7: a clean tab whose file comes back with new content reloads it", async () => {
+  it("H7: a clean tab whose file comes back with new content offers to reload it", async () => {
     backend.delete(A);
     await app.loader.pollExternalChanges();
     backend.write(A, "checked out");
     await app.loader.pollExternalChanges();
-    await waitFor(() => app.text() === "checked out");
-    expect(app.tab()).toMatchObject({ dirty: false, externalChange: null });
+    await settle(20);
+    expect(app.tab()).toMatchObject({ dirty: false, externalChange: "modified" });
+    expect(app.text()).toBe("original");
   });
 
   it("H7: text typed while the file was gone stays unsaved when it comes back", async () => {
@@ -565,8 +614,8 @@ describe("large files", () => {
     app.engine.insertText("EDIT\n");
     backend.write(A, "replaced by another program");
     expect(await app.actions.save()).toBe(false);
-    expect(app.message()?.title).toBe("File changed on disk");
-    app.actions.closeDialog();
+    expect(dialogs.messages.at(-1)?.title).toBe("File changed on disk");
+    dialogs.messages.length = 0;
     await app.actions.keepMine(app.tab().id);
 
     // Cancelled: nothing is written.
@@ -1589,5 +1638,138 @@ describe("moving tabs between windows (F2)", () => {
     expect(app.text()).toBe(big);
     const reads = backend.calls.filter((c) => c.cmd === "file_read_chunk").map((c) => c.args.offset as number);
     expect(Math.min(...reads)).toBe(partial.loadedOffset);
+  });
+
+  // Chrome-like tearing (F2): a window follows the mouse from the moment the tab
+  // leaves the strip, and where the button goes up decides the rest.
+  describe("tearing a tab off, as in Chrome", () => {
+    it("a torn-out tab goes at once to a new window that follows the mouse, with its old place", async () => {
+      backend.reset();
+      backend.write(A, "on disk");
+      app = await bootApp({ keepDisk: true });
+      await app.actions.openPaths([A]);
+      await app.actions.newTab();
+      const moved = app.state().tabs[0].id;
+      // A drop target would only matter for a tab dropped by the strip; a torn tab never asks.
+      backend.dropTarget = { label: "window-1", x: 0, y: 0 };
+      const moving = app.actions.detachTab(moved);
+      await waitFor(() => backend.calls.some((c) => c.cmd === "window_new"));
+      expect(backend.calls.some((c) => c.cmd === "tab_drop_target")).toBe(false);
+      const call = backend.calls.find((c) => c.cmd === "window_new")!;
+      expect(call.args).toMatchObject({ paths: [], atCursor: true, follow: true });
+      expect(JSON.parse(call.args.transfer as string)).toMatchObject({ from: "main", fromIndex: 0, tab: { id: moved } });
+      fakeWindow.deliver("tab-received", { id: moved });
+      await moving;
+      expect(app.state().tabs.map((t) => t.id)).not.toContain(moved);
+    });
+
+    it("a torn-out tab moves the grab point and its look to the new window", async () => {
+      app = await bootApp();
+      await app.actions.newTab();
+      const moved = app.state().tabs[0].id;
+      void app.actions.detachTab(moved, { x: 52, y: 18 });
+      await waitFor(() => backend.calls.some((c) => c.cmd === "window_new"));
+      const call = backend.calls.find((c) => c.cmd === "window_new")!;
+      expect(call.args).toMatchObject({ follow: true, grabX: 52, grabY: 18, dragTitle: app.state().tabs[0].title, dragDirty: false });
+    });
+
+    it("the spare window waits hidden with no session, then shows a torn-out tab at once", async () => {
+      const { moving, moved, transfer } = await sendDirtyTab(null);
+      fakeWindow.deliver("tab-received", { id: moved });
+      await moving;
+
+      backend.spares.add("window-3");
+      const writes = () => backend.calls.filter((c) => c.cmd === "window_session_write" && c.caller === "window-3").length;
+      app = await bootApp({ keepDisk: true, label: "window-3" });
+      app.type("typed into the hidden window");
+      await settle();
+      // Not a window of the app yet: it stores nothing and asks for no files.
+      expect(writes()).toBe(0);
+      expect(backend.calls.some((c) => c.caller === "window-3" && c.cmd === "take_pending_paths")).toBe(false);
+
+      fakeWindow.deliver("spare-claim", JSON.stringify(transfer));
+      await waitFor(() => fakeWindow.emitted.some((e) => e.event === "tab-received"));
+      expect(app.state().tabs).toHaveLength(1);
+      expect(app.tab().title).toBe("a.md");
+      expect(app.tab().dirty).toBe(true);
+      await waitFor(() => writes() > 0);
+      // Escape now still sends it back where it came from.
+      backend.windowDragEnd = { target: null, cancelled: true };
+      fakeWindow.deliver("window-drag-end", null);
+      await waitFor(() => fakeWindow.emitted.some((e) => e.event === "tab-incoming"));
+      const sent = fakeWindow.emitted.find((e) => e.event === "tab-incoming")!;
+      expect(sent.payload).toMatchObject({ index: 0 });
+    });
+
+    it("the only tab torn out drags its own window, with no new window and no flash", async () => {
+      app = await bootApp();
+      app.type("only tab");
+      await app.actions.detachTab(app.tab().id);
+      expect(backend.calls.some((c) => c.cmd === "window_drag_start")).toBe(true);
+      expect(backend.calls.some((c) => c.cmd === "window_new")).toBe(false);
+      expect(app.state().tabs).toHaveLength(1);
+      expect(fakeWindow.destroyed).toBe(false);
+    });
+
+    it("dropped on another window's tab strip, the dragged window's tab joins it there", async () => {
+      backend.reset();
+      app = await bootApp({ keepDisk: true, label: "window-1" });
+      app.type("dragged");
+      const moved = app.tab().id;
+      backend.windowDragEnd = { target: { label: "main", x: 260, y: 12 }, cancelled: false };
+      fakeWindow.deliver("window-drag-end", null);
+      await waitFor(() => fakeWindow.emitted.some((e) => e.event === "tab-incoming"));
+      const sent = fakeWindow.emitted.find((e) => e.event === "tab-incoming")!;
+      expect(sent.target).toBe("main");
+      expect(sent.payload).toMatchObject({ x: 260, y: 12, transfer: { tab: { id: moved } } });
+      fakeWindow.deliver("tab-received", { id: moved });
+      // Its only tab gone, the dragged window closes.
+      await waitFor(() => fakeWindow.destroyed);
+      // The answer is taken once: a repeated end event does nothing more.
+      expect(backend.windowDragEnd).toBeNull();
+    });
+
+    it("dropped anywhere else, the window stays where it was dropped with its tab", async () => {
+      app = await bootApp();
+      app.type("dragged");
+      backend.windowDragEnd = { target: null, cancelled: false };
+      fakeWindow.deliver("window-drag-end", null);
+      await waitFor(() => backend.windowDragEnd === null);
+      await settle();
+      expect(fakeWindow.emitted.some((e) => e.event === "tab-incoming")).toBe(false);
+      expect(app.state().tabs).toHaveLength(1);
+      expect(fakeWindow.destroyed).toBe(false);
+    });
+
+    it("Escape sends a torn-out tab back to its old place in the window it came from", async () => {
+      const { moving, moved, transfer } = await sendDirtyTab(null);
+      fakeWindow.deliver("tab-received", { id: moved });
+      await moving;
+      expect(transfer.fromIndex).toBe(0);
+
+      backend.boot = { restore: null, transfer: JSON.stringify(transfer) };
+      app = await bootApp({ keepDisk: true, label: "window-2" });
+      backend.windowDragEnd = { target: null, cancelled: true };
+      fakeWindow.deliver("window-drag-end", null);
+      await waitFor(() => fakeWindow.emitted.some((e) => e.event === "tab-incoming"));
+      const sent = fakeWindow.emitted.find((e) => e.event === "tab-incoming")!;
+      expect(sent.target).toBe("main");
+      expect(sent.payload).toMatchObject({ index: 0, transfer: { tab: { title: "a.md", dirty: true } } });
+    });
+
+    it("a tab sent back with its place goes exactly there", async () => {
+      backend.reset();
+      backend.write(A, "a text");
+      app = await bootApp({ keepDisk: true });
+      app.type("first");
+      await app.actions.newTab();
+      app.type("second");
+      await waitFor(() => app.state().tabs.map((t) => t.title).join() === "first,second");
+      const handoffTab = { ...app.tab(), id: "elsewhere-1", title: "back.md", path: null };
+      const transfer = { from: "window-3", tab: handoffTab, handoff: { ...app.loader.handOff(app.tab().id) } };
+      fakeWindow.deliver("tab-incoming", { transfer, x: 9999, y: 9999, index: 1 });
+      await waitFor(() => app.state().tabs.length === 3);
+      expect(app.state().tabs.map((t) => t.title)).toEqual(["first", "back.md", "second"]);
+    });
   });
 });

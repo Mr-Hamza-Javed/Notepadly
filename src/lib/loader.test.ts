@@ -87,11 +87,15 @@ describe("loading a big file in chunks", () => {
     expect(app.text().endsWith("edit")).toBe(true);
   });
 
-  it("reloads a clean partial tab when the file changes under it", async () => {
+  it("stops loading a clean partial tab when the file changes under it, and offers Reload", async () => {
+    const shown = app.text();
     backend.write(BIG, "small now");
     app.loader.onNearEnd(app.tab().id);
+    await waitFor(() => app.tab().externalChange === "modified");
+    expect(app.text()).toBe(shown);
+    await app.actions.reloadTab(app.tab().id);
     await waitFor(() => app.text() === "small now");
-    expect(app.tab()).toMatchObject({ fullyLoaded: true, dirty: false });
+    expect(app.tab()).toMatchObject({ fullyLoaded: true, dirty: false, externalChange: null });
   });
 });
 
@@ -277,9 +281,10 @@ describe("drafts", () => {
     expect(app.tab().mode).toBe("formatted");
     app.engine.restore(id, { anchor: 0, head: 0, scrollTop: 0, folds: [callout] });
     expect(app.engine.snapshot(id)?.folds).toEqual([callout]);
-    // A change on disk reloads the clean tab: the fold state stays.
+    // A reload after a change on disk keeps the fold state.
     backend.write(NOTE, text + "more\n");
     await app.loader.pollExternalChanges();
+    await app.actions.reloadTab(id);
     await waitFor(() => app.text(id).endsWith("more\n"));
     expect(app.engine.snapshot(id)?.folds).toEqual([callout]);
     await app.actions.closeWindow();
