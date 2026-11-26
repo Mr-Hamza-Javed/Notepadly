@@ -161,6 +161,12 @@ export const ipc = {
   windowCloseCancelled: () => invoke<void>("window_close_cancelled"),
   /** Hides this window and suspends its webview; the next launch wakes it. */
   enterBackground: () => invoke<void>("enter_background"),
+  /**
+   * Shows, un-minimises and focuses this window, and makes its webview repaint
+   * when it was hidden: a shown hidden webview can otherwise stay blank over the
+   * Mica backdrop until the window is minimised and restored (WIN-4).
+   */
+  windowReveal: () => invoke<void>("window_reveal"),
 
   /** Turns the automatic update checks on or off. */
   updateConfigure: (enabled: boolean) => invoke<UpdateStatus>("update_configure", { enabled }),

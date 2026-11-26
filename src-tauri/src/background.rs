@@ -32,6 +32,62 @@ pub fn enter_background(app: AppHandle, window: WebviewWindow) -> Result<(), Str
     Ok(())
 }
 
+/// Brings a window forward and, when it was hidden or minimised, makes its
+/// WebView2 paint again. A webview that was hidden (a window created with
+/// `visible: false`, or one asleep in the background) sometimes does not
+/// redraw when its window is shown: only the transparent Mica backdrop shows,
+/// like a blur over the window, until the user minimises and restores it
+/// (BUGS.md WIN-4). Minimise and restore turn the webview's visibility off and
+/// on, so this does the same.
+pub fn reveal(window: &WebviewWindow) {
+    let was_hidden =
+        !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false);
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+    if was_hidden {
+        repaint(window);
+    }
+}
+
+/// Shows the calling window (instead of the frontend's `show()`) so the
+/// WebView2 repaint of `reveal` applies to a window's first show too.
+#[tauri::command]
+pub fn window_reveal(window: WebviewWindow) {
+    reveal(&window);
+}
+
+/// How long the webview stays "not visible" before it is made visible again:
+/// two frames, so WebView2 sees a real change instead of two calls in a row.
+#[cfg(windows)]
+const REPAINT_GAP: std::time::Duration = std::time::Duration::from_millis(32);
+
+#[cfg(windows)]
+fn repaint(window: &WebviewWindow) {
+    let _ = window.with_webview(|webview| {
+        // SAFETY: COM call on the webview's own controller, on the main thread
+        // where with_webview runs this closure.
+        unsafe {
+            let _ = webview.controller().SetIsVisible(false);
+        }
+    });
+    let window = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(REPAINT_GAP);
+        let _ = window.with_webview(|webview| {
+            let controller = webview.controller();
+            // SAFETY: as above.
+            unsafe {
+                let _ = controller.SetIsVisible(true);
+                let _ = controller.NotifyParentWindowPositionChanged();
+            }
+        });
+    });
+}
+
+#[cfg(not(windows))]
+fn repaint(_window: &WebviewWindow) {}
+
 /// Wakes a window that `enter_background` put to sleep. Call before showing it.
 pub fn wake(window: &WebviewWindow) {
     set_asleep(window, false);

@@ -1413,6 +1413,15 @@ describe("several windows", () => {
     await waitFor(() => fakeWindow.focused > 0);
   });
 
+  it("WIN-4: bringing the window forward goes through Rust, which repaints a hidden webview", async () => {
+    app = await bootApp();
+    backend.write(A, "a");
+    const before = backend.count("window_reveal");
+    fakeWindow.deliver("open-paths", [A]);
+    await waitFor(() => app.tab().title === "a.md");
+    await waitFor(() => backend.count("window_reveal") > before);
+  });
+
   it("files from a second launch go to a new window when that setting is on and this one is in use", async () => {
     app = await bootApp({ settings: { openFilesIn: "window" } });
     app.type("busy");

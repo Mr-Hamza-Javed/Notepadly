@@ -103,6 +103,12 @@ These were written on Linux and only type-checked, or only read. Do this before 
 
 ## 1.2 Open bugs (not fixed)
 
+### WIN-4. Opening a file while the app is running sometimes shows only a blur over the window ✔ fixed (26 Nov) ⚠️
+- **What happens:** with Notepadly already running (often after its last window was closed, so it waits in the background), opening a note shows the window with only the Mica backdrop (a blur, like the title bar's gradient) and no content. Minimising from the taskbar and restoring fixes it.
+- **Cause:** a WebView2 that was hidden (a window created with `visible: false`, or one asleep after `enter_background`) sometimes does not repaint when its window is shown, so the transparent window shows only the backdrop. Minimise/restore turns the webview's visibility off and on, which makes it paint.
+- **Fix:** `background::reveal` (`src-tauri/src/background.rs`) shows, un-minimises and focuses the window and, when it was hidden or minimised, turns the WebView2 controller's visibility off and on again (32 ms apart) and calls `NotifyParentWindowPositionChanged`. It is used by the second-launch handler and `path_open_elsewhere`; the new `window_reveal` command is used by the frontend's first show (`src/main.tsx`) and "bring to front" (`src/state/actions.ts`).
+- **Check on Windows:** close the last window (background mode on), then double-click a `.md` file several times; also with "Open files in: new window".
+
 ### M13. Whole-file actions fill memory on very big files 📖 — ✔ mostly fixed (19 Nov, second pass): Save As streams the tail, whole loads can be cancelled, Go to line and Print bounded; Find/Replace all/Select all/Ctrl+End/EOL change still load the whole file (cancellable)
 - Find, Replace, Select all, Ctrl+End, Print, Save As, Go to line and changing the line ending or encoding all load the full file into RAM. There is no cancel.
 - Above roughly 500 MB, `getText()` fails on the JS string limit. Printing 100 MB freezes the UI in `marked.parse`.

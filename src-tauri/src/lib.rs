@@ -229,9 +229,7 @@ fn path_open_elsewhere(
             vec![path],
         );
     }
-    let _ = holder.unminimize();
-    let _ = holder.show();
-    let _ = holder.set_focus();
+    background::reveal(&holder);
     Some(label)
 }
 
@@ -632,9 +630,7 @@ fn on_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
             paths,
         );
     }
-    let _ = window.unminimize();
-    let _ = window.show();
-    let _ = window.set_focus();
+    background::reveal(window);
 }
 
 pub fn run() {
@@ -720,6 +716,7 @@ pub fn run() {
             reveal_in_explorer,
             background::is_last_window,
             background::enter_background,
+            background::window_reveal,
             window_closing,
             window_close_cancelled,
             open_paths_set,

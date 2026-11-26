@@ -501,6 +501,8 @@ async function openPaths(paths: string[]): Promise<void> {
 }
 
 async function bringToFront(): Promise<void> {
+  // Rust shows the window and makes a hidden webview repaint (WIN-4).
+  if (await ipc.windowReveal().then(() => true, () => false)) return;
   const win = getCurrentWindow();
   await win.unminimize().catch(() => {});
   await win.show().catch(() => {});

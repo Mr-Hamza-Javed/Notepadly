@@ -59,11 +59,14 @@ async function boot(): Promise<void> {
   }
 
   await nextPaint();
-  try {
-    await getCurrentWindow().show();
-  } catch {
-    // Plain browser preview: there is no native window to show.
-  }
+  // Through Rust, which also makes the webview repaint after the hidden boot (WIN-4).
+  await ipc.windowReveal().catch(async () => {
+    try {
+      await getCurrentWindow().show();
+    } catch {
+      // Plain browser preview: there is no native window to show.
+    }
+  });
   playEnterAnimation();
 }
 

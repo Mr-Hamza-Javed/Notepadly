@@ -434,6 +434,12 @@ export class FakeBackend {
         return { phase: "idle", version: null, message: null, current: "0.1.0", canInstall: false };
       case "user_locale":
         return this.locale;
+      case "window_reveal": {
+        // Rust un-minimises, shows and focuses the calling window (and repaints it, WIN-4).
+        const win = fakeWindows.get(caller);
+        if (win) win.focused++;
+        return null;
+      }
       case "launched_hidden":
         return false;
       case "window_new":
